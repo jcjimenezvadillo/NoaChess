@@ -102,11 +102,6 @@ El desarrollo sigue una hoja de ruta incremental:
 
 El desarrollo es iterativo y se documentan todos los cambios relevantes en este README.
 
-### **Bitácora / Diario de desarrollo**
-> [Aquí se irán anotando hitos técnicos, decisiones clave y aprendizaje durante el desarrollo…]
-
-- [2024-06-04] Inicio del repositorio y definición de la arquitectura base.
-
 ### **Contribuir**
 Se aceptan contribuciones, sugerencias y feedback.  
 Por favor, revisa la [Guía de Contribución](CONTRIBUTING.md) (pendiente) y abre issues o pull requests para colaborar.
