@@ -46,10 +46,6 @@ Development follows an incremental roadmap:
 
 This README will be updated regularly as development progresses.
 
-### **Development Log / Changelog**
-
-- [2024-06-04] Repository created, base architecture defined.
-
 ### **Contributing**
 Contributions, suggestions, and feedback are welcome.  
 Please check the [Contribution Guide](CONTRIBUTING.md) (to be added) and open issues or pull requests.
