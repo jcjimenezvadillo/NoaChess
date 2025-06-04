@@ -1,6 +1,6 @@
 # CHANGELOG / Registro de Cambios
 
----
+--
 
 ## 2025-06-04 (v0.1.0-alpha)
 
@@ -11,3 +11,5 @@
 - infra: added CHANGELOG.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
+
+--
