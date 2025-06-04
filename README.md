@@ -62,6 +62,16 @@ Este proyecto está publicado bajo la licencia **Creative Commons Attribution-No
 **Queda estrictamente prohibido cualquier uso comercial, salvo por el autor o coautores del proyecto.**
 Para otros usos, contacta con el titular.
 
+### 📝 Texto legal y resumen en español
+
+- El texto legalmente vinculante de esta licencia está en inglés y se incluye en el fichero LICENSE de este repositorio:  
+  https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+- Para facilitar la comprensión, existe un resumen oficial en español:  
+  https://creativecommons.org/licenses/by-nc/4.0/deed.es
+
+> *Nota: la traducción al español es solo informativa. En caso de discrepancia, prevalece el texto legal en inglés.*
+
 ### ✉️ **Contacto**
 Desarrollador principal: [Tu nombre]  
 Twitter/GitHub/email: [tu_contacto]
