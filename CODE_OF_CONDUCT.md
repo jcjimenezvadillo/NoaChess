@@ -38,7 +38,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [**Pon aquí tu email de contacto**]. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 
@@ -111,7 +111,7 @@ Este Código de Conducta se aplica dentro de todos los espacios de la comunidad 
 
 ## Aplicación
 
-Los casos de comportamiento abusivo, acosador o inaceptable de otro modo pueden ser reportados a los líderes de la comunidad responsables de la aplicación en [**Pon aquí tu email de contacto**]. Todas las quejas serán revisadas e investigadas de manera rápida y justa.
+Los casos de comportamiento abusivo, acosador o inaceptable de otro modo pueden ser reportados a los responsables de la aplicación. Todas las quejas serán revisadas e investigadas de manera rápida y justa.
 
 Todos los líderes de la comunidad están obligados a respetar la privacidad y la seguridad de quien informa de cualquier incidente.
 
