@@ -2,7 +2,7 @@
 
 ---
 
-## 2024-06-04 (v0.1.0-alpha)
+## 2025-06-04 (v0.1.0-alpha)
 
 - project: repo created and initial documentation setup (README, LICENSE, CONTRIBUTING, CHANGELOG, CODE_OF_CONDUCT).
 - infra: established branch workflow (`main`, `develop`, `feature/*`, `release/*`).
