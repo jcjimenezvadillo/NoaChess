@@ -1,4 +1,4 @@
-# CHANGELOG / Registro de Cambios
+# CHANGELOG
 
 ## 2025-06-04 (v0.1.0-alpha)
 
