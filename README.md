@@ -8,8 +8,8 @@ NoaChess is a modular, high-performance chess engine built with professional sta
 
 ### **Main Features**
 - C# 12, .NET 8, cross-platform.
-- Modular architecture, SOLID principles and Clean Architecture.
-- Legal move generation and validation (FIDE rules).
+- Modular architecture, Solid principles and Clean Architecture.
+- Legal move generation and validation.
 - Search algorithms (Alpha-Beta, roadmap: Pruning, NNUE, etc.).
 - Multi-factor position evaluation (material, mobility, king safety, ...).
 - REST API for GUI integration (upcoming).
@@ -64,7 +64,7 @@ NoaChess es un motor de ajedrez modular, diseñado para alto rendimiento y exten
 
 ### **Características principales**
 - Código en C# 12, .NET 8, compatible multiplataforma.
-- Arquitectura modular, principios SOLID y Clean Architecture.
+- Arquitectura modular, principios Solid y Clean Architecture.
 - Generación y validación de movimientos conforme a las reglas FIDE.
 - Algoritmos de búsqueda (Alpha-Beta, en roadmap: Poda, NNUE, etc.).
 - Evaluación de posiciones con múltiples factores (material, movilidad, seguridad del rey...).
