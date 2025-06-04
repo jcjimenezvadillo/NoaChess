@@ -142,3 +142,9 @@ Juan Carlos Jiménez Vadillo
 - GitHub: [jcjimenezvadillo](https://github.com/jcjimenezvadillo)  
 
 ---
+
+### 📚 Bitácora profesional / Development Log
+
+- **[2024-06-04]** Creación del repositorio.
+
+---
