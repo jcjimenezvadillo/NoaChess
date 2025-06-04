@@ -133,3 +133,12 @@ Main developer: [Your name]
 Twitter/GitHub/email: [your_contact]
 
 ---
+
+### ✉️ Contacto / Contact
+
+**Autor principal / Main Author:**  
+Juan Carlos Jiménez Vadillo
+
+- GitHub: [jcjimenezvadillo](https://github.com/jcjimenezvadillo)  
+
+---
