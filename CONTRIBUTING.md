@@ -2,7 +2,7 @@
 
 [Spanish below]
 
-## 🙋‍♂️ How to contribute
+## How to contribute
 
 Thank you for your interest in contributing to **NoaChess**!
 
@@ -22,7 +22,7 @@ For suggestions, questions, or bug reports, use the [Issues](../../issues) tab.
 
 ---
 
-## 🙋‍♂️ Cómo contribuir
+## Cómo contribuir
 
 ¡Gracias por tu interés en colaborar con **NoaChess**!
 
@@ -39,13 +39,5 @@ Sigue estos pasos para contribuir de manera eficiente:
 Para sugerencias, preguntas o reportes de bugs, usa la pestaña [Issues](../../issues).
 
 **Recuerda: cualquier contribución debe ser para fines NO comerciales.**
-
----
-
-### 🤝 Code of Conduct / Código de conducta
-
-- Be respectful and constructive in all interactions. / Sé respetuoso y constructivo en todas las interacciones.
-- Discriminatory behavior or personal attacks will not be tolerated. / No se tolerarán comportamientos discriminatorios o ataques personales.
-- This project stands for diversity and open collaboration. / Este proyecto apuesta por la diversidad y la colaboración abierta.
 
 ---
