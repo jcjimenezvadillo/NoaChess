@@ -1,7 +1,5 @@
 # CHANGELOG / Registro de Cambios
 
---
-
 ## 2025-06-04 (v0.1.0-alpha)
 
 - project: repo created and initial documentation setup (README, LICENSE, CONTRIBUTING, CHANGELOG, CODE_OF_CONDUCT).
@@ -11,5 +9,3 @@
 - infra: added CHANGELOG.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
-
---
