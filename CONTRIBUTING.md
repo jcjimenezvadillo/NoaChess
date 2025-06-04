@@ -42,10 +42,10 @@ Para sugerencias, preguntas o reportes de bugs, usa la pestaña [Issues](../../i
 
 ---
 
-### 🤝 Código de conducta / Code of Conduct
+### 🤝 Code of Conduct / Código de conducta
 
-- Sé respetuoso y constructivo en todas las interacciones.
-- No se tolerarán comportamientos discriminatorios o ataques personales.
-- Este proyecto apuesta por la diversidad y la colaboración abierta.
+- Be respectful and constructive in all interactions. / Sé respetuoso y constructivo en todas las interacciones.
+- Discriminatory behavior or personal attacks will not be tolerated. / No se tolerarán comportamientos discriminatorios o ataques personales.
+- This project stands for diversity and open collaboration. / Este proyecto apuesta por la diversidad y la colaboración abierta.
 
 ---
