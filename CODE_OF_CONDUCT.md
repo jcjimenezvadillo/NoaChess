@@ -69,7 +69,6 @@ This Code of Conduct is adapted from the [Contributor Covenant](https://www.cont
 Community Impact Guidelines were inspired by Mozilla's code of conduct enforcement ladder.
 
 For answers to common questions about this code of conduct, see the [FAQ](https://www.contributor-covenant.org/faq).  
-[Translations are available.](https://www.contributor-covenant.org/translations)
 
 ---
 
@@ -141,5 +140,4 @@ Este Código de Conducta está adaptado del [Contributor Covenant](https://www.c
 
 Las Pautas de Impacto en la Comunidad se inspiraron en la escala de aplicación del código de conducta de Mozilla.
 
-Para respuestas a preguntas frecuentes sobre este código de conducta, consulta las [FAQ](https://www.contributor-covenant.org/faq).  
-[Traducciones disponibles.](https://www.contributor-covenant.org/translations)
+Para respuestas a preguntas frecuentes sobre este código de conducta, consulta las [FAQ](https://www.contributor-covenant.org/faq).
