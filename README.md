@@ -46,8 +46,7 @@ Development follows an incremental roadmap:
 
 This README will be updated regularly as development progresses.
 
-### 📚 **Development Log / Changelog**
-> [Key technical milestones, decisions, and lessons learned will be logged here…]
+### **Development Log / Changelog**
 
 - [2024-06-04] Repository created, base architecture defined.
 
