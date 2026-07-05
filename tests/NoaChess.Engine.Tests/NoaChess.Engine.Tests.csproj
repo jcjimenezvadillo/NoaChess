@@ -18,4 +18,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NoaChess.Engine\NoaChess.Engine.csproj" />
+    <ProjectReference Include="..\..\src\NoaChess.Core\NoaChess.Core.csproj" />
+  </ItemGroup>
+
 </Project>
