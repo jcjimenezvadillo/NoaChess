@@ -52,3 +52,20 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Visual Studio local files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code local files
+.vscode/
+
+# Rider / JetBrains local files
+.idea/
+
+# Local environment files
+.env
+.env.*
