@@ -63,6 +63,47 @@ public class SearchTests
     }
 
     [Fact]
+    public void FindsMateInTwo()
+    {
+        // Classic two-rook ladder: 1.Ra7 (confining the king to the 8th rank)
+        // followed by 2.Rb8#. Requires seeing 3 plies ahead plus mate detection.
+        var board = new Board("7k/8/8/8/8/8/R7/1R5K w - - 0 1");
+        var result = _engine.FindBestMove(board, depth: 4);
+
+        // The score must be a mate score (near MateScore), not a material eval.
+        Assert.True(result.Score > Engine.Search.AlphaBetaSearch.MateScore - 100,
+            $"Expected a mate score, got {result.Score}");
+    }
+
+    [Fact]
+    public void Quiescence_AvoidsHorizonBlunder()
+    {
+        // The black d5 pawn is defended by the e6 pawn. At depth 1 a searcher
+        // WITHOUT quiescence evaluates right after Qxd5 (up a pawn) and never
+        // sees ...exd5 losing the queen. Quiescence must reject the capture.
+        var board = new Board("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1");
+        var result = _engine.FindBestMove(board, depth: 1);
+
+        Assert.NotEqual("d1d5", result.BestMove.ToString());
+    }
+
+    [Fact]
+    public void TimeLimit_IsRespected()
+    {
+        // A time-limited search must come back promptly (well under the huge
+        // depth cap) and still produce a legal move.
+        var board = new Board();
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = _engine.FindBestMove(board, Engine.Search.SearchLimits.Time(200));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.ElapsedMilliseconds < 2_000,
+            $"Search took {stopwatch.ElapsedMilliseconds} ms for a 200 ms budget");
+        Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
+    }
+
+    [Fact]
     public void SearchRespectsCancellation()
     {
         // With an already cancelled token the search must still return quickly
