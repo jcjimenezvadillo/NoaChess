@@ -24,7 +24,9 @@ public sealed class BoardViewModel : ViewModelBase
     // Depth of the background analysis that runs while the HUMAN is thinking.
     // It is deeper than the engine's move depth because it has all the user's
     // thinking time available and it is cancelled the moment the user moves.
-    private const int AnalysisDepth = 8;
+    // Since v0.2 it also warms up the shared transposition table, so it acts
+    // as real pondering: the engine's next search reuses its results.
+    private const int AnalysisDepth = 12;
 
     private readonly Board _board = new();
     private readonly ChessEngine _engine = new();
@@ -36,6 +38,13 @@ public sealed class BoardViewModel : ViewModelBase
     private List<Move> _legalMovesFromSelection = [];
 
     private CancellationTokenSource? _searchCancellation;
+
+    // Task of the search currently running (engine move or background
+    // analysis). The engine instance keeps shared state (transposition table,
+    // history), so two searches must NEVER overlap: every new search first
+    // cancels AND AWAITS the previous one (see StopSearchAsync).
+    private Task? _searchTask;
+
     private string _statusText = "White to move. Click a piece.";
     private string _evaluationText = "Eval: -";
     private string _depthText = "Depth: -";
@@ -88,9 +97,10 @@ public sealed class BoardViewModel : ViewModelBase
     }
 
     // Starts a new game (human = white, engine = black).
-    public void NewGame()
+    public async void NewGame()
     {
-        _searchCancellation?.Cancel(); // Abort any ongoing search.
+        await StopSearchAsync(); // Make sure no search touches the old game.
+        _engine.NewGame();       // Forget TT/heuristics from the previous game.
         Fen.Load(_board, Board.StartFen);
         ClearSelection();
         ClearLastMoveHighlight();
@@ -100,6 +110,21 @@ public sealed class BoardViewModel : ViewModelBase
         DepthText = "Depth: -";
         RefreshFromBoard();
         StartBackgroundAnalysis();
+    }
+
+    // Cancels the running search (if any) and waits until it has actually
+    // finished. The await is essential: cancellation is cooperative, and
+    // starting a new search while the old one is still winding down would
+    // have two searches mutating the engine's shared state at once.
+    private async Task StopSearchAsync()
+    {
+        _searchCancellation?.Cancel();
+        if (_searchTask is not null)
+        {
+            try { await _searchTask; }
+            catch (OperationCanceledException) { /* expected on cancellation */ }
+            _searchTask = null;
+        }
     }
 
     // Flips the board orientation (white at the bottom / black at the bottom).
@@ -175,41 +200,47 @@ public sealed class BoardViewModel : ViewModelBase
 
     private async void PlayHumanMoveAndRespond(Move move)
     {
-        // Stop the background analysis: the position it was studying is gone.
-        _searchCancellation?.Cancel();
-
-        ApplyMove(move);
-
-        if (CheckGameOver())
-            return;
-
-        // --- Engine's turn ---
+        // Block input for the whole exchange (including the brief wait for
+        // the background analysis to stop).
         IsEngineThinking = true;
-        StatusText = "NoaChess is thinking...";
-        _searchCancellation = new CancellationTokenSource();
-        CancellationToken token = _searchCancellation.Token;
-
-        // The search score is relative to the side to move at the root (the
-        // engine's side); capture it now to convert to white-relative display.
-        Color engineSide = _board.SideToMove;
-        int targetDepth = _engine.DefaultDepth;
-
-        // Progress<T> captures the UI SynchronizationContext here, so the
-        // callback runs on the UI thread even though the search reports from
-        // a background thread.
-        var progress = new Progress<SearchProgress>(p =>
-        {
-            if (token.IsCancellationRequested)
-                return; // Stale report from an aborted search.
-            EvaluationText = $"Eval: {FormatScore(p.Score, engineSide)}";
-            DepthText = $"Depth: {p.Depth}/{targetDepth} ply";
-        });
 
         try
         {
+            // Stop the background analysis: the position it was studying is gone.
+            await StopSearchAsync();
+
+            ApplyMove(move);
+
+            if (CheckGameOver())
+                return;
+
+            // --- Engine's turn ---
+            StatusText = "NoaChess is thinking...";
+            var cts = new CancellationTokenSource();
+            _searchCancellation = cts;
+            CancellationToken token = cts.Token;
+
+            // The search score is relative to the side to move at the root (the
+            // engine's side); capture it now to convert to white-relative display.
+            Color engineSide = _board.SideToMove;
+            int targetDepth = _engine.DefaultDepth;
+
+            // Progress<T> captures the UI SynchronizationContext here, so the
+            // callback runs on the UI thread even though the search reports from
+            // a background thread.
+            var progress = new Progress<SearchProgress>(p =>
+            {
+                if (token.IsCancellationRequested)
+                    return; // Stale report from an aborted search.
+                EvaluationText = $"Eval: {FormatScore(p.Score, engineSide)}";
+                DepthText = $"Depth: {p.Depth}/{targetDepth} ply";
+            });
+
             // The search is CPU intensive: it runs on the thread pool and the
             // await returns control to the UI thread, which keeps responding.
-            var result = await Task.Run(() => _engine.FindBestMove(_board, cancellation: token, progress: progress), token);
+            var searchTask = Task.Run(() => _engine.FindBestMove(_board, cancellation: token, progress: progress));
+            _searchTask = searchTask;
+            var result = await searchTask;
 
             // If "New game" was pressed meanwhile, the result no longer applies.
             if (token.IsCancellationRequested || result.BestMove == Move.None)
@@ -222,10 +253,6 @@ public sealed class BoardViewModel : ViewModelBase
                 // Keep analyzing (deeper) while the human thinks.
                 StartBackgroundAnalysis();
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Search deliberately cancelled: nothing to do.
         }
         finally
         {
@@ -291,10 +318,9 @@ public sealed class BoardViewModel : ViewModelBase
     // keeps interacting with the real Board on the UI thread at the same time.
     // The analysis is cancelled as soon as the user moves.
     //
-    // NOTE: without a transposition table (v0.2) this analysis cannot transfer
-    // knowledge to the engine's next search, so it does not make the engine
-    // stronger yet — it provides live evaluation for the user. Once the TT
-    // exists, this same search will warm it up and become real "pondering".
+    // Since v0.2 this is genuine pondering: the analysis fills the shared
+    // transposition table, so whatever it learned about the lines the user
+    // actually plays is reused by the engine's next search for free.
     private void StartBackgroundAnalysis()
     {
         if (GameState.GetResult(_board) != GameResult.Ongoing)
@@ -314,9 +340,10 @@ public sealed class BoardViewModel : ViewModelBase
             DepthText = $"Depth: {p.Depth}/{AnalysisDepth} ply";
         });
 
-        // Fire-and-forget: the analysis has no result to apply, it only
-        // reports progress. Cancellation makes FindBestMove return promptly.
-        _ = Task.Run(() => _engine.FindBestMove(analysisBoard, AnalysisDepth, cts.Token, progress));
+        // The analysis has no result to apply (it only reports progress), but
+        // its task is tracked so StopSearchAsync can await its termination
+        // before another search starts on the same engine instance.
+        _searchTask = Task.Run(() => _engine.FindBestMove(analysisBoard, AnalysisDepth, cts.Token, progress));
     }
 
     // Formats a search score for display. The engine reports scores relative

@@ -1,148 +1,358 @@
+using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine.Evaluation;
+using NoaChess.Engine.Heuristics;
+using NoaChess.Engine.Transposition;
 
 namespace NoaChess.Engine.Search;
 
-// Result of a search: best move and its score.
-public readonly record struct SearchResult(Move BestMove, int Score, long NodesSearched);
-
-// Progress snapshot reported after each completed iterative-deepening
-// iteration. Consumers (GUI status bar, UCI "info" lines) use it to show the
-// evaluation and the depth being analyzed while the engine thinks.
-public readonly record struct SearchProgress(int Depth, int Score, long NodesSearched, Move BestMove);
-
-// Basic Alpha-Beta search (negamax formulation) driven by iterative deepening.
+// Alpha-Beta search (negamax formulation), v0.2 feature set:
 //
-// Negamax is a simplification of minimax: since chess is zero-sum,
-// "what is good for me is bad for you", so instead of alternating max/min
-// functions the score is negated when switching sides: score = -Search(opponent).
+// - Iterative deepening: search depth 1, then 2, 3... Shallow iterations are a
+//   tiny fraction of the total cost and in exchange we get progress reporting,
+//   a complete result to fall back on when time runs out, and previous-depth
+//   information (TT move, score) that makes the next iteration much cheaper.
+// - Aspiration windows: instead of an infinite (alpha, beta) window, each
+//   iteration starts with a narrow window around the previous score. Narrow
+//   windows cut off much more; if the true score falls outside ("fail"), the
+//   iteration is re-searched with the full window.
+// - Transposition table: caches search results by Zobrist key (see
+//   TranspositionTable). Provides instant cutoffs on transpositions and the
+//   best-move hint that drives move ordering.
+// - Quiescence search at the horizon: instead of evaluating a position
+//   mid-capture-sequence (the "horizon effect": depth 4 sees QxP and stops
+//   before ...RxQ), leaf nodes keep searching captures until the position is
+//   quiet, then evaluate.
+// - Move ordering: TT move, MVV-LVA captures, killers, history (see MovePicker).
+// - Late Move Reductions (LMR): quiet moves sorted far down the list are
+//   almost never best, so they are first searched at reduced depth with a
+//   null window; only if one surprisingly beats alpha is it re-searched at
+//   full depth. This is what buys the extra plies.
+// - Time management: the search stops when its time budget or a cancellation
+//   is signalled, returning the best move of the last COMPLETED iteration.
 //
-// Alpha-Beta is the pruning that makes the search viable: alpha is "the best I
-// already have guaranteed" and beta "the best the opponent will allow me". If
-// a branch returns >= beta, the opponent will never enter it, and it is pruned
-// without exploring it fully.
-//
-// Iterative deepening searches depth 1, then 2, then 3... up to the target.
-// It looks wasteful but the shallow iterations are a tiny fraction of the
-// total cost, and in exchange we get progress reporting after each depth and
-// a complete result to fall back on if the search is cancelled mid-iteration.
-//
-// It deliberately does NOT include yet: quiescence, transposition table or
-// time management (they arrive in v0.2 per the roadmap).
+// Still missing (per roadmap): PVS, null-move pruning, SEE (v1.0).
 public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 {
-    // "Infinite" and mate scores. Mate is encoded far from int.MaxValue so the
-    // ply can be added/subtracted without overflowing. MateScore is public so
-    // UI layers can recognize mate scores and display "mate in N" instead of
-    // a huge centipawn number.
     private const int Infinity = 1_000_000;
     public const int MateScore = 100_000;
 
+    // Scores beyond this bound are mate scores and carry a distance-to-mate
+    // component that must be adjusted when stored in / read from the TT.
+    private const int MateBound = MateScore - 1_000;
+
+    // Half a pawn on each side of the previous score. Wide enough that most
+    // iterations stay inside, narrow enough to pay off.
+    private const int AspirationWindow = 50;
+
+    private const int MaxPly = 128;
+
+    // How often (in nodes) the time/cancellation check runs. A power-of-two
+    // mask makes the check nearly free.
+    private const int StopCheckInterval = 2048;
+
     private readonly IPositionEvaluator _evaluator = evaluator;
+    private readonly TranspositionTable _tt = new(sizeMb: 64);
+    private readonly KillerTable _killers = new(MaxPly);
+    private readonly HistoryTable _history = new();
+    private readonly Stopwatch _timer = new();
+
     private long _nodes;
+    private long _timeLimitMs;
     private CancellationToken _cancellation;
 
-    // Searches for the best move using iterative deepening up to 'depth'.
-    // The CancellationToken lets the GUI abort the search without blocking the
-    // interface; in that case the result of the last completed iteration is
-    // returned. 'progress' (optional) is invoked after each completed depth.
-    public SearchResult FindBestMove(Board board, int depth,
+    // Set when the time budget or a cancellation fires. From that point every
+    // node returns immediately and all partial scores are discarded: only the
+    // last fully completed iteration is trusted.
+    private bool _stopped;
+
+    // Clears all inter-search state (TT, killers, history). Called on
+    // "ucinewgame" / GUI new game: results from a previous game would still be
+    // keyed correctly by Zobrist, but a fresh table avoids stale-depth noise.
+    public void Reset()
+    {
+        _tt.Clear();
+        _killers.Clear();
+        _history.Clear();
+    }
+
+    public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
                                      IProgress<SearchProgress>? progress = null)
     {
-        if (depth < 1)
-            throw new ArgumentOutOfRangeException(nameof(depth), "Minimum depth is 1.");
+        if (limits.MaxDepth < 1)
+            throw new ArgumentOutOfRangeException(nameof(limits), "Minimum depth is 1.");
 
         _nodes = 0;
+        _stopped = false;
         _cancellation = cancellation;
+        _timeLimitMs = limits.MaxTimeMs;
+        _timer.Restart();
+
+        // Killers are per-search (ply meanings change); history persists
+        // between searches but decays so fresh information dominates.
+        _killers.Clear();
+        _history.Decay();
 
         SearchResult best = default;
+        int previousScore = 0;
 
-        for (int d = 1; d <= depth; d++)
+        for (int depth = 1; depth <= limits.MaxDepth; depth++)
         {
-            SearchResult iteration = SearchAtDepth(board, d);
-
-            // A cancelled iteration may be based on partial information: keep
-            // the previous (complete) result unless we have nothing at all.
-            if (cancellation.IsCancellationRequested)
-            {
-                if (best.BestMove == Move.None)
-                    best = iteration;
+            CheckStop();
+            if (_stopped)
                 break;
-            }
 
-            best = iteration;
-            progress?.Report(new SearchProgress(d, iteration.Score, _nodes, iteration.BestMove));
+            // Aspiration window around the previous iteration's score (only
+            // once there is a reasonably stable score to aspire around).
+            int alpha = depth >= 3 ? previousScore - AspirationWindow : -Infinity;
+            int beta = depth >= 3 ? previousScore + AspirationWindow : Infinity;
+
+            int score = SearchRoot(board, depth, alpha, beta, out Move bestMove);
+
+            // Fail low/high: the true score is outside the window, so the
+            // result is just a bound. Re-search this depth with a full window.
+            if (!_stopped && (score <= alpha || score >= beta))
+                score = SearchRoot(board, depth, -Infinity, Infinity, out bestMove);
+
+            if (_stopped)
+                break; // Interrupted iteration: keep the previous result.
+
+            best = new SearchResult(bestMove, score, _nodes);
+            previousScore = score;
+            progress?.Report(new SearchProgress(depth, score, _nodes, bestMove));
+
+            // A forced mate found: deeper iterations cannot improve it.
+            if (Math.Abs(score) > MateBound)
+                break;
+        }
+
+        // Extreme fallback (e.g. cancelled before depth 1 finished): never
+        // return "no move" while legal moves exist — a GUI or match runner
+        // must always receive a playable bestmove.
+        if (best.BestMove == Move.None)
+        {
+            var legal = MoveGenerator.GenerateLegalMoves(board);
+            if (legal.Count > 0)
+                best = new SearchResult(legal[0], 0, _nodes);
         }
 
         return best;
     }
 
-    // One fixed-depth Alpha-Beta search from the root.
-    private SearchResult SearchAtDepth(Board board, int depth)
+    // Root node. Separated from Negamax because it must track WHICH move is
+    // best (inner nodes only need the score) and must never cut off on the TT
+    // (we need a move, not just a bound).
+    private int SearchRoot(Board board, int depth, int alpha, int beta, out Move bestMove)
     {
+        bestMove = Move.None;
+
         var moves = MoveGenerator.GenerateLegalMoves(board);
-        OrderMoves(moves);
 
-        Move bestMove = Move.None;
+        _tt.Probe(board.ZobristKey, out TTEntry entry);
+        MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0);
+
         int bestScore = -Infinity;
-        int alpha = -Infinity;
 
-        // The root is handled separately so we can remember WHICH move produced
-        // the best score (inner nodes only return the score).
         foreach (Move move in moves)
         {
-            if (_cancellation.IsCancellationRequested && bestMove != Move.None)
-                break; // Cancelled: return the best seen so far.
-
             board.MakeMove(move);
-            int score = -Negamax(board, depth - 1, -Infinity, -alpha, ply: 1);
+            int score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1);
             board.UnmakeMove();
+
+            // A score computed after the stop signal is garbage; only use it
+            // if we have nothing at all yet.
+            if (_stopped && bestMove != Move.None)
+                break;
 
             if (score > bestScore)
             {
                 bestScore = score;
                 bestMove = move;
-                alpha = Math.Max(alpha, score);
+                if (score > alpha)
+                    alpha = score;
             }
+
+            if (alpha >= beta)
+                break;
         }
 
-        return new SearchResult(bestMove, bestScore, _nodes);
+        if (!_stopped)
+            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, 0),
+                      bestScore >= beta ? BoundType.LowerBound : BoundType.Exact, bestMove);
+
+        return bestScore;
     }
 
     private int Negamax(Board board, int depth, int alpha, int beta, int ply)
     {
-        _nodes++;
-
-        // Cancellation is checked every so many nodes to avoid paying the token
-        // cost at every node. Returning alpha cuts the branch cleanly.
-        if ((_nodes & 0xFFF) == 0 && _cancellation.IsCancellationRequested)
-            return alpha;
+        if ((++_nodes & (StopCheckInterval - 1)) == 0)
+            CheckStop();
+        if (_stopped)
+            return 0;
 
         if (board.HalfmoveClock >= 100)
             return 0; // Draw by the fifty-move rule.
 
-        if (depth == 0)
-            return _evaluator.Evaluate(board);
+        // ---- Transposition table probe ----
+        Move ttMove = Move.None;
+        if (_tt.Probe(board.ZobristKey, out TTEntry entry))
+        {
+            ttMove = entry.BestMove; // Always useful for ordering.
+
+            // The stored score is only reusable if it comes from a search at
+            // least as deep as the one we are about to do, and its bound type
+            // allows a conclusion within the current window.
+            if (entry.Depth >= depth)
+            {
+                int ttScore = FromTT(entry.Score, ply);
+                switch (entry.Bound)
+                {
+                    case BoundType.Exact:
+                        return ttScore;
+                    case BoundType.LowerBound when ttScore >= beta:
+                        return ttScore;
+                    case BoundType.UpperBound when ttScore <= alpha:
+                        return ttScore;
+                }
+            }
+        }
+
+        // ---- Horizon: switch to quiescence instead of a raw evaluation ----
+        if (depth <= 0)
+            return Quiescence(board, alpha, beta, ply);
+
+        bool inCheck = board.IsInCheck();
 
         var moves = MoveGenerator.GenerateLegalMoves(board);
 
-        // No legal moves: mate or stalemate. The ply is added to the mate score
-        // so the engine prefers the SHORTEST mate (mate in 2 scores better than
-        // in 5) and drags it out as long as possible when it is the one being mated.
+        // No legal moves: mate or stalemate. The ply is added to the mate
+        // score so the engine prefers the SHORTEST mate and, when mated,
+        // drags it out as long as possible.
         if (moves.Count == 0)
-            return board.IsInCheck() ? -MateScore + ply : 0;
+            return inCheck ? -MateScore + ply : 0;
 
-        OrderMoves(moves);
+        MovePicker.Order(moves, board, ttMove, _killers, _history, ply);
+
+        int originalAlpha = alpha;
+        Move bestMove = Move.None;
+        int bestScore = -Infinity;
+        int searched = 0;
+
+        foreach (Move move in moves)
+        {
+            bool isQuiet = !move.IsCapture && !move.IsPromotion;
+
+            board.MakeMove(move);
+
+            int score;
+
+            // ---- Late Move Reductions ----
+            // Quiet moves ranked far down the ordered list are rarely best.
+            // Search them shallower with a null window (cheapest possible
+            // refutation attempt); only re-search properly if they surprise.
+            // Never reduce captures/promotions, while in check, or moves that
+            // give check (tactical moves deserve full depth).
+            if (searched >= 4 && depth >= 3 && isQuiet && !inCheck && !board.IsInCheck())
+            {
+                score = -Negamax(board, depth - 2, -alpha - 1, -alpha, ply + 1);
+                if (score > alpha)
+                    score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1);
+            }
+            else
+            {
+                score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1);
+            }
+
+            board.UnmakeMove();
+            searched++;
+
+            if (_stopped)
+                return 0;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestMove = move;
+
+                if (score > alpha)
+                {
+                    alpha = score;
+
+                    if (alpha >= beta)
+                    {
+                        // Beta cutoff by a quiet move: exactly the signal the
+                        // killer and history heuristics feed on.
+                        if (isQuiet)
+                        {
+                            _killers.Store(ply, move);
+                            _history.AddBonus(board.SideToMove, move, depth);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ---- Store the result in the TT with the right bound type ----
+        BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
+                        : bestScore >= beta ? BoundType.LowerBound
+                        : BoundType.Exact;
+        _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply), bound, bestMove);
+
+        return bestScore;
+    }
+
+    // Quiescence search: at the horizon, keep searching CAPTURES (and queen
+    // promotions) until the position is quiet, then evaluate. This removes the
+    // horizon effect: a depth-limited search would otherwise happily evaluate
+    // a position right after QxP, never seeing the recapture ...RxQ one ply
+    // beyond its horizon.
+    private int Quiescence(Board board, int alpha, int beta, int ply)
+    {
+        if ((++_nodes & (StopCheckInterval - 1)) == 0)
+            CheckStop();
+        if (_stopped)
+            return 0;
+
+        // "Stand pat": the side to move is never forced to capture, so the
+        // static evaluation is a floor for its score. If even doing nothing
+        // beats beta, the opponent will avoid this line — cut immediately.
+        int standPat = _evaluator.Evaluate(board);
+        if (standPat >= beta)
+            return beta;
+        if (standPat > alpha)
+            alpha = standPat;
+        if (ply >= MaxPly)
+            return standPat;
+
+        // Pseudo-legal generation + per-move legality check: cheaper than the
+        // full legal generator when we only need a handful of captures.
+        var moves = MoveGenerator.GeneratePseudoLegalMoves(board);
+        moves.RemoveAll(m => !m.IsCapture && m.Flag != MoveFlag.PromoQueen);
+        MovePicker.OrderCaptures(moves, board);
+
+        Color us = board.SideToMove;
 
         foreach (Move move in moves)
         {
             board.MakeMove(move);
-            int score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1);
+
+            // Discard moves that leave our own king in check.
+            if (board.IsSquareAttacked(board.KingSquare(us), board.SideToMove))
+            {
+                board.UnmakeMove();
+                continue;
+            }
+
+            int score = -Quiescence(board, -beta, -alpha, ply + 1);
             board.UnmakeMove();
 
+            if (_stopped)
+                return 0;
+
             if (score >= beta)
-                return beta; // Beta cutoff: the opponent will never allow reaching this.
+                return beta;
             if (score > alpha)
                 alpha = score;
         }
@@ -150,9 +360,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return alpha;
     }
 
-    // Very simple move ordering: captures first. A good ordering makes
-    // Alpha-Beta prune much earlier (ideally the best move is tried first).
-    // In v0.2 it will be replaced by MVV-LVA, killer moves and history.
-    private static void OrderMoves(List<Move> moves) =>
-        moves.Sort(static (a, b) => b.IsCapture.CompareTo(a.IsCapture));
+    private void CheckStop()
+    {
+        if (_cancellation.IsCancellationRequested || _timer.ElapsedMilliseconds >= _timeLimitMs)
+            _stopped = true;
+    }
+
+    // Mate scores encode the distance to mate from the ROOT ("mate in 5 plies
+    // from where the search started"). Stored in the TT they must be relative
+    // to the NODE instead, because the same position can be reached at
+    // different plies from different roots. These two helpers convert between
+    // both conventions when storing/probing.
+    private static int ToTT(int score, int ply)
+    {
+        if (score > MateBound) return score + ply;
+        if (score < -MateBound) return score - ply;
+        return score;
+    }
+
+    private static int FromTT(int score, int ply)
+    {
+        if (score > MateBound) return score - ply;
+        if (score < -MateBound) return score + ply;
+        return score;
+    }
 }
