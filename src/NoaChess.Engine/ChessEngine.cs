@@ -42,4 +42,11 @@ public sealed class ChessEngine
 
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
+
+    // Active parameter profile (Default/Bullet, see EngineProfile).
+    public Profiles.EngineProfile Profile
+    {
+        get => _search.Profile;
+        set => _search.Profile = value;
+    }
 }

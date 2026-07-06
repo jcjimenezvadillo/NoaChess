@@ -38,11 +38,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // component that must be adjusted when stored in / read from the TT.
     private const int MateBound = MateScore - 1_000;
 
-    // Half a pawn on each side of the previous score. Wide enough that most
-    // iterations stay inside, narrow enough to pay off.
-    private const int AspirationWindow = 50;
-
     private const int MaxPly = 128;
+
+    // Tunable search parameters (aspiration window width, LMR triggers...).
+    // Selected via the UCI "Profile" option; see EngineProfile.
+    public Profiles.EngineProfile Profile { get; set; } = Profiles.EngineProfile.Default;
 
     // How often (in nodes) the time/cancellation check runs. A power-of-two
     // mask makes the check nearly free.
@@ -54,8 +54,24 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly HistoryTable _history = new();
     private readonly Stopwatch _timer = new();
 
+    // One reusable MoveList per ply (plus root and PV scratch lists): move
+    // generation in the search allocates NOTHING. At any moment a given ply
+    // has at most one active node, so sharing the list per ply is safe.
+    private readonly MoveList[] _moveLists = CreateMoveLists();
+    private readonly MoveList _rootMoves = new();
+    private readonly MoveList _pvScratch = new();
+
+    private static MoveList[] CreateMoveLists()
+    {
+        var lists = new MoveList[MaxPly + 2];
+        for (int i = 0; i < lists.Length; i++)
+            lists[i] = new MoveList();
+        return lists;
+    }
+
     private long _nodes;
     private long _hardTimeMs;
+    private long _softTimeMs;
     private long _maxNodes;
     private CancellationToken _cancellation;
 
@@ -63,6 +79,14 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // that point every node returns immediately and all partial scores are
     // discarded: only the last fully completed iteration is trusted.
     private bool _stopped;
+
+    // Set when the SOFT budget expires at a root-move boundary. Unlike a hard
+    // stop, everything searched so far in the iteration is fully valid — the
+    // iteration just does not continue with the remaining root moves. Without
+    // this cut, an iteration started 1 ms before the soft limit would run all
+    // the way to the hard limit (4x soft), overspending on nearly every move
+    // and flagging in long games.
+    private bool _softStopped;
 
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
@@ -85,10 +109,16 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         _nodes = 0;
         _stopped = false;
+        _softStopped = false;
         _cancellation = cancellation;
         _hardTimeMs = limits.HardTimeMs;
+        _softTimeMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
         _timer.Restart();
+
+        // Clock mode is recognizable by soft < hard; "movetime" sets them
+        // equal and the budget must then be used in full, not predictively.
+        bool clockMode = limits.SoftTimeMs < limits.HardTimeMs;
 
         // Killers are per-search (ply meanings change); history persists
         // between searches but decays so fresh information dominates.
@@ -104,25 +134,41 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             if (_stopped)
                 break;
 
-            // Soft budget: starting an iteration we most likely cannot finish
-            // is wasted time — better to move now and save the clock.
+            // Predictive soft cut (clock mode only): the next iteration costs
+            // at least as much as everything spent so far, so starting one
+            // past HALF the soft budget means finishing well beyond it.
+            // Better to move now and bank the clock.
+            if (depth > 1 && clockMode && _timer.ElapsedMilliseconds * 2 >= limits.SoftTimeMs)
+                break;
             if (depth > 1 && _timer.ElapsedMilliseconds >= limits.SoftTimeMs)
                 break;
 
             // Aspiration window around the previous iteration's score (only
             // once there is a reasonably stable score to aspire around).
-            int alpha = depth >= 3 ? previousScore - AspirationWindow : -Infinity;
-            int beta = depth >= 3 ? previousScore + AspirationWindow : Infinity;
+            int window = Profile.AspirationWindow;
+            int alpha = depth >= 3 ? previousScore - window : -Infinity;
+            int beta = depth >= 3 ? previousScore + window : Infinity;
 
             int score = SearchRoot(board, depth, alpha, beta, out Move bestMove);
 
             // Fail low/high: the true score is outside the window, so the
             // result is just a bound. Re-search this depth with a full window.
-            if (!_stopped && (score <= alpha || score >= beta))
+            if (!_stopped && !_softStopped && (score <= alpha || score >= beta))
                 score = SearchRoot(board, depth, -Infinity, Infinity, out bestMove);
 
             if (_stopped)
-                break; // Interrupted iteration: keep the previous result.
+                break; // Hard interruption: keep the previous result.
+
+            if (_softStopped)
+            {
+                // Soft cut mid-iteration: the moves searched so far (starting
+                // with the previous iteration's best, thanks to TT ordering)
+                // were searched completely — their best is at least as good
+                // as the previous iteration's answer. Use it and stop.
+                if (bestMove != Move.None)
+                    best = new SearchResult(bestMove, score, _nodes);
+                break;
+            }
 
             best = new SearchResult(bestMove, score, _nodes);
             previousScore = score;
@@ -154,7 +200,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     {
         bestMove = Move.None;
 
-        var moves = MoveGenerator.GenerateLegalMoves(board);
+        MoveList moves = _rootMoves;
+        MoveGenerator.GenerateLegalMoves(board, moves);
 
         _tt.Probe(board.ZobristKey, out TTEntry entry);
         MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0);
@@ -162,8 +209,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         int bestScore = -Infinity;
         int searched = 0;
 
-        foreach (Move move in moves)
+        for (int i = 0; i < moves.Count; i++)
         {
+            Move move = moves[i];
             board.MakeMove(move);
 
             // PVS at the root: first move with the full window, the rest with
@@ -198,9 +246,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             if (alpha >= beta)
                 break;
+
+            // Soft time boundary: root moves are the only place where the
+            // search can stop "gracefully" — everything searched so far is
+            // complete and usable. Requires at least one searched move and
+            // never fires at depth 1 (a full depth-1 pass costs nothing and
+            // guarantees a sane fallback move).
+            if (depth > 1 && bestMove != Move.None
+                && _timer.ElapsedMilliseconds >= _softTimeMs)
+            {
+                _softStopped = true;
+                break;
+            }
         }
 
-        if (!_stopped)
+        // A partial (soft-stopped) iteration must not be recorded in the TT
+        // as if the position had been fully searched at this depth.
+        if (!_stopped && !_softStopped)
             _tt.Store(board.ZobristKey, depth, ToTT(bestScore, 0),
                       bestScore >= beta ? BoundType.LowerBound : BoundType.Exact, bestMove);
 
@@ -213,6 +275,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             CheckStop();
         if (_stopped)
             return 0;
+
+        // Ply overflow guard (check extensions could otherwise push past the
+        // per-ply structures in pathological positions).
+        if (ply >= MaxPly)
+            return _evaluator.Evaluate(board);
 
         // ---- Draws by rule. Checked before the TT: a cached score cannot
         //      know how many times THIS game path repeated the position. ----
@@ -275,7 +342,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 return beta;
         }
 
-        var moves = MoveGenerator.GenerateLegalMoves(board);
+        MoveList moves = _moveLists[ply];
+        MoveGenerator.GenerateLegalMoves(board, moves);
 
         // No legal moves: mate or stalemate. The ply is added to the mate
         // score so the engine prefers the SHORTEST mate and, when mated,
@@ -290,8 +358,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         int bestScore = -Infinity;
         int searched = 0;
 
-        foreach (Move move in moves)
+        for (int i = 0; i < moves.Count; i++)
         {
+            Move move = moves[i];
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
             // ---- SEE pruning near the horizon ----
@@ -320,9 +389,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 // ---- Late Move Reductions ----
                 // Quiet moves ranked far down the ordered list are rarely
                 // best: probe them one ply shallower. Tactical moves, checks
-                // and check evasions always get full depth.
-                int reduction = (searched >= 4 && depth >= 3 && isQuiet
-                                 && !inCheck && !board.IsInCheck()) ? 1 : 0;
+                // and check evasions always get full depth. Thresholds come
+                // from the active profile (Bullet reduces sooner).
+                int reduction = (searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
+                                 && isQuiet && !inCheck && !board.IsInCheck()) ? 1 : 0;
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
                 score = -Negamax(board, depth - 1 - reduction, -alpha - 1, -alpha,
@@ -405,16 +475,24 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (ply >= MaxPly)
             return standPat;
 
-        // Pseudo-legal generation + per-move legality check: cheaper than the
-        // full legal generator when we only need a handful of captures.
-        var moves = MoveGenerator.GeneratePseudoLegalMoves(board);
-        moves.RemoveAll(m => !m.IsCapture && m.Flag != MoveFlag.PromoQueen);
+        // Captures-only pseudo-legal generation + per-move legality check:
+        // much cheaper than the full legal generator, and quiescence nodes
+        // are the majority of all search nodes.
+        MoveList moves = _moveLists[ply];
+        MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: true);
         MovePicker.OrderCaptures(moves, board);
 
         Color us = board.SideToMove;
 
-        foreach (Move move in moves)
+        for (int i = 0; i < moves.Count; i++)
         {
+            Move move = moves[i];
+
+            // The captures-only generator also emits under-promotions; in
+            // quiescence only the queen promotion is worth searching.
+            if (move.IsPromotion && !move.IsCapture && move.Flag != MoveFlag.PromoQueen)
+                continue;
+
             // SEE pruning: a losing capture cannot raise the stand-pat floor —
             // in quiescence there is no compensation coming later.
             if (move.IsCapture && !move.IsPromotion
@@ -455,6 +533,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // TT index collision could otherwise inject a corrupt move.
     private Move[] ExtractPv(Board board, Move firstMove, int maxLength)
     {
+        bool IsLegal(Move move)
+        {
+            MoveGenerator.GenerateLegalMoves(board, _pvScratch);
+            return _pvScratch.Contains(move);
+        }
+
         var pv = new List<Move>(maxLength) { firstMove };
         board.MakeMove(firstMove);
         int made = 1;
@@ -462,7 +546,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         while (pv.Count < maxLength
                && _tt.Probe(board.ZobristKey, out TTEntry entry)
                && entry.BestMove != Move.None
-               && MoveGenerator.GenerateLegalMoves(board).Contains(entry.BestMove))
+               && IsLegal(entry.BestMove))
         {
             pv.Add(entry.BestMove);
             board.MakeMove(entry.BestMove);

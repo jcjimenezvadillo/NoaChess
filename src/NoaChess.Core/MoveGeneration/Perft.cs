@@ -12,7 +12,19 @@ public static class Perft
         if (depth == 0)
             return 1;
 
-        var moves = MoveGenerator.GenerateLegalMoves(board);
+        // One reusable MoveList per recursion level: perft doubles as the
+        // move-generation benchmark, so it uses the allocation-free path.
+        var lists = new MoveList[depth];
+        for (int i = 0; i < depth; i++)
+            lists[i] = new MoveList();
+
+        return Count(board, depth, lists);
+    }
+
+    private static long Count(Board board, int depth, MoveList[] lists)
+    {
+        MoveList moves = lists[depth - 1];
+        MoveGenerator.GenerateLegalMoves(board, moves);
 
         // Common shortcut: at depth 1 the result is simply the number of legal
         // moves, without needing to make them.
@@ -20,10 +32,10 @@ public static class Perft
             return moves.Count;
 
         long nodes = 0;
-        foreach (Move move in moves)
+        for (int i = 0; i < moves.Count; i++)
         {
-            board.MakeMove(move);
-            nodes += Count(board, depth - 1);
+            board.MakeMove(moves[i]);
+            nodes += Count(board, depth - 1, lists);
             board.UnmakeMove();
         }
         return nodes;
