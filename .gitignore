@@ -69,3 +69,4 @@ nunit-*.xml
 # Local environment files
 .env
 .env.*
+/NoaChess_TECHNICAL_ROADMAP_v2_PLUS.md
