@@ -50,7 +50,7 @@ public sealed class UciLoop
             {
                 case "uci":
                     // Identification + option declarations + end of handshake.
-                    _output.WriteLine("id name NoaChess 1.1.0");
+                    _output.WriteLine("id name NoaChess 1.1.1");
                     _output.WriteLine("id author NoaChess Team");
                     _options.Print(_output);
                     _output.WriteLine("uciok");

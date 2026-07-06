@@ -12,7 +12,7 @@ public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
     public int Threads { get; private set; } = 1;
-    public int MoveOverhead { get; private set; } = 30;
+    public int MoveOverhead { get; private set; } = 100;
     public bool UseNnue { get; private set; }
     public string Profile { get; private set; } = "Default";
 
@@ -21,7 +21,7 @@ public sealed class UciOptions
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
         output.WriteLine("option name Threads type spin default 1 min 1 max 1");
-        output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
+        output.WriteLine("option name MoveOverhead type spin default 100 min 0 max 5000");
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet");
     }

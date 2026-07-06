@@ -24,6 +24,27 @@ public static class StaticExchangeEvaluator
     // means "capturing" it ends any sequence in practice.
     private static readonly int[] Value = [100, 320, 330, 500, 900, 20_000, 0];
 
+    // Fast check: does this capture lose more than 'threshold' centipawns?
+    // Shortcut first: capturing an equal-or-higher-valued victim can never
+    // lose material (worst case: victim won, attacker lost, net >= 0), so
+    // the full swap algorithm — comparatively expensive, and this is called
+    // for every capture at every node — only runs for "upward" captures
+    // like QxP or RxN.
+    public static bool LosesAtLeast(Board board, Move move, int threshold = 0)
+    {
+        if (move.IsPromotion)
+            return false;
+
+        PieceType victim = move.Flag == MoveFlag.EnPassant
+            ? PieceType.Pawn
+            : board.PieceTypeAt(move.To);
+
+        if (Value[(int)victim] >= Value[(int)board.PieceTypeAt(move.From)])
+            return false;
+
+        return Evaluate(board, move) < -threshold;
+    }
+
     // Net material gain (in centipawns, from the mover's point of view) of
     // playing 'move' and resolving all recaptures on the destination square.
     public static int Evaluate(Board board, Move move)

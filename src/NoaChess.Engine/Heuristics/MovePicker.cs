@@ -89,10 +89,11 @@ public static class MovePicker
             int mvvLva = PieceValue[(int)victim] * 10 - PieceValue[(int)attacker];
 
             // SEE decides the band: winning/equal exchanges up front, losing
-            // ones at the very back.
-            return StaticExchangeEvaluator.Evaluate(board, move) >= 0
-                ? GoodCaptureBase + mvvLva
-                : LosingCaptureBase + mvvLva;
+            // ones at the very back (LosesAtLeast short-circuits the full
+            // exchange computation for downward/equal captures).
+            return StaticExchangeEvaluator.LosesAtLeast(board, move)
+                ? LosingCaptureBase + mvvLva
+                : GoodCaptureBase + mvvLva;
         }
 
         if (move.IsPromotion)
