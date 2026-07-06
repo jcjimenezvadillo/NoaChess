@@ -6,32 +6,29 @@ using NoaChess.Engine.Transposition;
 
 namespace NoaChess.Engine.Search;
 
-// Alpha-Beta search (negamax formulation), v0.2 feature set:
+// Alpha-Beta search (negamax formulation), v1.0 feature set.
 //
-// - Iterative deepening: search depth 1, then 2, 3... Shallow iterations are a
-//   tiny fraction of the total cost and in exchange we get progress reporting,
-//   a complete result to fall back on when time runs out, and previous-depth
-//   information (TT move, score) that makes the next iteration much cheaper.
-// - Aspiration windows: instead of an infinite (alpha, beta) window, each
-//   iteration starts with a narrow window around the previous score. Narrow
-//   windows cut off much more; if the true score falls outside ("fail"), the
-//   iteration is re-searched with the full window.
-// - Transposition table: caches search results by Zobrist key (see
-//   TranspositionTable). Provides instant cutoffs on transpositions and the
-//   best-move hint that drives move ordering.
-// - Quiescence search at the horizon: instead of evaluating a position
-//   mid-capture-sequence (the "horizon effect": depth 4 sees QxP and stops
-//   before ...RxQ), leaf nodes keep searching captures until the position is
-//   quiet, then evaluate.
-// - Move ordering: TT move, MVV-LVA captures, killers, history (see MovePicker).
-// - Late Move Reductions (LMR): quiet moves sorted far down the list are
-//   almost never best, so they are first searched at reduced depth with a
-//   null window; only if one surprisingly beats alpha is it re-searched at
-//   full depth. This is what buys the extra plies.
-// - Time management: the search stops when its time budget or a cancellation
-//   is signalled, returning the best move of the last COMPLETED iteration.
+// On top of the v0.2 baseline (iterative deepening, aspiration windows,
+// transposition table, quiescence, killers/history ordering, LMR):
 //
-// Still missing (per roadmap): PVS, null-move pruning, SEE (v1.0).
+// - PVS (Principal Variation Search): only the first move of each node is
+//   searched with the full (alpha, beta) window. The rest get a "null window"
+//   (alpha, alpha+1) — the cheapest possible way to prove "this move is NOT
+//   better than what we already have", which is true for almost all of them.
+//   Only the rare move that beats alpha is re-searched with the real window.
+// - Null Move Pruning: before trying real moves, let the opponent move twice
+//   in a row (we "pass"). If our position is STILL >= beta after that, it is
+//   so good that the branch can be pruned. Disabled in check (passing is
+//   illegal), in pawn endgames (zugzwang breaks the assumption) and twice in
+//   a row (the position must be re-anchored to reality between passes).
+// - Check extension: positions in check are searched one ply deeper — forced
+//   sequences are cheap (few legal moves) and hide most tactics.
+// - SEE pruning: losing captures (per static exchange evaluation) are skipped
+//   near the horizon and ordered last elsewhere.
+// - Repetition detection: a single repetition already scores as a draw inside
+//   the search (if a position repeated once, nothing stops it repeating again).
+// - Soft/hard time management: past the soft budget no new iteration starts;
+//   past the hard deadline the search aborts and keeps the last completed one.
 public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 {
     private const int Infinity = 1_000_000;
@@ -58,17 +55,20 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly Stopwatch _timer = new();
 
     private long _nodes;
-    private long _timeLimitMs;
+    private long _hardTimeMs;
+    private long _maxNodes;
     private CancellationToken _cancellation;
 
-    // Set when the time budget or a cancellation fires. From that point every
-    // node returns immediately and all partial scores are discarded: only the
-    // last fully completed iteration is trusted.
+    // Set when the hard deadline, the node cap or a cancellation fires. From
+    // that point every node returns immediately and all partial scores are
+    // discarded: only the last fully completed iteration is trusted.
     private bool _stopped;
 
+    // Reallocates the transposition table ("setoption name Hash value N").
+    public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
+
     // Clears all inter-search state (TT, killers, history). Called on
-    // "ucinewgame" / GUI new game: results from a previous game would still be
-    // keyed correctly by Zobrist, but a fresh table avoids stale-depth noise.
+    // "ucinewgame" / GUI new game.
     public void Reset()
     {
         _tt.Clear();
@@ -86,7 +86,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _nodes = 0;
         _stopped = false;
         _cancellation = cancellation;
-        _timeLimitMs = limits.MaxTimeMs;
+        _hardTimeMs = limits.HardTimeMs;
+        _maxNodes = limits.MaxNodes;
         _timer.Restart();
 
         // Killers are per-search (ply meanings change); history persists
@@ -101,6 +102,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         {
             CheckStop();
             if (_stopped)
+                break;
+
+            // Soft budget: starting an iteration we most likely cannot finish
+            // is wasted time — better to move now and save the clock.
+            if (depth > 1 && _timer.ElapsedMilliseconds >= limits.SoftTimeMs)
                 break;
 
             // Aspiration window around the previous iteration's score (only
@@ -120,7 +126,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             best = new SearchResult(bestMove, score, _nodes);
             previousScore = score;
-            progress?.Report(new SearchProgress(depth, score, _nodes, bestMove));
+            progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
+                                                ExtractPv(board, bestMove, depth)));
 
             // A forced mate found: deeper iterations cannot improve it.
             if (Math.Abs(score) > MateBound)
@@ -153,12 +160,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0);
 
         int bestScore = -Infinity;
+        int searched = 0;
 
         foreach (Move move in moves)
         {
             board.MakeMove(move);
-            int score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1);
+
+            // PVS at the root: first move with the full window, the rest with
+            // a null window plus re-search when they surprise.
+            int score;
+            if (searched == 0)
+            {
+                score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+            }
+            else
+            {
+                score = -Negamax(board, depth - 1, -alpha - 1, -alpha, ply: 1, allowNull: true);
+                if (score > alpha && !_stopped)
+                    score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+            }
+
             board.UnmakeMove();
+            searched++;
 
             // A score computed after the stop signal is garbage; only use it
             // if we have nothing at all yet.
@@ -184,15 +207,24 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return bestScore;
     }
 
-    private int Negamax(Board board, int depth, int alpha, int beta, int ply)
+    private int Negamax(Board board, int depth, int alpha, int beta, int ply, bool allowNull)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
         if (_stopped)
             return 0;
 
-        if (board.HalfmoveClock >= 100)
-            return 0; // Draw by the fifty-move rule.
+        // ---- Draws by rule. Checked before the TT: a cached score cannot
+        //      know how many times THIS game path repeated the position. ----
+        if (board.HalfmoveClock >= 100 || board.CountRepetitions() >= 1)
+            return 0;
+
+        bool inCheck = board.IsInCheck();
+
+        // Check extension: forced positions are cheap to search (few legal
+        // replies) and hide most tactics — give them one extra ply.
+        if (inCheck)
+            depth++;
 
         // ---- Transposition table probe ----
         Move ttMove = Move.None;
@@ -222,7 +254,26 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (depth <= 0)
             return Quiescence(board, alpha, beta, ply);
 
-        bool inCheck = board.IsInCheck();
+        // ---- Null Move Pruning ----
+        // "Pass" the turn: if the opponent moving twice in a row still cannot
+        // bring us below beta, no real move will either — prune the branch.
+        // Skipped: in check (passing is illegal), without non-pawn material
+        // (zugzwang), right after another null move, and at reduced depths
+        // where the verification search would be meaningless.
+        if (allowNull && !inCheck && depth >= 3 && ply > 0
+            && board.HasNonPawnMaterial(board.SideToMove))
+        {
+            int reduction = 2 + depth / 4;
+            board.MakeNullMove();
+            int nullScore = -Negamax(board, depth - 1 - reduction, -beta, -beta + 1,
+                                     ply + 1, allowNull: false);
+            board.UnmakeNullMove();
+
+            if (_stopped)
+                return 0;
+            if (nullScore >= beta && nullScore < MateBound)
+                return beta;
+        }
 
         var moves = MoveGenerator.GenerateLegalMoves(board);
 
@@ -243,25 +294,50 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         {
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
+            // ---- SEE pruning near the horizon ----
+            // A capture that clearly loses material (per static exchange
+            // evaluation) will not recover the loss in the couple of plies
+            // left; skip it. Never prunes the first move (something must be
+            // searched) nor while in check.
+            if (depth <= 2 && searched > 0 && !inCheck
+                && move.IsCapture && !move.IsPromotion
+                && StaticExchangeEvaluator.Evaluate(board, move) < -100)
+            {
+                continue;
+            }
+
             board.MakeMove(move);
 
             int score;
 
-            // ---- Late Move Reductions ----
-            // Quiet moves ranked far down the ordered list are rarely best.
-            // Search them shallower with a null window (cheapest possible
-            // refutation attempt); only re-search properly if they surprise.
-            // Never reduce captures/promotions, while in check, or moves that
-            // give check (tactical moves deserve full depth).
-            if (searched >= 4 && depth >= 3 && isQuiet && !inCheck && !board.IsInCheck())
+            if (searched == 0)
             {
-                score = -Negamax(board, depth - 2, -alpha - 1, -alpha, ply + 1);
-                if (score > alpha)
-                    score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1);
+                // PVS: the first (best-ordered) move gets the full window.
+                score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1, allowNull: true);
             }
             else
             {
-                score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1);
+                // ---- Late Move Reductions ----
+                // Quiet moves ranked far down the ordered list are rarely
+                // best: probe them one ply shallower. Tactical moves, checks
+                // and check evasions always get full depth.
+                int reduction = (searched >= 4 && depth >= 3 && isQuiet
+                                 && !inCheck && !board.IsInCheck()) ? 1 : 0;
+
+                // PVS null window (cheap refutation attempt), possibly reduced.
+                score = -Negamax(board, depth - 1 - reduction, -alpha - 1, -alpha,
+                                 ply + 1, allowNull: true);
+
+                // The reduced probe beat alpha: verify at full depth first.
+                if (score > alpha && reduction > 0 && !_stopped)
+                    score = -Negamax(board, depth - 1, -alpha - 1, -alpha,
+                                     ply + 1, allowNull: true);
+
+                // Still inside the window: it is a genuine PV candidate,
+                // re-search with the real window.
+                if (score > alpha && score < beta && !_stopped)
+                    score = -Negamax(board, depth - 1, -beta, -alpha,
+                                     ply + 1, allowNull: true);
             }
 
             board.UnmakeMove();
@@ -293,6 +369,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 }
             }
         }
+
+        // Every move may have been SEE-pruned except the first; bestMove is
+        // then still valid (the first move is never pruned).
 
         // ---- Store the result in the TT with the right bound type ----
         BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
@@ -336,6 +415,14 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         foreach (Move move in moves)
         {
+            // SEE pruning: a losing capture cannot raise the stand-pat floor —
+            // in quiescence there is no compensation coming later.
+            if (move.IsCapture && !move.IsPromotion
+                && StaticExchangeEvaluator.Evaluate(board, move) < 0)
+            {
+                continue;
+            }
+
             board.MakeMove(move);
 
             // Discard moves that leave our own king in check.
@@ -360,10 +447,42 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return alpha;
     }
 
+    // Reconstructs the principal variation (the expected best play for both
+    // sides) by walking the transposition table: play the best move, look up
+    // the resulting position's stored best move, and repeat. The PV may be
+    // shorter than the search depth when TT entries were overwritten. Each
+    // stored move is validated against the legal moves of the position — a
+    // TT index collision could otherwise inject a corrupt move.
+    private Move[] ExtractPv(Board board, Move firstMove, int maxLength)
+    {
+        var pv = new List<Move>(maxLength) { firstMove };
+        board.MakeMove(firstMove);
+        int made = 1;
+
+        while (pv.Count < maxLength
+               && _tt.Probe(board.ZobristKey, out TTEntry entry)
+               && entry.BestMove != Move.None
+               && MoveGenerator.GenerateLegalMoves(board).Contains(entry.BestMove))
+        {
+            pv.Add(entry.BestMove);
+            board.MakeMove(entry.BestMove);
+            made++;
+        }
+
+        while (made-- > 0)
+            board.UnmakeMove();
+
+        return [.. pv];
+    }
+
     private void CheckStop()
     {
-        if (_cancellation.IsCancellationRequested || _timer.ElapsedMilliseconds >= _timeLimitMs)
+        if (_cancellation.IsCancellationRequested
+            || _timer.ElapsedMilliseconds >= _hardTimeMs
+            || _nodes >= _maxNodes)
+        {
             _stopped = true;
+        }
     }
 
     // Mate scores encode the distance to mate from the ROOT ("mate in 5 plies
