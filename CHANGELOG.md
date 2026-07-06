@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-07-06 (v1.0.0)
+
+- engine: PVS (Principal Variation Search) — null-window probes for non-first moves with re-search on improvement.
+- engine: Null Move Pruning with zugzwang guard (disabled without non-pawn material, in check, or twice in a row).
+- engine: check extension (positions in check searched one ply deeper).
+- engine: SEE (Static Exchange Evaluation) via the swap algorithm with x-ray support; used for capture ordering (losing captures last), pruning losing captures in quiescence and skipping clearly losing captures near the horizon.
+- engine: repetition detection — a single repetition scores as a draw inside the search; threefold repetition added to GameState.
+- engine: pawn structure evaluation (doubled, isolated, passed pawns) cached under a dedicated pawn hash; evaluation split into EvaluationParams / PieceSquareTables / PawnStructureEvaluator for future tuning.
+- engine: TimeManager — soft/hard budgets from the clock (soft: stop starting iterations; hard: abort), MoveOverhead margin; node-limited search (`go nodes N`).
+- core: MakeNullMove/UnmakeNullMove, pawn-only Zobrist key (incremental), CountRepetitions, HasNonPawnMaterial.
+- uci: full basic protocol — asynchronous `go` (search on a background task), `stop`, `isready` answered while searching, `go infinite`, `setoption` with Hash (resizes TT), Threads, MoveOverhead and UseNNUE options declared and parsed.
+- fix: move-ordering history scores could overlap the killer/capture bands; history is now clamped below the killer band.
+- tests: null move state restoration, repetition counting, pawn hash consistency, zugzwang material detection, SEE exchanges (incl. x-rays), pawn structure terms.
+
 ## 2026-07-06 (v0.2.0)
 
 - engine: quiescence search at the horizon (stand pat + MVV-LVA ordered captures and queen promotions), removing the horizon effect.
