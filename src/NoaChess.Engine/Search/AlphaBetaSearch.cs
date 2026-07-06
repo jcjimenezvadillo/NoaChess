@@ -120,6 +120,16 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // equal and the budget must then be used in full, not predictively.
         bool clockMode = limits.SoftTimeMs < limits.HardTimeMs;
 
+        // Forced move: with a single legal reply no amount of searching can
+        // change the choice — answer instantly and bank the whole budget.
+        // Only under a clock (analysis/movetime callers still want the eval).
+        if (clockMode)
+        {
+            MoveGenerator.GenerateLegalMoves(board, _rootMoves);
+            if (_rootMoves.Count == 1)
+                return new SearchResult(_rootMoves[0], 0, 0);
+        }
+
         // Killers are per-search (ply meanings change); history persists
         // between searches but decays so fresh information dominates.
         _killers.Clear();
@@ -282,8 +292,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             return _evaluator.Evaluate(board);
 
         // ---- Draws by rule. Checked before the TT: a cached score cannot
-        //      know how many times THIS game path repeated the position. ----
-        if (board.HalfmoveClock >= 100 || board.CountRepetitions() >= 1)
+        //      know how many times THIS game path repeated the position.
+        //      The history scan costs O(halfmove clock) — worst exactly in
+        //      long endgames — so it is skipped when a repetition is
+        //      impossible (fewer than 4 reversible half-moves played). ----
+        if (board.HalfmoveClock >= 100
+            || (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1))
             return 0;
 
         bool inCheck = board.IsInCheck();
@@ -370,7 +384,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // searched) nor while in check.
             if (depth <= 2 && searched > 0 && !inCheck
                 && move.IsCapture && !move.IsPromotion
-                && StaticExchangeEvaluator.Evaluate(board, move) < -100)
+                && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
             {
                 continue;
             }
@@ -496,7 +510,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // SEE pruning: a losing capture cannot raise the stand-pat floor —
             // in quiescence there is no compensation coming later.
             if (move.IsCapture && !move.IsPromotion
-                && StaticExchangeEvaluator.Evaluate(board, move) < 0)
+                && StaticExchangeEvaluator.LosesAtLeast(board, move))
             {
                 continue;
             }
