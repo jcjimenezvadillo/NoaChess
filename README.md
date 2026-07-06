@@ -2,12 +2,12 @@
 
 [English below]
 
-## 🧩 Motor de ajedrez avanzado en C# (.NET 8)
+## 🧩 Motor de ajedrez avanzado en C# (.NET 10)
 
 NoaChess es un motor de ajedrez modular, diseñado para alto rendimiento y extensibilidad, siguiendo los estándares profesionales más exigentes. Incluye lógica de juego completa, motor de búsqueda, evaluación avanzada y una capa API para integración con interfaces gráficas o clientes externos.
 
 ### 🔥 **Características principales**
-- Código en C# 12, .NET 8, compatible multiplataforma.
+- Código en C# 12, .NET 10, compatible multiplataforma.
 - Arquitectura modular, principios SOLID y Clean Architecture.
 - Generación y validación de movimientos conforme a las reglas FIDE.
 - Algoritmos de búsqueda (Minimax, Alpha-Beta, en roadmap: Poda, NNUE, etc.).
@@ -28,8 +28,8 @@ El proyecto se estructura en módulos independientes:
 Se siguen patrones Clean Architecture y DDD para garantizar mantenibilidad y escalabilidad.
 
 ### 🛠️ **Tecnologías**
-- **Lenguaje**: C# 12, .NET 8 LTS
-- **IDE**: Visual Studio Code + extensiones profesionales
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studi + extensiones profesionales
 - **Testing**: xUnit, FluentAssertions, Moq
 - **API**: ASP.NET Core WebAPI (futuro)
 - **CI/CD**: GitHub Actions (roadmap)
@@ -78,12 +78,12 @@ Twitter/GitHub/email: [tu_contacto]
 
 ---
 
-## 🧩 Advanced Chess Engine in C# (.NET 8)
+## 🧩 Advanced Chess Engine in C# (.NET 10)
 
 NoaChess is a modular, high-performance chess engine built with professional standards. It includes complete chess logic, move generation, advanced search and evaluation, and an API layer for integration with graphical interfaces or external clients.
 
 ### 🔥 **Main Features**
-- C# 12, .NET 8, cross-platform.
+- C# 12, .NET 10, cross-platform.
 - Modular architecture, SOLID principles and Clean Architecture.
 - Legal move generation and validation (FIDE rules).
 - Search algorithms (Minimax, Alpha-Beta, roadmap: Pruning, NNUE, etc.).
@@ -104,8 +104,8 @@ Project is split into independent modules:
 Follows Clean Architecture and DDD for maintainability and scalability.
 
 ### 🛠️ **Technologies**
-- **Language**: C# 12, .NET 8 LTS
-- **IDE**: Visual Studio Code + professional extensions
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studi + professional extensions
 - **Testing**: xUnit, FluentAssertions, Moq
 - **API**: ASP.NET Core WebAPI (future)
 - **CI/CD**: GitHub Actions (roadmap)
