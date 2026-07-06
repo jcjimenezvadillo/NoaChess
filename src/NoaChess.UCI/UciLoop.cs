@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine;
+using NoaChess.Engine.Profiles;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
 using NoaChess.UCI.Options;
@@ -49,7 +50,7 @@ public sealed class UciLoop
             {
                 case "uci":
                     // Identification + option declarations + end of handshake.
-                    _output.WriteLine("id name NoaChess 1.0.0");
+                    _output.WriteLine("id name NoaChess 1.1.0");
                     _output.WriteLine("id author NoaChess Team");
                     _options.Print(_output);
                     _output.WriteLine("uciok");
@@ -124,6 +125,8 @@ public sealed class UciLoop
         // Options that require engine-side action.
         if (changed == "Hash")
             _engine.ResizeHash(_options.Hash);
+        if (changed == "Profile")
+            _engine.Profile = EngineProfile.ByName(_options.Profile);
     }
 
     // "position startpos [moves e2e4 e7e5 ...]" or "position fen <fen> [moves ...]".
@@ -225,7 +228,8 @@ public sealed class UciLoop
         {
             long inc = (_board.SideToMove == Color.White ? Value("winc") : Value("binc")) ?? 0;
             int? movesToGo = Value("movestogo") is long mtg ? (int)mtg : null;
-            return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo);
+            return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo,
+                                         _engine.Profile.AssumedMovesToGo);
         }
 
         return SearchLimits.Depth(_engine.DefaultDepth);

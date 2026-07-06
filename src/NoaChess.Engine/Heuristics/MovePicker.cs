@@ -30,33 +30,40 @@ public static class MovePicker
     // attacker only — a king "capture" never appears as a victim).
     private static readonly int[] PieceValue = [100, 320, 330, 500, 900, 20_000, 0];
 
-    // Sorts 'moves' in place, best candidates first.
-    public static void Order(List<Move> moves, Board board, Move ttMove,
+    // Sorts 'moves' in place, best candidates first. Allocation-free: the
+    // scores live in the MoveList's parallel array and an insertion sort keeps
+    // them together with the moves (n is small — typically 20-45 — so
+    // insertion sort beats fancier algorithms here).
+    public static void Order(MoveList moves, Board board, Move ttMove,
                              KillerTable killers, HistoryTable history, int ply)
     {
         int n = moves.Count;
         if (n < 2)
             return;
 
-        // Scores are negated so that Array.Sort's ascending order yields a
-        // best-first move list.
-        var keys = new int[n];
-        var items = new Move[n];
+        int[] scores = moves.Scores;
         for (int i = 0; i < n; i++)
+            scores[i] = Score(moves[i], board, ttMove, killers, history, ply);
+
+        for (int i = 1; i < n; i++)
         {
-            items[i] = moves[i];
-            keys[i] = -Score(items[i], board, ttMove, killers, history, ply);
+            Move move = moves[i];
+            int score = scores[i];
+            int j = i - 1;
+            while (j >= 0 && scores[j] < score)
+            {
+                moves[j + 1] = moves[j];
+                scores[j + 1] = scores[j];
+                j--;
+            }
+            moves[j + 1] = move;
+            scores[j + 1] = score;
         }
-
-        Array.Sort(keys, items);
-
-        for (int i = 0; i < n; i++)
-            moves[i] = items[i];
     }
 
     // Capture-only variant used by quiescence search (no killers/history: only
     // captures are searched there).
-    public static void OrderCaptures(List<Move> moves, Board board) =>
+    public static void OrderCaptures(MoveList moves, Board board) =>
         Order(moves, board, Move.None, NoKillers, NoHistory, 0);
 
     // Empty shared instances so OrderCaptures can reuse the same scorer.
