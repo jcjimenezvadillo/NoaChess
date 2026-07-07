@@ -1,0 +1,34 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.PromotionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pawn promotion"
+        SizeToContent="WidthAndHeight"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="ToolWindow">
+    <!-- Minimal modal dialog: four buttons, one per promotion piece.
+         Each button shows the piece image, filled from code-behind
+         according to the color of the promoting pawn. -->
+    <StackPanel Orientation="Horizontal" Margin="10">
+        <StackPanel.Resources>
+            <Style TargetType="Button">
+                <Setter Property="Width" Value="72"/>
+                <Setter Property="Height" Value="72"/>
+                <Setter Property="Margin" Value="4"/>
+                <Setter Property="Padding" Value="6"/>
+            </Style>
+        </StackPanel.Resources>
+        <Button Click="OnQueenClicked">
+            <Image x:Name="QueenImage"/>
+        </Button>
+        <Button Click="OnRookClicked">
+            <Image x:Name="RookImage"/>
+        </Button>
+        <Button Click="OnBishopClicked">
+            <Image x:Name="BishopImage"/>
+        </Button>
+        <Button Click="OnKnightClicked">
+            <Image x:Name="KnightImage"/>
+        </Button>
+    </StackPanel>
+</Window>
