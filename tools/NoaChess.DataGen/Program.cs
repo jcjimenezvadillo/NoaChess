@@ -21,6 +21,8 @@ using NoaChess.Engine.Search;
 var options = ParseArgs(args);
 Console.WriteLine($"datagen: games={options.Games} nodes={options.Nodes} threads={options.Threads} seed={options.Seed}");
 Console.WriteLine($"output : {options.Output}");
+if (options.Model is not null)
+    Console.WriteLine($"model  : {options.Model} (self-play uses NNUE instead of the classical evaluator)");
 
 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.Output))!);
 
@@ -39,6 +41,12 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
     Parallel.For(0, options.Threads, worker =>
     {
         var engine = new ChessEngine();
+        if (options.Model is not null)
+        {
+            if (!engine.TryLoadNnueModel(options.Model, out string error))
+                throw new InvalidOperationException($"Failed to load NNUE model '{options.Model}': {error}");
+            engine.SetUseNnue(true);
+        }
         var buffer = new List<(byte[] Record, Color Stm)>(256);
         var record = new byte[DatasetFormat.RecordSize];
 
@@ -148,6 +156,7 @@ var manifest = new
     openingPlies = "8-9 random legal",
     filters = "no in-check, no tactical best move, |score| < 20000",
     resignAdjudication = "|score| >= 1500 for 6 plies",
+    evaluator = options.Model ?? "classical",
     engineVersion = "NoaChess 2.1.0-dev",
     generatedUtc = DateTime.UtcNow.ToString("o"),
     datasetSha256BeforeHeaderPatch = datasetSha
@@ -164,10 +173,11 @@ Console.WriteLine($"done: {gamesDone} games, {totalRecords:N0} positions in {sto
 Console.WriteLine($"manifest: {manifestPath}");
 return 0;
 
-static (int Games, int Nodes, int Threads, int Seed, string Output) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
+    string? model = null;
 
     for (int i = 0; i < args.Length - 1; i++)
     {
@@ -178,7 +188,8 @@ static (int Games, int Nodes, int Threads, int Seed, string Output) ParseArgs(st
             case "--threads": threads = int.Parse(args[i + 1]); break;
             case "--seed": seed = int.Parse(args[i + 1]); break;
             case "--out": output = args[i + 1]; break;
+            case "--model": model = args[i + 1]; break;
         }
     }
-    return (games, nodes, threads, seed, output);
+    return (games, nodes, threads, seed, output, model);
 }
