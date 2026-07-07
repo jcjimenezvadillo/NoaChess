@@ -21,6 +21,11 @@ namespace NoaChess.UCI;
 // is synchronized because both the loop thread and the search task write.
 public sealed class UciLoop
 {
+    // Single source of truth for the engine identity (banner + "id" reply).
+    public const string EngineName = "NoaChess";
+    public const string EngineVersion = "2.0.0-dev";
+    public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
+
     private readonly TextReader _input;
     private readonly TextWriter _output;
     private readonly ChessEngine _engine = new();
@@ -50,8 +55,8 @@ public sealed class UciLoop
             {
                 case "uci":
                     // Identification + option declarations + end of handshake.
-                    _output.WriteLine("id name NoaChess 2.0.0-dev");
-                    _output.WriteLine("id author NoaChess Team");
+                    _output.WriteLine($"id name {EngineName} {EngineVersion}");
+                    _output.WriteLine($"id author {EngineAuthor}");
                     _options.Print(_output);
                     _output.WriteLine("uciok");
                     break;
