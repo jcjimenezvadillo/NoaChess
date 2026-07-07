@@ -20,11 +20,6 @@ public static class Attacks
     // Note: these are the squares the pawn ATTACKS (diagonals), not where it advances.
     private static readonly ulong[][] PawnAttacksTable = [new ulong[64], new ulong[64]];
 
-    // Ray directions as (deltaFile, deltaRank). They are walked square by
-    // square until leaving the board or hitting a blocker.
-    private static readonly (int df, int dr)[] RookDirections = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-    private static readonly (int df, int dr)[] BishopDirections = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-
     static Attacks()
     {
         for (int sq = 0; sq < 64; sq++)
@@ -64,37 +59,14 @@ public static class Attacks
     // Rook attacks from a square given the "occupancy" (every piece on the
     // board, friendly and enemy). The ray includes the first blocking piece:
     // if it is an enemy it will be a possible capture, if it is friendly it
-    // gets filtered out later.
-    public static ulong Rook(int square, ulong occupancy) => Slider(square, occupancy, RookDirections);
+    // gets filtered out later. Since v1.1 this is a magic-bitboard lookup
+    // (see Magics); the ray-scan below survives only as startup reference.
+    public static ulong Rook(int square, ulong occupancy) => Magics.RookAttacks(square, occupancy);
 
     // Bishop attacks (see Rook for the occupancy semantics).
-    public static ulong Bishop(int square, ulong occupancy) => Slider(square, occupancy, BishopDirections);
+    public static ulong Bishop(int square, ulong occupancy) => Magics.BishopAttacks(square, occupancy);
 
     // The queen attacks as a rook and a bishop at the same time.
     public static ulong Queen(int square, ulong occupancy) =>
         Rook(square, occupancy) | Bishop(square, occupancy);
-
-    private static ulong Slider(int square, ulong occupancy, (int df, int dr)[] directions)
-    {
-        ulong attacks = 0;
-        int f0 = Squares.FileOf(square);
-        int r0 = Squares.RankOf(square);
-
-        foreach ((int df, int dr) in directions)
-        {
-            int f = f0 + df, r = r0 + dr;
-            while (f is >= 0 and <= 7 && r is >= 0 and <= 7)
-            {
-                int sq = Squares.FromFileRank(f, r);
-                attacks |= Bitboard.SquareBB(sq);
-                // The ray stops when hitting any piece (the blocker's square IS
-                // included: it may be a capture).
-                if (Bitboard.IsSet(occupancy, sq))
-                    break;
-                f += df;
-                r += dr;
-            }
-        }
-        return attacks;
-    }
 }

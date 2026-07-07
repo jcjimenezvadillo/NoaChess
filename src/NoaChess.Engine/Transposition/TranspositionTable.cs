@@ -21,7 +21,9 @@ namespace NoaChess.Engine.Transposition;
 //   when the complete key is equal.
 public sealed class TranspositionTable
 {
-    private TTEntry[] _entries;
+    // Assigned by Resize (called from the constructor); the initializer only
+    // silences the compiler, which cannot see through the method call.
+    private TTEntry[] _entries = [];
     private ulong _indexMask;
 
     public TranspositionTable(int sizeMb)
