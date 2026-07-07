@@ -12,6 +12,7 @@ public sealed class UciOptions
     public int Hash { get; private set; } = 64;
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 100;
+    public bool Ponder { get; private set; }
     public bool UseNnue { get; private set; }
     public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
@@ -22,6 +23,7 @@ public sealed class UciOptions
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
         output.WriteLine("option name Threads type spin default 1 min 1 max 1");
         output.WriteLine("option name MoveOverhead type spin default 100 min 0 max 5000");
+        output.WriteLine("option name Ponder type check default false");
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet");
@@ -45,6 +47,10 @@ public sealed class UciOptions
             case "moveoverhead" when int.TryParse(value, out int overhead):
                 MoveOverhead = Math.Clamp(overhead, 0, 5000);
                 return "MoveOverhead";
+
+            case "ponder" when bool.TryParse(value, out bool ponder):
+                Ponder = ponder; // The GUI drives pondering; we just declare support.
+                return "Ponder";
 
             case "usennue" when bool.TryParse(value, out bool useNnue):
                 UseNnue = useNnue;

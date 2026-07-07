@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.0.0-dev";
+    public const string EngineVersion = "2.1.0-dev";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -34,6 +34,14 @@ public sealed class UciLoop
     private Board _board = new();
     private CancellationTokenSource? _searchCts;
     private Task? _searchTask;
+
+    // Pondering state: while thinking on the opponent's time, the original
+    // "go ponder ..." tokens are kept so a "ponderhit" can relaunch the same
+    // search with the real clock limits. _suppressBestmove silences the
+    // aborted ponder search (UCI forbids a bestmove between ponderhit and
+    // the timed search's own answer).
+    private string[]? _pendingPonderTokens;
+    private volatile bool _suppressBestmove;
 
     public UciLoop(TextReader input, TextWriter output)
     {
@@ -72,13 +80,13 @@ public sealed class UciLoop
                     break;
 
                 case "ucinewgame":
-                    WaitForSearchToFinish();
+                    WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
                     _engine.NewGame(); // Clear TT/heuristics from the previous game.
                     break;
 
                 case "position":
-                    WaitForSearchToFinish();
+                    WaitForSearchToFinish(suppressBestmove: true);
                     HandlePosition(tokens);
                     break;
 
@@ -90,7 +98,21 @@ public sealed class UciLoop
                 case "stop":
                     // Cancel the running search; its task still prints the
                     // "bestmove" (the best of the last completed iteration).
+                    _pendingPonderTokens = null;
                     _searchCts?.Cancel();
+                    break;
+
+                case "ponderhit":
+                    // The opponent played the predicted move: everything the
+                    // ponder search stored in the TT is valid. Silently stop
+                    // it and relaunch as a normal timed search — the warm TT
+                    // makes the early iterations nearly free.
+                    if (_pendingPonderTokens is string[] goTokens)
+                    {
+                        _pendingPonderTokens = null;
+                        WaitForSearchToFinish(suppressBestmove: true);
+                        HandleGo(goTokens.Where(t => t != "ponder").ToArray());
+                    }
                     break;
 
                 case "quit":
@@ -105,11 +127,17 @@ public sealed class UciLoop
 
     // Cancels and joins any running search. Called before commands that touch
     // the board or the engine: a search still running would race with them.
-    private void WaitForSearchToFinish()
+    // 'suppressBestmove' silences the aborted search's answer — used when the
+    // GUI moved on (new position / new game / ponderhit) and a late bestmove
+    // would be misattributed to the new context.
+    private void WaitForSearchToFinish(bool suppressBestmove = false)
     {
+        if (suppressBestmove)
+            _suppressBestmove = true;
         _searchCts?.Cancel();
         _searchTask?.Wait();
         _searchTask = null;
+        _suppressBestmove = false;
     }
 
     // "setoption name <name...> value <value...>". The name may contain
@@ -194,11 +222,20 @@ public sealed class UciLoop
         }
     }
 
-    // "go [depth N | nodes N | movetime N | wtime N btime N [winc N] [binc N] | infinite]".
+    // "go [ponder] [depth N | nodes N | movetime N | wtime N btime N [winc N] [binc N] | infinite]".
     // Launches the search asynchronously so the loop keeps serving stop/isready.
     private void HandleGo(string[] tokens)
     {
-        SearchLimits limits = ParseLimits(tokens);
+        // "go ponder": think on the opponent's time. The search runs without
+        // limits (the opponent's clock is ticking, not ours) until the GUI
+        // resolves it with "ponderhit" (prediction right -> timed re-search
+        // over a warm TT) or "stop" (prediction wrong -> discarded).
+        bool ponder = Array.IndexOf(tokens, "ponder") != -1;
+        _pendingPonderTokens = ponder ? tokens : null;
+
+        SearchLimits limits = ponder
+            ? SearchLimits.Depth(SearchLimits.DepthUnlimited)
+            : ParseLimits(tokens);
 
         var cts = new CancellationTokenSource();
         _searchCts = cts;
@@ -220,6 +257,11 @@ public sealed class UciLoop
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);
+
+        // A ponder search converted by "ponderhit" must stay silent: its only
+        // job was warming the TT; the relaunched timed search answers.
+        if (_suppressBestmove)
+            return;
 
         _output.WriteLine(result.BestMove == Move.None
             ? "bestmove 0000"   // UCI convention for "no move" (mate/stalemate).
