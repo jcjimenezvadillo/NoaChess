@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-08 (v2.1.1-dev)
+
+- fix: NNUE bullet time forfeit — Server GC (background collection instead of blocking stop-the-world pauses) and a synchronous JIT warm-up search on NNUE activation (`SetUseNnue`), so tiered-compilation recompiles happen at setoption time instead of stalling mid-game. Verified with a 3-game bullet (1+0) stress test: no time flags, all moves well under budget.
+- models: added noa-v2-run3.noannue (250K-game overnight training run, promoted default).
+- tools: NoaChess.DataGen — new `--model` flag lets self-play use a trained NNUE model instead of the classical evaluator, for reinforcement-style data generation (run4 onward).
+- tools: overnight_training_run4.bat — self-play labeled by the run3 NNUE model, 350K games.
+
 ## 2026-07-07 (v2.1.0-dev)
 
 - uci: pondering ("Ponder" option, `go ponder` / `ponderhit` / `stop`) — the engine now thinks on the opponent's time; on ponderhit the warm transposition table makes the timed re-search nearly free. Late bestmoves from searches interrupted by position/ucinewgame are suppressed.
