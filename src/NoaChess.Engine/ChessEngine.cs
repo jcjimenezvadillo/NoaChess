@@ -84,6 +84,17 @@ public sealed class ChessEngine
 
         NnueActive = useNnue;
         _search.SetEvaluator(useNnue ? _nnue! : new ClassicalEvaluator());
+
+        // JIT warm-up: the first calls into NNUE's SIMD inference path and
+        // the accumulator update code trigger tiered-compilation recompiles
+        // (Tier0 -> Tier1) the first few dozen times they run. Left alone,
+        // that recompilation happens whenever it happens — possibly deep
+        // into a real timed game, where a stall eats into the clock. Doing a
+        // short, throwaway search right here (setoption time, before any
+        // clock is running) pays that one-time cost up front instead.
+        if (useNnue)
+            _search.FindBestMove(new Board(), SearchLimits.Depth(6));
+
         return true;
     }
 }

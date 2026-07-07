@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine;
 using NoaChess.Engine.Profiles;
@@ -24,7 +24,7 @@ public sealed class UciLoop
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
     public const string EngineVersion = "2.1.0-dev";
-    public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
+    public const string EngineAuthor = "Juan Carlos Jiménez Vadillo";
 
     private readonly TextReader _input;
     private readonly TextWriter _output;
