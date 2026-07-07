@@ -29,7 +29,7 @@ Follows Clean Architecture and DDD for maintainability and scalability.
 
 ### **Technologies**
 - **Language**: C# 12, .NET 10 LTS
-- **IDE**: Visual Studio Code + professional extensions
+- **IDE**: Visual Studio + extensions
 - **Testing**: xUnit, FluentAssertions, Moq
 - **API**: ASP.NET Core WebAPI (future)
 - **CI/CD**: GitHub Actions (roadmap)
@@ -85,7 +85,7 @@ Se siguen patrones Clean Architecture y DDD para garantizar mantenibilidad y esc
 
 ### **Tecnologías**
 - **Lenguaje**: C# 12, .NET 10 LTS
-- **IDE**: Visual Studio Code + extensiones profesionales
+- **IDE**: Visual Studio + extensiones
 - **Testing**: xUnit, FluentAssertions, Moq
 - **API**: ASP.NET Core WebAPI (futuro)
 - **CI/CD**: GitHub Actions (roadmap)
