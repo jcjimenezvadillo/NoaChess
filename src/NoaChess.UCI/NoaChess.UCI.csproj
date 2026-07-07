@@ -20,7 +20,12 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <DebugType>embedded</DebugType>
+    <!-- No debug symbols in the distributed build: the published folder
+         contains exactly one file, the exe. Crash stack traces lose source
+         line numbers, which is fine for distribution — debugging happens on
+         regular builds, which keep full symbols. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
 </Project>
