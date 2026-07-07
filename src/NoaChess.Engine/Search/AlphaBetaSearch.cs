@@ -48,7 +48,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // mask makes the check nearly free.
     private const int StopCheckInterval = 2048;
 
-    private readonly IPositionEvaluator _evaluator = evaluator;
+    private IPositionEvaluator _evaluator = evaluator;
+
+    // Set when the evaluator keeps incremental state (NNUE accumulators):
+    // the search notifies it around every make/unmake. Null for stateless
+    // evaluators (classical) — one branch-predicted null check per node.
+    private IIncrementalEvaluator? _incremental = evaluator as IIncrementalEvaluator;
+
     private readonly TranspositionTable _tt = new(sizeMb: 64);
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
@@ -90,6 +96,14 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
+
+    // Swaps the evaluator (Classical <-> NNUE). Never call during a search.
+    public void SetEvaluator(IPositionEvaluator evaluator)
+    {
+        _evaluator = evaluator;
+        _incremental = evaluator as IIncrementalEvaluator;
+        _tt.Clear(); // Cached scores from another evaluator are poison.
+    }
 
     // Clears all inter-search state (TT, killers, history). Called on
     // "ucinewgame" / GUI new game.
@@ -134,6 +148,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // between searches but decays so fresh information dominates.
         _killers.Clear();
         _history.Decay();
+
+        // Anchor the incremental evaluator's state (NNUE accumulators) at
+        // the new root position.
+        _incremental?.Reset(board);
 
         SearchResult best = default;
         int previousScore = 0;
@@ -222,6 +240,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
+            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             // PVS at the root: first move with the full window, the rest with
@@ -239,6 +258,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             }
 
             board.UnmakeMove();
+            _incremental?.Pop();
             searched++;
 
             // A score computed after the stop signal is garbage; only use it
@@ -345,10 +365,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             && board.HasNonPawnMaterial(board.SideToMove))
         {
             int reduction = 2 + depth / 4;
+            _incremental?.PushNull();
             board.MakeNullMove();
             int nullScore = -Negamax(board, depth - 1 - reduction, -beta, -beta + 1,
                                      ply + 1, allowNull: false);
             board.UnmakeNullMove();
+            _incremental?.Pop();
 
             if (_stopped)
                 return 0;
@@ -389,6 +411,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 continue;
             }
 
+            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             int score;
@@ -425,6 +448,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             }
 
             board.UnmakeMove();
+            _incremental?.Pop();
             searched++;
 
             if (_stopped)
@@ -515,17 +539,20 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 continue;
             }
 
+            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             // Discard moves that leave our own king in check.
             if (board.IsSquareAttacked(board.KingSquare(us), board.SideToMove))
             {
                 board.UnmakeMove();
+                _incremental?.Pop();
                 continue;
             }
 
             int score = -Quiescence(board, -beta, -alpha, ply + 1);
             board.UnmakeMove();
+            _incremental?.Pop();
 
             if (_stopped)
                 return 0;

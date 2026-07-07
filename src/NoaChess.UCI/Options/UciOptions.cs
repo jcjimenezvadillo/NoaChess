@@ -1,19 +1,19 @@
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
-// v1.0 set, per the roadmap:
 // - Hash: transposition table size in MB.
 // - Threads: accepted for GUI compatibility, but only 1 is supported until
 //   Lazy SMP arrives in v3.0.
 // - MoveOverhead: milliseconds subtracted from every time budget to absorb
 //   GUI/network latency (prevents losing on time by a few ms).
-// - UseNNUE: reserved flag, always false until v2.0.
+// - UseNNUE / EvalFile: neural evaluation switch and model path (v2.0).
 public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 100;
     public bool UseNnue { get; private set; }
+    public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
 
     // Prints the option declarations the GUI expects right after "id".
@@ -23,6 +23,7 @@ public sealed class UciOptions
         output.WriteLine("option name Threads type spin default 1 min 1 max 1");
         output.WriteLine("option name MoveOverhead type spin default 100 min 0 max 5000");
         output.WriteLine("option name UseNNUE type check default false");
+        output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet");
     }
 
@@ -46,8 +47,12 @@ public sealed class UciOptions
                 return "MoveOverhead";
 
             case "usennue" when bool.TryParse(value, out bool useNnue):
-                UseNnue = false && useNnue; // No NNUE until v2.0.
+                UseNnue = useNnue;
                 return "UseNNUE";
+
+            case "evalfile":
+                EvalFile = value == "<empty>" ? "" : value;
+                return "EvalFile";
 
             case "profile":
                 Profile = value.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? "Bullet" : "Default";

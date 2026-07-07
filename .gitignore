@@ -70,3 +70,7 @@ nunit-*.xml
 .env
 .env.*
 /NoaChess_TECHNICAL_ROADMAP_v2_PLUS.md
+
+# NNUE training data (regenerable via tools/NoaChess.DataGen; not for git)
+data/
+tools/training/nnue/checkpoints/
