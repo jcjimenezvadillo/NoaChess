@@ -246,10 +246,15 @@ public sealed class UciLoop
     {
         var stopwatch = Stopwatch.StartNew();
 
+        // Kept for the "ponder" hint: the second move of the last full PV is
+        // the opponent reply we expect — the GUI needs it to ponder at all.
+        Move[] lastPv = [];
+
         // One "info" line per completed depth (standard UCI progress output).
         // SynchronousProgress guarantees the lines are written before "bestmove".
         var progress = new SynchronousProgress(p =>
         {
+            lastPv = p.Pv;
             long ms = Math.Max(1, stopwatch.ElapsedMilliseconds);
             long nps = p.NodesSearched * 1000 / ms;
             _output.WriteLine(
@@ -263,8 +268,19 @@ public sealed class UciLoop
         if (_suppressBestmove)
             return;
 
-        _output.WriteLine(result.BestMove == Move.None
-            ? "bestmove 0000"   // UCI convention for "no move" (mate/stalemate).
+        if (result.BestMove == Move.None)
+        {
+            _output.WriteLine("bestmove 0000"); // UCI: "no move" (mate/stalemate).
+            return;
+        }
+
+        // "bestmove X ponder Y": Y is the predicted opponent reply. Without
+        // it the GUI has nothing to ponder on and never sends "go ponder".
+        // Only offered when the last reported PV actually starts with the
+        // returned best move (a soft-stopped partial iteration may differ).
+        bool hasPonderHint = lastPv.Length >= 2 && lastPv[0] == result.BestMove;
+        _output.WriteLine(hasPonderHint
+            ? $"bestmove {result.BestMove} ponder {lastPv[1]}"
             : $"bestmove {result.BestMove}");
     }
 
