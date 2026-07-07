@@ -74,3 +74,5 @@ nunit-*.xml
 # NNUE training data (regenerable via tools/NoaChess.DataGen; not for git)
 data/
 tools/training/nnue/checkpoints/
+/overnight_training.bat
+/Entrenamiento.md
