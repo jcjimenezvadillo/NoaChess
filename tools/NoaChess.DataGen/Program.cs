@@ -157,7 +157,7 @@ var manifest = new
     filters = "no in-check, no tactical best move, |score| < 20000",
     resignAdjudication = "|score| >= 1500 for 6 plies",
     evaluator = options.Model ?? "classical",
-    engineVersion = "NoaChess 2.2.0",
+    engineVersion = "NoaChess 2.3.0",
     generatedUtc = DateTime.UtcNow.ToString("o"),
     datasetSha256BeforeHeaderPatch = datasetSha
 };
