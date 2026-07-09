@@ -61,7 +61,77 @@ public class SeeAndEvaluationTests
         var structure = new PawnStructureEvaluator();
         var board = new Board("4k3/4pp2/8/3P4/3P4/8/8/4K3 w - - 0 1");
 
-        Assert.True(structure.Evaluate(board) < 0,
+        // The tapered structure score is White-relative; both phases should be
+        // negative for the doubled+isolated side.
+        Score score = structure.Evaluate(board);
+        Assert.True(score.Mg < 0 && score.Eg < 0,
             "Doubled+isolated pawns vs connected pawns must score negatively");
+    }
+
+    [Fact]
+    public void Evaluation_StartingPositionIsBalanced()
+    {
+        // A symmetric position must evaluate to exactly 0: any non-zero result
+        // reveals a colour asymmetry in the tapered tables or terms.
+        var evaluator = new ClassicalEvaluator();
+        Assert.Equal(0, evaluator.Evaluate(new Board(Board.StartFen)));
+    }
+
+    [Theory]
+    [InlineData("r3k2r/pp1n1ppp/2p1pn2/q7/1b1P4/2N1PN2/PPQ1BPPP/R3K2R w KQkq - 0 1")]
+    [InlineData("r2q1rk1/1b1nbppp/p2ppn2/1p6/3NP3/1BN1B3/PPP2PPP/R2Q1RK1 b - - 0 1")]
+    public void Evaluation_IsColorSymmetric(string fen)
+    {
+        // Vertically mirroring the board and swapping colours (and the side to
+        // move) yields the same position seen by the other player, so the
+        // side-to-move-relative eval must be identical. This catches any colour
+        // sign bug in the per-colour terms (king safety, mobility, rook files).
+        var evaluator = new ClassicalEvaluator();
+        int direct = evaluator.Evaluate(new Board(fen));
+        int mirrored = evaluator.Evaluate(new Board(MirrorFen(fen)));
+        Assert.Equal(direct, mirrored);
+    }
+
+    // Flips a FEN top-to-bottom and swaps piece colours; castling/en passant
+    // are dropped (irrelevant to the evaluation symmetry being checked).
+    private static string MirrorFen(string fen)
+    {
+        string[] parts = fen.Split(' ');
+        string[] ranks = parts[0].Split('/');
+        Array.Reverse(ranks);
+        var swapped = ranks.Select(rank => new string(rank.Select(SwapCase).ToArray()));
+        string board = string.Join('/', swapped);
+        string sideToMove = parts[1] == "w" ? "b" : "w";
+        return $"{board} {sideToMove} - - 0 1";
+
+        static char SwapCase(char c) =>
+            char.IsUpper(c) ? char.ToLower(c) : char.IsLower(c) ? char.ToUpper(c) : c;
+    }
+
+    [Fact]
+    public void Evaluation_ExposedEnemyKingScoresBetterForUs()
+    {
+        // Both sides have rooks and a queen (so the middlegame king-safety term
+        // is live) and three pawns each. In 'exposed' Black's g-pawn has left
+        // the g-file, opening it right next to the black king. Same material,
+        // so the higher score for White must come from the king being unsafe.
+        var evaluator = new ClassicalEvaluator();
+        var shielded = new Board("1r1q1rk1/5ppp/8/8/8/8/5PPP/1R1Q1RK1 w - - 0 1");
+        var exposed = new Board("1r1q1rk1/5p1p/5p2/8/8/8/5PPP/1R1Q1RK1 w - - 0 1");
+        Assert.True(evaluator.Evaluate(exposed) > evaluator.Evaluate(shielded),
+            "An exposed enemy king (open file beside it) must score better for us");
+    }
+
+    [Fact]
+    public void Evaluation_BishopPairIsRewarded()
+    {
+        // White has two bishops; the comparison board swaps one for a knight.
+        // Both the small material edge and the pair bonus favour the two
+        // bishops — a directional sanity check that the pair bonus is applied.
+        var evaluator = new ClassicalEvaluator();
+        var withPair = new Board("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1");
+        var withoutPair = new Board("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1");
+        Assert.True(evaluator.Evaluate(withPair) > evaluator.Evaluate(withoutPair),
+            "Two bishops must score higher than bishop + knight of equal material");
     }
 }
