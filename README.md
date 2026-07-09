@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current strength: ~2690 Elo estimated** (v2.2.0 measured ~2600 CCRL-equivalent over a 350-game LTC gauntlet vs 7 engines rated 2580–2788; v2.3.0 then passed SPRT vs v2.2.0 with +91 ± 34 Elo, LOS 100% — precision gauntlet pending, see [CHANGELOG](CHANGELOG.md)).
+**Current strength: ~2710 Elo measured** (v2.3.0, CCRL-equivalent: 59.5% over a 231-game LTC precision gauntlet vs 7 engines rated 2580–2788, after passing SPRT vs v2.2.0 with +91 ± 34 Elo, LOS 100% — see [CHANGELOG](CHANGELOG.md)).
 
 ### **Main Features (v2.3.0)**
 - Bitboard board representation with **magic bitboards** for sliding pieces.
@@ -52,7 +52,7 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v1.1** — NPS optimization (magic bitboards, zero-alloc paths), Bullet profile, benchmarks. ✅ (~2070 Elo)
 - **v2.0** — NNUE evaluation infrastructure. ✅
 - **v2.2** — Tapered classical evaluation overhaul + search pruning (log LMR, RFP, futility, LMP). ✅ (~2600 Elo)
-- **v2.3** — Search core overhaul: continuation/counter-move history, singular extensions, history-based LMR, IIR, ProbCut. ✅ (SPRT +91 Elo, ~2690 est.)
+- **v2.3** — Search core overhaul: continuation/counter-move history, singular extensions, history-based LMR, IIR, ProbCut. ✅ (~2710 Elo measured)
 - **Next** — Eval terms + tuning · Speed · NNUE retrain · Lazy SMP · Book/tablebases · see the full roadmap.
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
@@ -73,7 +73,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Fuerza actual: ~2690 Elo estimado** (la v2.2.0 midió ~2600 equivalente CCRL en un gauntlet LTC de 350 partidas contra 7 motores de 2580–2788; la v2.3.0 superó después el SPRT contra v2.2.0 con +91 ± 34 Elo, LOS 100% — gauntlet de precisión pendiente, ver [CHANGELOG](CHANGELOG.md)).
+**Fuerza actual: ~2710 Elo medido** (v2.3.0, equivalente CCRL: 59.5% en un gauntlet LTC de precisión de 231 partidas contra 7 motores de 2580–2788, tras superar el SPRT contra v2.2.0 con +91 ± 34 Elo, LOS 100% — ver [CHANGELOG](CHANGELOG.md)).
 
 ### **Características principales (v2.3.0)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes.
@@ -119,7 +119,7 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v1.1** — Optimización NPS (magic bitboards, cero allocations), perfil Bullet, benchmarks. ✅ (~2070 Elo)
 - **v2.0** — Infraestructura NNUE. ✅
 - **v2.2** — Evaluación clásica tapered + podas de búsqueda (LMR log, RFP, futility, LMP). ✅ (~2600 Elo)
-- **v2.3** — Búsqueda core: continuation/counter-move history, singular extensions, LMR por historia, IIR, ProbCut. ✅ (SPRT +91 Elo, ~2690 est.)
+- **v2.3** — Búsqueda core: continuation/counter-move history, singular extensions, LMR por historia, IIR, ProbCut. ✅ (~2710 Elo medido)
 - **Siguiente** — Términos + tuning de evaluación · Velocidad · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver roadmap completo.
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
