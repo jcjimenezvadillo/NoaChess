@@ -2,6 +2,8 @@
 
 ## 2026-07-09 (v2.3.0) — search core overhaul (Bloque 1)
 
+**SPRT vs v2.2.0 passed H1**: +91 ± 34 Elo, LOS 100%, score 106-43-96 [62.9%] over 245 games at 10+0.1. Estimated strength ~2690 Elo (CCRL-equivalent, pending precision gauntlet). The White/Black score gap also narrowed (65.4% / 60.2%).
+
 - search: counter-move heuristic — the quiet refutation of the opponent's last move is remembered per (piece, destination) and ordered right after the killers.
 - search: continuation history — a second history table conditioned on the previous move (prev piece/destination x current piece/destination, ~2.3 MB), blended into quiet-move ordering. Learns "after THIS, THAT reply refutes" — far sharper than the global butterfly history.
 - search: history maluses — quiet moves searched before a beta cutoff are punished in both history tables, so failed moves sink in the ordering instead of lingering.
