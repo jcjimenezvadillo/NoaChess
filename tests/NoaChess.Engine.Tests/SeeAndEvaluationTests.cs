@@ -109,6 +109,68 @@ public class SeeAndEvaluationTests
     }
 
     [Fact]
+    public void Evaluation_IsColorSymmetric_RandomPlayoutFuzz()
+    {
+        // Plays random games and asserts, at EVERY position reached, that the
+        // colour-mirrored position evaluates identically. Two hand-picked FENs
+        // cannot cover all term interactions (king safety, mobility, mop-up,
+        // passed pawns...); a few thousand organic positions can. Fixed seed
+        // keeps the test deterministic.
+        var evaluator = new ClassicalEvaluator();
+        var mirrorEvaluator = new ClassicalEvaluator();
+        var rng = new Random(12345);
+
+        for (int game = 0; game < 40; game++)
+        {
+            var board = new Board(Board.StartFen);
+            for (int plyCount = 0; plyCount < 160; plyCount++)
+            {
+                var legal = MoveGenerator.GenerateLegalMoves(board);
+                if (legal.Count == 0)
+                    break;
+                board.MakeMove(legal[rng.Next(legal.Count)]);
+
+                int direct = evaluator.Evaluate(board);
+                int mirrored = mirrorEvaluator.Evaluate(new Board(MirrorBoardFen(board)));
+                Assert.True(direct == mirrored,
+                    $"Asymmetric eval ({direct} vs {mirrored}) at game {game} ply {plyCount}");
+            }
+        }
+    }
+
+    // Builds the FEN of the colour-mirrored position: every piece moves to its
+    // vertically flipped square with the opposite colour, and the side to move
+    // is swapped. Castling/en passant are dropped (the evaluator does not read
+    // them).
+    private static string MirrorBoardFen(Board board)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int rank = 7; rank >= 0; rank--)
+        {
+            int empty = 0;
+            for (int file = 0; file < 8; file++)
+            {
+                // Piece that lands on (rank, file) comes from the flipped rank.
+                int source = (7 - rank) * 8 + file;
+                PieceType type = board.PieceTypeAt(source);
+                if (type == PieceType.None)
+                {
+                    empty++;
+                    continue;
+                }
+                if (empty > 0) { sb.Append(empty); empty = 0; }
+                bool wasWhite = (board.Occupancy(Color.White) & Bitboard.SquareBB(source)) != 0;
+                char c = "pnbrqk"[(int)type];
+                sb.Append(wasWhite ? c : char.ToUpper(c)); // Swap colours.
+            }
+            if (empty > 0) sb.Append(empty);
+            if (rank > 0) sb.Append('/');
+        }
+        string stm = board.SideToMove == Color.White ? "b" : "w";
+        return $"{sb} {stm} - - 0 1";
+    }
+
+    [Fact]
     public void Evaluation_ExposedEnemyKingScoresBetterForUs()
     {
         // Both sides have rooks and a queen (so the middlegame king-safety term
