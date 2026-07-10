@@ -26,6 +26,12 @@ public static class EvaluationParams
     // occupied by friendly pieces and squares attacked by enemy pawns (going
     // there just loses the piece). Centered around a typical count so the term
     // averages near zero and does not silently inflate the material values.
+    // Mobility keeps the HAND values (SPRT-validated in v2.2.0) and is
+    // excluded from texel tuning: every tuning run, on old AND fresh data,
+    // converges to negative endgame mobility for the minors — a spurious
+    // correlation (the winning side simplifies and restricts enemy mobility,
+    // so low own-mobility correlates with winning), and playing by it makes
+    // the engine cage its own pieces in endgames.
     public static readonly int[] MobilityBaseline = [0, 4, 6, 7, 14, 0]; // by PieceType
     public static readonly Score[] MobilityStep =
     [
@@ -50,18 +56,45 @@ public static class EvaluationParams
     public const int KingDangerCap = 500;
 
     // ---- Minor positional terms ----
-    public static readonly Score BishopPair = new(22, 40);
-    public static readonly Score RookOpenFile = new(30, 12);     // no pawns at all
-    public static readonly Score RookSemiOpenFile = new(15, 6);  // no friendly pawns
+    // Non-readonly on purpose: the texel tuner (tools/NoaChess.Tuner) adjusts
+    // these in-process and the engine never mutates them itself.
+    // Values below are texel-tuned (v2.4.0) on fresh v2.3.0-strength self-play
+    // data (noa-2.4.0-tune.noadata), jointly with the PSTs.
+    public static Score BishopPair = new(36, 54);
+    public static Score RookOpenFile = new(44, -2);     // no pawns at all
+    public static Score RookSemiOpenFile = new(25, 20); // no friendly pawns
+    // A rook on the 7th rank cuts the enemy king off and attacks its pawns.
+    public static Score RookOnSeventh = new(5, 31);
+
+    // ---- Knight outposts ----
+    // A knight on a hole in the enemy camp (relative ranks 4-6, protected by a
+    // friendly pawn, no enemy pawn can ever kick it) is a permanent asset.
+    public static Score KnightOutpost = new(47, 28);
+
+    // ---- Space ----
+    // Per safe central square (files c-f, relative ranks 2-4, not occupied by
+    // a friendly pawn, not attacked by enemy pawns). Middlegame term; the
+    // tuned endgame half is slightly negative (space is a liability once the
+    // pieces that would use it are gone).
+    public static Score SpacePerSquare = new(2, -8);
 
     // ---- Pawn structure ----
-    public static readonly Score DoubledPawn = new(-10, -20);
-    public static readonly Score IsolatedPawn = new(-14, -8);
+    public static Score DoubledPawn = new(-14, -18);
+    public static Score IsolatedPawn = new(-10, -12);
     // Passed pawn bonus by RELATIVE rank (0 = own back rank, 7 unused). Endgame
     // heavy: a passer wins games once the pieces come off.
-    public static readonly Score[] PassedPawn =
+    public static Score[] PassedPawn =
     [
-        new(0, 0), new(5, 10), new(10, 20), new(15, 35),
-        new(25, 55), new(40, 80), new(60, 120), new(0, 0),
+        new(0, 0), new(7, 22), new(8, 30), new(9, 49),
+        new(19, 69), new(38, 72), new(46, 106), new(0, 0),
     ];
+    // Connected passers on adjacent files defend each other's promotion path;
+    // applied per passer that has a friendly passer on an adjacent file.
+    public static Score ConnectedPassers = new(-4, 8);
+    // Rook behind its own passed pawn (Tarrasch): pushes the pawn and never
+    // blocks it. Applied per (rook, passer) pair on the same file.
+    public static Score RookBehindPasser = new(6, 12);
+    // A passer whose stop square is occupied by an enemy piece is going
+    // nowhere for now: give back a third of the rank bonus.
+    public const int BlockedPasserDivisor = 3;
 }

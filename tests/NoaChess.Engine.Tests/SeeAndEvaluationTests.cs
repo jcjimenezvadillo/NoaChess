@@ -69,6 +69,91 @@ public class SeeAndEvaluationTests
     }
 
     [Fact]
+    public void Rook_OnSeventhRankScoresBetter()
+    {
+        var evaluator = new ClassicalEvaluator();
+
+        // White rook on a7 (7th rank) vs a6 — same material. The 7th-rank
+        // bonus (endgame-heavy) must outweigh any PST difference between ranks.
+        var onSeventh = new Board("4k3/R7/8/8/8/8/8/4K3 w - - 0 1");
+        var onSixth   = new Board("4k3/8/R7/8/8/8/8/4K3 w - - 0 1");
+
+        Assert.True(evaluator.Evaluate(onSeventh) > evaluator.Evaluate(onSixth),
+            "A rook on the 7th rank must score higher than one on the 6th");
+    }
+
+    [Fact]
+    public void Outpost_ProtectedUnkickableKnightScoresHigher()
+    {
+        var evaluator = new ClassicalEvaluator();
+
+        // Knight on d5 protected by the e4 pawn; black has no c- or e-pawns
+        // left to evict it -> outpost. Second board: same material but the
+        // knight sits on d3 in its own camp (same central PST region).
+        var outpost = new Board("4k3/5p2/8/3N4/4P3/8/8/4K3 w - - 0 1");
+        var home = new Board("4k3/5p2/8/8/4P3/3N4/8/4K3 w - - 0 1");
+
+        Assert.True(evaluator.Evaluate(outpost) > evaluator.Evaluate(home),
+            "A protected, unkickable knight in the enemy camp must outscore one at home");
+    }
+
+    [Fact]
+    public void Passers_RookBehindOwnPasserBonusIsApplied()
+    {
+        // Comparing two different rook placements through the full evaluation
+        // is fragile: mobility and file bonuses legitimately differ between
+        // the boards and can cancel the (tuned, modest) Tarrasch bonus. So
+        // instead verify the term itself is wired in: the same position must
+        // evaluate higher with the bonus than with the bonus zeroed out.
+        var behind = new Board("4k3/8/8/P7/8/8/8/R3K3 w - - 0 1");
+        Score saved = EvaluationParams.RookBehindPasser;
+        try
+        {
+            int withBonus = new ClassicalEvaluator().Evaluate(behind);
+            EvaluationParams.RookBehindPasser = default;
+            int withoutBonus = new ClassicalEvaluator().Evaluate(behind);
+            Assert.True(withBonus > withoutBonus,
+                "Tarrasch: the rook-behind-passer bonus must be applied");
+        }
+        finally
+        {
+            EvaluationParams.RookBehindPasser = saved;
+        }
+    }
+
+    [Fact]
+    public void Passers_BlockedPasserScoresLowerThanFreePasser()
+    {
+        var evaluator = new ClassicalEvaluator();
+
+        // Same material; the black knight blockades b6 in the first board and
+        // stands beside the pawn's path (a5) in the second.
+        var blocked = new Board("4k3/8/1n6/1P6/8/8/8/4K3 w - - 0 1");
+        var free = new Board("4k3/8/8/nP6/8/8/8/4K3 w - - 0 1");
+
+        Assert.True(evaluator.Evaluate(blocked) < evaluator.Evaluate(free),
+            "A blockaded passer must be worth less than a free one");
+    }
+
+    [Fact]
+    public void PawnStructure_ConnectedPassersBeatSplitPassers()
+    {
+        var structure = new PawnStructureEvaluator();
+
+        // Two white passers on adjacent files vs the same two passers split
+        // far apart; no black pawns, so all four are passed either way.
+        var connected = new Board("4k3/8/8/3PP3/8/8/8/4K3 w - - 0 1");
+        var split = new Board("4k3/8/8/P6P/8/8/8/4K3 w - - 0 1");
+
+        // Endgame phase only: that is where passers decide games (the texel
+        // tuner keeps the middlegame half of the bonus near zero).
+        Score c = structure.Evaluate(connected);
+        Score s = structure.Evaluate(split);
+        Assert.True(c.Eg > s.Eg,
+            "Connected passers must outscore split passers in the endgame");
+    }
+
+    [Fact]
     public void Evaluation_StartingPositionIsBalanced()
     {
         // A symmetric position must evaluate to exactly 0: any non-zero result
