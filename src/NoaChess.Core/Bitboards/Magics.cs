@@ -1,3 +1,5 @@
+using System.Runtime.Intrinsics.X86;
+
 namespace NoaChess.Core;
 
 // Magic bitboards: O(1) sliding-piece attack lookup.
@@ -24,14 +26,40 @@ public static class Magics
 {
     private struct MagicEntry
     {
-        public ulong Mask;      // Relevant blocker squares for this square.
-        public ulong Magic;     // The multiplier.
-        public int Shift;       // 64 - popcount(Mask).
-        public ulong[] Attacks; // Attack table indexed by the magic product.
+        public ulong Mask;          // Relevant blocker squares for this square.
+        public ulong Magic;         // The multiplier.
+        public int Shift;           // 64 - popcount(Mask).
+        public ulong[] Attacks;     // Attack table indexed by the magic product.
+        public ulong[]? PextAttacks; // Attack table indexed by PEXT(occ, Mask); null without BMI2.
     }
 
     private static readonly MagicEntry[] RookTable = new MagicEntry[64];
     private static readonly MagicEntry[] BishopTable = new MagicEntry[64];
+
+    // PEXT replaces the whole mask-multiply-shift dance with one instruction —
+    // but only where that instruction is actually fast. On AMD Zen1/Zen+/Zen2
+    // (family 0x17) PEXT is microcoded (~18 cycles vs ~3) and LOSES to the
+    // magic lookup, so those CPUs keep the magic path. The static readonly
+    // bool is constant-folded by the JIT after class init: the untaken branch
+    // costs nothing in either mode.
+    public static readonly bool UsePext = ComputeUsePext();
+
+    private static bool ComputeUsePext()
+    {
+        if (!Bmi2.X64.IsSupported || !X86Base.IsSupported)
+            return false;
+
+        (_, int ebx, int ecx, int edx) = X86Base.CpuId(0, 0);
+        bool isAmd = ebx == 0x68747541 && edx == 0x69746E65 && ecx == 0x444D4163; // "AuthenticAMD"
+        if (!isAmd)
+            return true; // Intel (and others exposing BMI2) have fast PEXT.
+
+        (int eax, _, _, _) = X86Base.CpuId(1, 0);
+        int baseFamily = (eax >> 8) & 0xF;
+        int extFamily = (eax >> 20) & 0xFF;
+        int family = baseFamily == 0xF ? baseFamily + extFamily : baseFamily;
+        return family >= 0x19; // Zen3 and newer.
+    }
 
     private static readonly (int df, int dr)[] RookDirections = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int df, int dr)[] BishopDirections = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -51,10 +79,43 @@ public static class Magics
     public static ulong RookAttacks(int square, ulong occupancy)
     {
         ref MagicEntry e = ref RookTable[square];
+        if (UsePext)
+            return e.PextAttacks![(int)Bmi2.X64.ParallelBitExtract(occupancy, e.Mask)];
         return e.Attacks[((occupancy & e.Mask) * e.Magic) >> e.Shift];
     }
 
     public static ulong BishopAttacks(int square, ulong occupancy)
+    {
+        ref MagicEntry e = ref BishopTable[square];
+        if (UsePext)
+            return e.PextAttacks![(int)Bmi2.X64.ParallelBitExtract(occupancy, e.Mask)];
+        return e.Attacks[((occupancy & e.Mask) * e.Magic) >> e.Shift];
+    }
+
+    // Explicit single-path lookups so tests can cross-validate BOTH paths on
+    // any BMI2 machine — a Zen+/Zen2 box never takes the PEXT branch in
+    // production (UsePext is false there), yet must still verify it.
+    public static bool PextTablesBuilt => RookTable[0].PextAttacks is not null;
+
+    public static ulong RookAttacksPext(int square, ulong occupancy)
+    {
+        ref MagicEntry e = ref RookTable[square];
+        return e.PextAttacks![(int)Bmi2.X64.ParallelBitExtract(occupancy, e.Mask)];
+    }
+
+    public static ulong BishopAttacksPext(int square, ulong occupancy)
+    {
+        ref MagicEntry e = ref BishopTable[square];
+        return e.PextAttacks![(int)Bmi2.X64.ParallelBitExtract(occupancy, e.Mask)];
+    }
+
+    public static ulong RookAttacksMagic(int square, ulong occupancy)
+    {
+        ref MagicEntry e = ref RookTable[square];
+        return e.Attacks[((occupancy & e.Mask) * e.Magic) >> e.Shift];
+    }
+
+    public static ulong BishopAttacksMagic(int square, ulong occupancy)
     {
         ref MagicEntry e = ref BishopTable[square];
         return e.Attacks[((occupancy & e.Mask) * e.Magic) >> e.Shift];
@@ -114,7 +175,22 @@ public static class Magics
                 for (int i = 0; i < tableSize; i++)
                     attacks[(int)((subsets[i] * magic) >> shift)] = reference[i];
 
-                return new MagicEntry { Mask = mask, Magic = magic, Shift = shift, Attacks = attacks };
+                // PEXT layout of the same data: the extracted mask bits ARE the
+                // index, no magic needed. Built whenever the CPU has BMI2 so
+                // the tests can validate the path even where UsePext is false.
+                ulong[]? pextAttacks = null;
+                if (Bmi2.X64.IsSupported)
+                {
+                    pextAttacks = new ulong[tableSize];
+                    for (int i = 0; i < tableSize; i++)
+                        pextAttacks[(int)Bmi2.X64.ParallelBitExtract(subsets[i], mask)] = reference[i];
+                }
+
+                return new MagicEntry
+                {
+                    Mask = mask, Magic = magic, Shift = shift,
+                    Attacks = attacks, PextAttacks = pextAttacks,
+                };
             }
         }
     }

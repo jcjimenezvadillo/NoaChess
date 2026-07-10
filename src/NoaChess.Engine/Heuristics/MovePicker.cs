@@ -80,6 +80,59 @@ public static class MovePicker
     public static void OrderCaptures(MoveList moves, Board board) =>
         Order(moves, board, Move.None, NoKillers, NoHistory, 0);
 
+    // ---------- Staged-picker range helpers ----------
+    // The staged loop in AlphaBetaSearch appends captures and quiets to the
+    // same list in phases; each phase scores and sorts only its own tail so
+    // moves already served keep their positions.
+
+    // Scores moves[from..Count) as captures/promotions and sorts the range.
+    // Winning/equal captures land above 0, losing captures in a deeply
+    // negative band — the caller uses the sign as the "losers start here" cue.
+    public static void ScoreAndSortCaptures(MoveList moves, int from, Board board)
+    {
+        int[] scores = moves.Scores;
+        for (int i = from; i < moves.Count; i++)
+            scores[i] = Score(moves[i], board, Move.None, NoKillers, NoHistory, 0,
+                              contHist: null, prevPiece: -1, prevTo: 0, Move.None);
+        SortRange(moves, from);
+    }
+
+    // Scores moves[quietsFrom..Count) as quiets (killers, counter move,
+    // history), then sorts moves[sortFrom..Count). sortFrom may sit earlier
+    // than quietsFrom so unserved losing captures merge into the same order —
+    // their band is far below any quiet score, so they sink to the very end.
+    public static void ScoreAndSortQuiets(MoveList moves, int quietsFrom, int sortFrom,
+                                          Board board, KillerTable killers, HistoryTable history,
+                                          int ply, ContinuationHistory? contHist,
+                                          int prevPiece, int prevTo, Move counterMove)
+    {
+        int[] scores = moves.Scores;
+        for (int i = quietsFrom; i < moves.Count; i++)
+            scores[i] = Score(moves[i], board, Move.None, killers, history, ply,
+                              contHist, prevPiece, prevTo, counterMove);
+        SortRange(moves, sortFrom);
+    }
+
+    // In-place insertion sort of moves[from..Count) by descending score.
+    private static void SortRange(MoveList moves, int from)
+    {
+        int[] scores = moves.Scores;
+        for (int i = from + 1; i < moves.Count; i++)
+        {
+            Move move = moves[i];
+            int score = scores[i];
+            int j = i - 1;
+            while (j >= from && scores[j] < score)
+            {
+                moves[j + 1] = moves[j];
+                scores[j + 1] = scores[j];
+                j--;
+            }
+            moves[j + 1] = move;
+            scores[j + 1] = score;
+        }
+    }
+
     // Empty shared instances so OrderCaptures can reuse the same scorer.
     private static readonly KillerTable NoKillers = new(1);
     private static readonly HistoryTable NoHistory = new();
