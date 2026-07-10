@@ -29,6 +29,23 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // Per-color pawn attack maps, filled each call (reused: no allocation).
     private readonly ulong[] _pawnAttacks = new ulong[2];
 
+    // Squares attacked by two pawns of the same color, filled each call.
+    private readonly ulong[] _pawnDoubleAttacks = new ulong[2];
+
+    // attackedBy[color, pieceType]: squares attacked by that piece type; the
+    // extra AllPieces slot holds the union over every type. attackedBy2[color]
+    // is the set of squares attacked by two or more units of the same color
+    // (pawn double attacks included). Both are rebuilt on every Evaluate call
+    // and feed the threat, king-safety and mobility terms.
+    public const int AllPieces = 6;
+    private readonly ulong[,] _attackedBy = new ulong[2, 7];
+    private readonly ulong[] _attackedBy2 = new ulong[2];
+
+    // Read-only accessors for tests and for evaluation terms in other classes.
+    public ulong AttackedBy(Color color, PieceType type) => _attackedBy[(int)color, (int)type];
+    public ulong AttackedByAll(Color color) => _attackedBy[(int)color, AllPieces];
+    public ulong AttackedBy2(Color color) => _attackedBy2[(int)color];
+
     // Space area per color: files c-f, relative ranks 2-4.
     private static readonly ulong[] SpaceMask = new ulong[2];
 
@@ -51,16 +68,35 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // the enemy's pawn-attacked squares is simply lost, so those squares do
         // not count as real mobility.
         ulong[] pawnAttacks = _pawnAttacks;
-        pawnAttacks[(int)Color.White] = ((whitePawns & ~Bitboard.FileA) << 7)
-                                      | ((whitePawns & ~Bitboard.FileH) << 9);
-        pawnAttacks[(int)Color.Black] = ((blackPawns & ~Bitboard.FileA) >> 9)
-                                      | ((blackPawns & ~Bitboard.FileH) >> 7);
+        ulong whitePawnsWest = (whitePawns & ~Bitboard.FileA) << 7;
+        ulong whitePawnsEast = (whitePawns & ~Bitboard.FileH) << 9;
+        ulong blackPawnsWest = (blackPawns & ~Bitboard.FileA) >> 9;
+        ulong blackPawnsEast = (blackPawns & ~Bitboard.FileH) >> 7;
+        pawnAttacks[(int)Color.White] = whitePawnsWest | whitePawnsEast;
+        pawnAttacks[(int)Color.Black] = blackPawnsWest | blackPawnsEast;
+
+        // A square attacked from both directions is attacked by two pawns
+        // (SF pawn_double_attacks_bb).
+        _pawnDoubleAttacks[(int)Color.White] = whitePawnsWest & whitePawnsEast;
+        _pawnDoubleAttacks[(int)Color.Black] = blackPawnsWest & blackPawnsEast;
 
         for (int c = 0; c < 2; c++)
         {
             _kingSquare[c] = board.KingSquare((Color)c);
             _kingZone[c] = Attacks.King(_kingSquare[c]) | Bitboard.SquareBB(_kingSquare[c]);
             _kingDanger[c] = 0;
+
+            // attackedBy seed (SF Evaluation::initialize): king and pawn attack
+            // sets are known up front; the piece loop below adds the rest.
+            ulong kingAttacks = Attacks.King(_kingSquare[c]);
+            _attackedBy[c, (int)PieceType.Pawn] = pawnAttacks[c];
+            _attackedBy[c, (int)PieceType.Knight] = 0;
+            _attackedBy[c, (int)PieceType.Bishop] = 0;
+            _attackedBy[c, (int)PieceType.Rook] = 0;
+            _attackedBy[c, (int)PieceType.Queen] = 0;
+            _attackedBy[c, (int)PieceType.King] = kingAttacks;
+            _attackedBy[c, AllPieces] = kingAttacks | pawnAttacks[c];
+            _attackedBy2[c] = _pawnDoubleAttacks[c] | (kingAttacks & pawnAttacks[c]);
         }
 
         Score score = default; // White's point of view.
@@ -104,6 +140,13 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                             PieceType.Rook => Attacks.Rook(sq, occ),
                             _ => Attacks.Queen(sq, occ),
                         };
+
+                        // attackedBy bookkeeping (SF Evaluation::pieces): any
+                        // square this piece hits that was already covered by an
+                        // earlier friendly unit becomes a double attack.
+                        _attackedBy2[c] |= _attackedBy[c, AllPieces] & attacks;
+                        _attackedBy[c, p] |= attacks;
+                        _attackedBy[c, AllPieces] |= attacks;
 
                         // Mobility, centered on a typical count for the piece.
                         int moves = Bitboard.PopCount(attacks & mobilityArea);
