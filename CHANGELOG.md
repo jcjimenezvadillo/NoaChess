@@ -1,5 +1,27 @@
 ﻿# CHANGELOG
 
+## 2026-07-10 (v2.6.1) — block 4B: Stockfish threat evaluation
+
+**SPRT vs v2.5.0 (tc 10+0.1): +103 ± 35 Elo, llr 2.99, H1 accepted in 243 games, score 109-42-81 [64.4%]** — far above the +25-35 estimate; the largest single evaluation gain of the project (NoaChess had zero threat terms, the biggest gap identified in the SF 15.1 analysis).
+
+- eval: SF values RESCALED by 100/208 = 0.48 — Stockfish works in internal units where PawnValueEg = 208 equals the 100 cp it reports over UCI, while NoaChess evaluates directly in ~centipawns (PeSTO). The first SPRT run used the raw SF numbers, which made every threat term twice as strong as SF intends, and trended negative (llr -1.09 after 200 games) before being aborted. Permanent rule: every value ported from SF evaluate.cpp/pawns.cpp gets the 0.48 factor.
+- eval: full Stockfish 15.1 threat evaluation (evaluate.cpp threats()), all 10 terms. The core concept is "strongly protected" (pawn-defended, or defended twice and not attacked twice) versus "weak" (attacked and not strongly protected) — precisely what the removed v2.4.0 threat attempt lacked, which rewarded attacks on healthily defended pieces and distorted the material judgement.
+- eval: ThreatByMinor[victim] / ThreatByRook[victim] — bonuses indexed by the attacked piece type (minors also score against defended pieces; rooks only against weak ones).
+- eval: Hanging (weak and undefended, or a non-pawn attacked twice), ThreatByKing (endgame-heavy), WeakQueenProtection (weak piece whose only protector is the queen), RestrictedPiece (enemy moves restricted by our control).
+- eval: ThreatBySafePawn (safe pawn attacking a non-pawn) and ThreatByPawnPush (pawn can push next move to a safe square and then attack a non-pawn), with SF's exact push logic (single + double pushes, safety filters).
+- eval: KnightOnQueen / SliderOnQueen — threats on the squares from which the enemy queen can be hit next move, doubled when the enemy queen is the only queen on the board (queen imbalance).
+- tests: ThreatsTests — hanging vs defended, safe-pawn threat, minor-on-rook vs minor-on-pawn delta, pawn-push threat probed on the isolated term, doubled-rook battery against the queen, strongly-protected exclusion (59 tests green).
+- bench: NPS cost ~3-5%.
+
+## 2026-07-10 (v2.6.0) — block 4A: attackedBy infrastructure
+
+**Evaluation-neutral enabler** (identical node counts on fixed-depth benchmark positions; NPS cost ~2-3%, within the 2-4% budget). Prerequisite for threats (4B), improved mobility (4C) and king safety (4D).
+
+- eval: attackedBy[color][pieceType] + AllPieces union and attackedBy2[color] (squares attacked by two or more friendly units), rebuilt on every evaluate call, mirroring Stockfish Evaluation::initialize()/pieces(). King and pawn attack sets (including pawn double attacks) seed the tables before the piece loop; each piece then accumulates its attacks into the per-type, the union and the double-attack bitboards.
+- eval: x-ray attacks and pinned-piece attack restriction deliberately NOT included yet — they change the attack sets (and therefore mobility) and belong to block 4C, so this change stays strictly evaluation-neutral.
+- tests: AttackedByTests — per-type union, pawn double attacks, rook overlap, single-attacker exclusion, king+pawn overlap, no stale state between calls (53 tests green).
+- docs: v2.5.0 strength updated to ~2768 CCRL from the 392-game LTC precision gauntlet (67.5% vs 2580-2788 field); old NoaChess_ROADMAP.md removed (superseded by ROADMAP.md).
+
 ## 2026-07-10 (v2.5.0) — speed block: staged move generation + lazy legality + PEXT
 
 **SPRT vs v2.4.5 (tc 10+0.1): +101.3 ± 36.8 Elo, LOS 100%, score 91-32-85 [64.2%], H1 accepted in 208 games** — the largest single-version gain since the v2.3.0 search overhaul. Same engine knowledge, dramatically less work per node: depth 15 from the start position now takes 2.9s instead of 4.7s (-39%). **Precision gauntlet (tc=60+0.6, 392 games, 7 rivals rated 2580–2788 CCRL): 67.5% score, +127 Elo over the 2641-average field → ~2768 CCRL-equivalent.**
@@ -13,7 +35,7 @@
 - eval fix: backward is now exclusive of isolated — an isolated pawn trivially has no support and already pays its own (larger) penalty; stacking both double-counted the same weakness.
 - note: king safety overhaul (graduated shelter, pawn storm, safe checks) was implemented and REJECTED on this cycle: -77 Elo with pawn-only safe-check masking (phantom checks flooding the quadratic danger curve), statistically zero after fixing the mask and after isolating shelter/storm alone (~900 games total). King-safety units feed a quadratic curve and are not texel-tunable, making each value iteration cost hundreds of games — shelved until after the NNUE block per the pre-agreed decision rule.
 
-## 2026-07-10 (v2.4.5) — Fase A eval: tempo + phalanx + backward pawns + retune
+## 2026-07-10 (v2.4.5) — phase A eval: tempo + phalanx + backward pawns + retune
 
 **SPRT vs v2.4.0 (tc 10+0.1, 1300 games): +12.2 ± 15.2 Elo, LOS 94.2%, LLR +1.2** — positive trend, SPRT non-conclusive at stop; retune on fresh data confirms the new terms are absorbed cleanly.
 
@@ -49,10 +71,6 @@
 - search: progressive aspiration widening — on a fail high/low the window is re-centered on the failing score and doubled instead of jumping straight to a full-width re-search.
 - search: Internal Iterative Reductions — nodes at depth >= 4 with no TT move are searched one ply shallower (bad ordering is not worth full depth; a later visit finds the TT move waiting).
 - search: ProbCut — at non-PV depth >= 5 nodes, a non-losing capture that beats beta + 150 in a quiescence probe and then in a depth-4 verification search cuts the node immediately.
-
-## 2026-07-09 (v2.2.1) — REJECTED by SPRT (not merged)
-
-Tempo bonus + pawn-threat penalties, targeting the measured weakness playing Black. The colour-symmetry investigation DID rule out any sign bug (a fuzz test mirrors ~6,000 random-playout positions and asserts identical scores — kept in the test suite). But the eval terms themselves failed SPRT vs v2.2.0 (-16 Elo after 350 games at 10+0.1, llr trending to H0): the threat penalties were too large and distorted material judgement. Reverted; the Black-side weakness stays open for Bloque 2 with tuned values.
 
 ## 2026-07-09 (v2.2.0) — classical evaluation & search overhaul
 

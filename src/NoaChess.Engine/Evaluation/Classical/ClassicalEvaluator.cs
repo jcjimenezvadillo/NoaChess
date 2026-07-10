@@ -32,6 +32,10 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // Squares attacked by two pawns of the same color, filled each call.
     private readonly ulong[] _pawnDoubleAttacks = new ulong[2];
 
+    // Mobility area per color, kept for terms outside the piece loop (threats
+    // against the enemy queen use it as their "safe square" filter).
+    private readonly ulong[] _mobilityArea = new ulong[2];
+
     // attackedBy[color, pieceType]: squares attacked by that piece type; the
     // extra AllPieces slot holds the union over every type. attackedBy2[color]
     // is the set of squares attacked by two or more units of the same color
@@ -113,6 +117,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             // Mobility area: anywhere not blocked by our own pieces and not
             // covered by an enemy pawn.
             ulong mobilityArea = ~ownPieces & ~pawnAttacks[(int)enemy];
+            _mobilityArea[c] = mobilityArea;
 
             Score side = default;
 
@@ -186,7 +191,8 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             ulong passers = color == Color.White ? whitePassers : blackPassers;
             Score side = KnightOutposts(board, color, pawnAttacks)
                        + PasserPieceTerms(board, color, passers)
-                       + Space(board, color, pawnAttacks);
+                       + Space(board, color, pawnAttacks)
+                       + Threats(board, color);
             score += side * sign;
         }
 
@@ -207,6 +213,132 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // bonus for having the initiative (always positive for the evaluee).
         return (board.SideToMove == Color.White ? tapered : -tapered)
              + EvaluationParams.Tempo;
+    }
+
+    // Pawn attack squares of an arbitrary pawn set (not just the full pawn
+    // bitboard cached in _pawnAttacks).
+    private static ulong PawnAttacksOf(Color color, ulong pawns) =>
+        color == Color.White
+            ? ((pawns & ~Bitboard.FileA) << 7) | ((pawns & ~Bitboard.FileH) << 9)
+            : ((pawns & ~Bitboard.FileA) >> 9) | ((pawns & ~Bitboard.FileH) >> 7);
+
+    // Threats (SF Evaluation::threats): bonuses by the types of the attacking
+    // and the attacked pieces. The key concept is "strongly protected": a
+    // square defended by an enemy pawn, or defended more times than we attack
+    // it. Enemy pieces that are attacked and NOT strongly protected are
+    // "weak" and everything below feeds on that classification. This is what
+    // the removed v2.4.0 threat terms lacked — they rewarded any attack, even
+    // on a healthily defended piece, which distorted the material judgement.
+    // Public for the test suite (which probes the term in isolation, free of
+    // PST/material confounds); requires Evaluate() to have run on the same
+    // board first so the attackedBy tables are current.
+    public Score Threats(Board board, Color us)
+    {
+        Color them = Board.OppositeColor(us);
+        int u = (int)us, t = (int)them;
+        ulong occ = board.AllOccupancy;
+        Score score = default;
+
+        // Non-pawn enemies.
+        ulong nonPawnEnemies = board.Occupancy(them) & ~board.Pieces(them, PieceType.Pawn);
+
+        // Squares strongly protected by the enemy: pawn-defended, or defended
+        // twice while we do not attack them twice.
+        ulong stronglyProtected = _attackedBy[t, (int)PieceType.Pawn]
+                                | (_attackedBy2[t] & ~_attackedBy2[u]);
+
+        // Non-pawn enemies, strongly protected.
+        ulong defended = nonPawnEnemies & stronglyProtected;
+
+        // Enemies not strongly protected and under our attack.
+        ulong weak = board.Occupancy(them) & ~stronglyProtected & _attackedBy[u, AllPieces];
+
+        if ((defended | weak) != 0)
+        {
+            // Minor attacks on a defended or weak piece (a knight/bishop hit
+            // is a threat even against a defended target: minors are cheap).
+            ulong b = (defended | weak)
+                    & (_attackedBy[u, (int)PieceType.Knight] | _attackedBy[u, (int)PieceType.Bishop]);
+            while (b != 0)
+            {
+                int sq = Bitboard.PopLsb(ref b);
+                score += EvaluationParams.ThreatByMinor[(int)board.PieceTypeAt(sq)];
+            }
+
+            // Rook attacks count only against weak pieces.
+            b = weak & _attackedBy[u, (int)PieceType.Rook];
+            while (b != 0)
+            {
+                int sq = Bitboard.PopLsb(ref b);
+                score += EvaluationParams.ThreatByRook[(int)board.PieceTypeAt(sq)];
+            }
+
+            if ((weak & _attackedBy[u, (int)PieceType.King]) != 0)
+                score += EvaluationParams.ThreatByKing;
+
+            // Hanging: weak and either completely undefended, or a non-pawn
+            // that we attack twice.
+            b = ~_attackedBy[t, AllPieces] | (nonPawnEnemies & _attackedBy2[u]);
+            score += EvaluationParams.Hanging * Bitboard.PopCount(weak & b);
+
+            // Additional bonus if the weak piece is only protected by a queen.
+            score += EvaluationParams.WeakQueenProtection
+                   * Bitboard.PopCount(weak & _attackedBy[t, (int)PieceType.Queen]);
+        }
+
+        // Bonus for restricting their piece moves: squares the enemy attacks,
+        // not strongly protected, that we attack too.
+        ulong restricted = _attackedBy[t, AllPieces] & ~stronglyProtected & _attackedBy[u, AllPieces];
+        score += EvaluationParams.RestrictedPiece * Bitboard.PopCount(restricted);
+
+        // Protected or unattacked squares.
+        ulong safe = ~_attackedBy[t, AllPieces] | _attackedBy[u, AllPieces];
+
+        // Bonus for attacking enemy non-pawns with our relatively safe pawns.
+        ulong safePawnAttacks = PawnAttacksOf(us, board.Pieces(us, PieceType.Pawn) & safe)
+                              & nonPawnEnemies;
+        score += EvaluationParams.ThreatBySafePawn * Bitboard.PopCount(safePawnAttacks);
+
+        // Squares where our pawns can push on the next move (single pushes,
+        // plus double pushes through a free relative rank 3 square)...
+        ulong pushes = us == Color.White
+            ? (board.Pieces(us, PieceType.Pawn) << 8) & ~occ
+            : (board.Pieces(us, PieceType.Pawn) >> 8) & ~occ;
+        ulong rank3 = us == Color.White ? 0xFFUL << 16 : 0xFFUL << 40;
+        pushes |= us == Color.White
+            ? ((pushes & rank3) << 8) & ~occ
+            : ((pushes & rank3) >> 8) & ~occ;
+
+        // ...keeping only the relatively safe ones, then the non-pawns those
+        // pushed pawns would attack.
+        pushes &= ~_attackedBy[t, (int)PieceType.Pawn] & safe;
+        ulong pushAttacks = PawnAttacksOf(us, pushes) & nonPawnEnemies;
+        score += EvaluationParams.ThreatByPawnPush * Bitboard.PopCount(pushAttacks);
+
+        // Threats on the next moves against the enemy queen. Doubled when the
+        // enemy queen is the only queen left (losing it is not repayable).
+        ulong enemyQueen = board.Pieces(them, PieceType.Queen);
+        if (Bitboard.PopCount(enemyQueen) == 1)
+        {
+            int queenImbalance =
+                Bitboard.PopCount(enemyQueen | board.Pieces(us, PieceType.Queen)) == 1 ? 1 : 0;
+
+            int qsq = Bitboard.Lsb(enemyQueen);
+            ulong queenSafe = _mobilityArea[u]
+                            & ~board.Pieces(us, PieceType.Pawn)
+                            & ~stronglyProtected;
+
+            ulong knightHits = _attackedBy[u, (int)PieceType.Knight] & Attacks.Knight(qsq);
+            score += EvaluationParams.KnightOnQueen
+                   * (Bitboard.PopCount(knightHits & queenSafe) * (1 + queenImbalance));
+
+            ulong sliderHits = (_attackedBy[u, (int)PieceType.Bishop] & Attacks.Bishop(qsq, occ))
+                             | (_attackedBy[u, (int)PieceType.Rook] & Attacks.Rook(qsq, occ));
+            score += EvaluationParams.SliderOnQueen
+                   * (Bitboard.PopCount(sliderHits & queenSafe & _attackedBy2[u]) * (1 + queenImbalance));
+        }
+
+        return score;
     }
 
     // Rook on the 7th rank: attacks the opponent's pawns on their starting rank
