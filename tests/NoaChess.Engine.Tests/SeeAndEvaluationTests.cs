@@ -156,10 +156,11 @@ public class SeeAndEvaluationTests
     [Fact]
     public void Evaluation_StartingPositionIsBalanced()
     {
-        // A symmetric position must evaluate to exactly 0: any non-zero result
+        // The starting position is symmetric, so the evaluation equals exactly
+        // Tempo (the side-to-move initiative bonus). Any value other than Tempo
         // reveals a colour asymmetry in the tapered tables or terms.
         var evaluator = new ClassicalEvaluator();
-        Assert.Equal(0, evaluator.Evaluate(new Board(Board.StartFen)));
+        Assert.Equal(EvaluationParams.Tempo, evaluator.Evaluate(new Board(Board.StartFen)));
     }
 
     [Theory]
@@ -280,5 +281,62 @@ public class SeeAndEvaluationTests
         var withoutPair = new Board("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1");
         Assert.True(evaluator.Evaluate(withPair) > evaluator.Evaluate(withoutPair),
             "Two bishops must score higher than bishop + knight of equal material");
+    }
+
+    [Fact]
+    public void Phalanx_BonusIsApplied()
+    {
+        // White has two pawns side by side on d4/e4 (phalanx) vs the same
+        // pawns on d4/f4 (not touching). Zero out the phalanx array to verify
+        // the term is responsible for the difference.
+        var phalanxBoard = new Board("4k3/8/8/8/3PP3/8/8/4K3 w - - 0 1");
+        var splitBoard   = new Board("4k3/8/8/8/3P1P2/8/8/4K3 w - - 0 1");
+
+        var savedPhalanx = EvaluationParams.Phalanx;
+        EvaluationParams.Phalanx = [new(0,0), new(0,0), new(0,0), new(0,0),
+                                     new(0,0), new(0,0), new(0,0), new(0,0)];
+        var evaluator = new ClassicalEvaluator();
+        int withoutBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
+
+        EvaluationParams.Phalanx = savedPhalanx;
+        evaluator = new ClassicalEvaluator();
+        int withBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
+
+        Assert.True(withBonus > withoutBonus, "Phalanx bonus must make d4/e4 score better than d4/f4");
+    }
+
+    [Fact]
+    public void Backward_PenaltyIsApplied()
+    {
+        // White e3 is backward: stop square e4 is attacked by black d5, and
+        // white has no pawn on d or f files behind it (ranks 0-1). Black d5 is
+        // NOT backward because c6 is a black pawn on an adjacent file behind
+        // it (rank 5 > rank 4 for black = "behind"). Only white is penalized,
+        // so zeroing BackwardPawn must raise the score.
+        var board = new Board("4k3/8/2p5/3p4/8/4P3/8/4K3 w - - 0 1");
+
+        var saved = EvaluationParams.BackwardPawn;
+        EvaluationParams.BackwardPawn = new(0, 0);
+        int scoreWithout = new ClassicalEvaluator().Evaluate(board);
+
+        EvaluationParams.BackwardPawn = saved;
+        int scoreWith = new ClassicalEvaluator().Evaluate(board);
+
+        Assert.True(scoreWith < scoreWithout, "Backward pawn penalty must lower the score of the position");
+    }
+
+    [Fact]
+    public void Tempo_SideToMoveScoresHigher()
+    {
+        // In a symmetric position the side to move should always score higher
+        // than the waiting side, purely from the tempo bonus.
+        var evaluator = new ClassicalEvaluator();
+        var whiteToMove = new Board("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        var blackToMove = new Board("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
+        int wtm = evaluator.Evaluate(whiteToMove);
+        int btm = evaluator.Evaluate(blackToMove);
+        Assert.True(wtm > 0 && btm > 0,
+            "Both sides should score positive (tempo) when it is their turn in a symmetric position");
+        Assert.True(wtm == btm, "Symmetric position must give both sides the same absolute tempo score");
     }
 }

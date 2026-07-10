@@ -160,8 +160,10 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // Mop-up: nudge a won bare-king endgame towards the mate (see below).
         tapered += MopUp(board, Color.White) - MopUp(board, Color.Black);
 
-        // Negamax wants the score relative to the side to move.
-        return board.SideToMove == Color.White ? tapered : -tapered;
+        // Negamax: score relative to the side to move, plus a small tempo
+        // bonus for having the initiative (always positive for the evaluee).
+        return (board.SideToMove == Color.White ? tapered : -tapered)
+             + EvaluationParams.Tempo;
     }
 
     // Rook on the 7th rank: attacks the opponent's pawns on their starting rank
