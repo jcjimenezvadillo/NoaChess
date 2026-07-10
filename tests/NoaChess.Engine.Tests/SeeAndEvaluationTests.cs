@@ -308,12 +308,13 @@ public class SeeAndEvaluationTests
     [Fact]
     public void Backward_PenaltyIsApplied()
     {
-        // White e3 is backward: stop square e4 is attacked by black d5, and
-        // white has no pawn on d or f files behind it (ranks 0-1). Black d5 is
-        // NOT backward because c6 is a black pawn on an adjacent file behind
-        // it (rank 5 > rank 4 for black = "behind"). Only white is penalized,
-        // so zeroing BackwardPawn must raise the score.
-        var board = new Board("4k3/8/2p5/3p4/8/4P3/8/4K3 w - - 0 1");
+        // White e3 is a genuine backward pawn: its stop square e4 is attacked
+        // by black d5, its only neighbour (d4) is AHEAD of it so no support
+        // can ever come, and it is not isolated (so the exclusive-of-isolated
+        // rule does not skip it). Every black pawn has level-or-behind support
+        // (b7 backs c6, c6 backs d5), so no black pawn is backward. Only white
+        // is penalized: zeroing BackwardPawn must raise the score.
+        var board = new Board("4k3/1p6/2p5/3p4/3P4/4P3/8/4K3 w - - 0 1");
 
         var saved = EvaluationParams.BackwardPawn;
         EvaluationParams.BackwardPawn = new(0, 0);
