@@ -6,13 +6,13 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current strength: ~2720 Elo estimated** (v2.4.0: +13.0 ± 12.6 Elo SPRT over v2.3.0, which measured ~2710 CCRL-equivalent in a 231-game LTC precision gauntlet vs 7 engines rated 2580–2788 — see [CHANGELOG](CHANGELOG.md)).
+**Current strength: ~2732 Elo estimated** (v2.4.5: +12.2 ± 15.2 Elo SPRT over v2.4.0, which was +13.0 ± 12.6 over v2.3.0, which measured ~2710 CCRL-equivalent in a 231-game LTC precision gauntlet — see [CHANGELOG](CHANGELOG.md)).
 
-### **Main Features (v2.4.0)**
+### **Main Features (v2.4.5)**
 - Bitboard board representation with **magic bitboards** for sliding pieces.
 - Full legal move generation (castling, en passant, promotions), validated against the public Perft reference values.
 - **Search**: iterative deepening, aspiration windows with progressive widening, PVS, transposition table (Zobrist), quiescence search, null-move pruning, check extensions, singular extensions, SEE (static exchange evaluation) ordering and pruning, killer/history/counter-move/continuation-history ordering, history-informed logarithmic LMR, reverse futility pruning, futility pruning, late move pruning, Internal Iterative Reductions, ProbCut.
-- **Evaluation**: tapered (middlegame/endgame) evaluation blended by game phase — PeSTO piece values, two-phase piece-square tables, king safety (attack units + pawn shield through quadratic danger curve), piece mobility, knight outposts, space, bishop pair, rooks on open/semi-open files and on the 7th rank, tapered pawn structure (doubled/isolated/passed, connected passers, blocked passers, rook behind passer); mop-up term for won endgames.
+- **Evaluation**: tapered (middlegame/endgame) evaluation blended by game phase — PeSTO piece values, two-phase piece-square tables, king safety (attack units + pawn shield through quadratic danger curve), piece mobility, tempo bonus, knight outposts, space, bishop pair, rooks on open/semi-open files and on the 7th rank, tapered pawn structure (doubled/isolated/passed/backward, phalanx, connected passers, blocked passers, rook behind passer); mop-up term for won endgames.
 - **NNUE infrastructure**: HalfKP neural network runtime, incremental accumulators, SIMD inference; optional via UCI `UseNNUE` / `EvalFile` options.
 - **Time management**: soft/hard budgets, movestogo support, GUI-latency safety margins.
 - **Full UCI**: uci, isready, ucinewgame, setoption (Hash, Threads, MoveOverhead, Profile, UseNNUE, EvalFile), position, go (depth/nodes/movetime/clock/ponder/infinite), stop, quit. Asynchronous search; publishes as a single self-contained .exe.
@@ -54,7 +54,8 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.2** — Tapered classical evaluation overhaul + search pruning (log LMR, RFP, futility, LMP). ✅ (~2600 Elo)
 - **v2.3** — Search core overhaul: continuation/counter-move history, singular extensions, history-based LMR, IIR, ProbCut. ✅ (~2710 Elo measured)
 - **v2.4** — Evaluation terms (knight outposts, advanced passers, rook on 7th, space) + full texel tuning (positional terms + PSTs) on fresh self-play data. ✅ (+13 ± 13 Elo SPRT vs v2.3.0)
-- **Next** — Speed · NNUE retrain · Lazy SMP · Book/tablebases · see the full roadmap.
+- **v2.4.5** — Evaluation Fase A: tempo bonus, phalanx/connected pawns, backward pawns + full retune on fresh data. ✅ (+12 ± 15 Elo SPRT vs v2.4.0)
+- **Next** — King safety (shelter + storm) · Speed · NNUE retrain · Lazy SMP · see the full roadmap.
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -74,13 +75,13 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Fuerza actual: ~2720 Elo estimado** (v2.4.0: +13.0 ± 12.6 Elo por SPRT sobre la v2.3.0, que midió ~2710 equivalente CCRL en un gauntlet LTC de precisión de 231 partidas contra 7 motores de 2580–2788 — ver [CHANGELOG](CHANGELOG.md)).
+**Fuerza actual: ~2732 Elo estimado** (v2.4.5: +12.2 ± 15.2 Elo por SPRT sobre la v2.4.0, que fue +13.0 ± 12.6 sobre la v2.3.0, que midió ~2710 equivalente CCRL en un gauntlet LTC de precisión de 231 partidas — ver [CHANGELOG](CHANGELOG.md)).
 
-### **Características principales (v2.4.0)**
+### **Características principales (v2.4.5)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes.
 - Generación de movimientos legales completa (enroques, al paso, promociones), validada contra los valores públicos de referencia de Perft.
 - **Búsqueda**: iterative deepening, aspiration windows con ensanchado progresivo, PVS, tabla de transposición (Zobrist), quiescence, null-move pruning, extensiones de jaque, singular extensions, SEE para ordenación y poda, ordenación por killers/history/counter-move/continuation history, LMR logarítmico informado por historia, reverse futility pruning, futility pruning, late move pruning, Internal Iterative Reductions, ProbCut.
-- **Evaluación**: evaluación tapered (fase media/final) mezclada por fase de juego — valores PeSTO, tablas pieza-casilla de dos fases, seguridad del rey (unidades de ataque + escudo de peones mediante curva cuadrática), movilidad de piezas, outposts de caballo, espacio, par de alfiles, torres en columnas abiertas/semiabiertas y en séptima fila, estructura de peones tapered (doblados/aislados/pasados, pasados conectados, pasados bloqueados, torre detrás del pasado); término mop-up para finales ganados.
+- **Evaluación**: evaluación tapered (fase media/final) mezclada por fase de juego — valores PeSTO, tablas pieza-casilla de dos fases, seguridad del rey (unidades de ataque + escudo de peones mediante curva cuadrática), movilidad de piezas, bonus de tempo, outposts de caballo, espacio, par de alfiles, torres en columnas abiertas/semiabiertas y en séptima fila, estructura de peones tapered (doblados/aislados/pasados/retrasados, peones en falange, pasados conectados, pasados bloqueados, torre detrás del pasado); término mop-up para finales ganados.
 - **Infraestructura NNUE**: runtime de red neuronal HalfKP, acumuladores incrementales, inferencia SIMD; opcional mediante opciones UCI `UseNNUE` / `EvalFile`.
 - **Gestión de tiempo**: presupuestos soft/hard, soporte movestogo, márgenes de seguridad para la latencia de la GUI.
 - **UCI completo**: uci, isready, ucinewgame, setoption (Hash, Threads, MoveOverhead, Profile, UseNNUE, EvalFile), position, go (depth/nodes/movetime/reloj/ponder/infinite), stop, quit. Búsqueda asíncrona; se publica como .exe único autocontenido.
@@ -122,7 +123,8 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.2** — Evaluación clásica tapered + podas de búsqueda (LMR log, RFP, futility, LMP). ✅ (~2600 Elo)
 - **v2.3** — Búsqueda core: continuation/counter-move history, singular extensions, LMR por historia, IIR, ProbCut. ✅ (~2710 Elo medido)
 - **v2.4** — Términos de evaluación (outposts de caballo, pasados avanzados, torre en séptima, espacio) + texel tuning completo (términos posicionales + PSTs) con datos propios frescos. ✅ (+13 ± 13 Elo por SPRT contra la v2.3.0)
-- **Siguiente** — Velocidad · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver roadmap completo.
+- **v2.4.5** — Evaluación Fase A: tempo, peones en falange (phalanx), peones retrasados (backward) + retune completo con datos frescos. ✅ (+12 ± 15 Elo por SPRT contra la v2.4.0)
+- **Siguiente** — Seguridad del rey (shelter + storm) · Velocidad · Re-entrenamiento NNUE · Lazy SMP · ver roadmap completo.
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 
