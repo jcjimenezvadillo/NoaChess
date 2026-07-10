@@ -29,7 +29,7 @@ src/NoaChess.GUI.Wpf   -> WPF board application (MVVM)
 tests/                 -> xUnit test suites (Perft, make/unmake, search, SEE...)
 benchmarks/            -> BenchmarkDotNet micro-benchmarks
 ```
-Dependency rule: `Core` depends on nothing; `Engine` uses `Core`; `UCI` and the GUI are thin hosts. The full plan lives in [NoaChess_ROADMAP.md](NoaChess_ROADMAP.md).
+Dependency rule: `Core` depends on nothing; `Engine` uses `Core`; `UCI` and the GUI are thin hosts. The full plan lives in [ROADMAP.md](ROADMAP.md).
 
 ### **Build & Run**
 ```bash
@@ -99,7 +99,7 @@ src/NoaChess.GUI.Wpf   -> aplicación de tablero WPF (MVVM)
 tests/                 -> suites xUnit (Perft, make/unmake, búsqueda, SEE...)
 benchmarks/            -> micro-benchmarks BenchmarkDotNet
 ```
-Regla de dependencias: `Core` no depende de nada; `Engine` usa `Core`; `UCI` y la GUI son hosts finos. El plan completo está en [NoaChess_ROADMAP.md](NoaChess_ROADMAP.md).
+Regla de dependencias: `Core` no depende de nada; `Engine` usa `Core`; `UCI` y la GUI son hosts finos. El plan completo está en [ROADMAP.md](ROADMAP.md).
 
 ### **Compilar y ejecutar**
 ```bash
