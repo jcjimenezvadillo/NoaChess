@@ -542,14 +542,20 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             }
         }
 
+        // ---- Staged move picking ----
+        // Legality is checked lazily at make time (like quiescence does), and
+        // generation itself is staged so a node that cuts off early never pays
+        // for moves it does not reach:
+        //   stage 0: the TT move alone, vetted by IsPseudoLegal — no generation.
+        //   stage 1: captures/promotions, sorted; served while SEE-good.
+        //   stage 2: quiet moves (sorted with any unserved losing captures,
+        //            which sink to the very end by score band).
+        // The order served is identical to the old full-sort ordering.
         MoveList moves = _moveLists[ply];
-        MoveGenerator.GenerateLegalMoves(board, moves);
-
-        // No legal moves: mate or stalemate. The ply is added to the mate
-        // score so the engine prefers the SHORTEST mate and, when mated,
-        // drags it out as long as possible.
-        if (moves.Count == 0)
-            return inCheck ? -MateScore + ply : 0;
+        moves.Clear();
+        bool ttServed = ttMove != Move.None && MoveGenerator.IsPseudoLegal(board, ttMove);
+        if (ttServed)
+            moves.Add(ttMove);
 
         // Previous-move context for counter moves and continuation history
         // (absent at the root or right after a null move).
@@ -557,15 +563,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
         Move counterMove = prevPiece >= 0 ? _counterMoves[prevPiece, prevTo] : Move.None;
 
-        MovePicker.Order(moves, board, ttMove, _killers, _history, ply,
-                         _contHist, prevPiece, prevTo, counterMove);
-
         Color stm = board.SideToMove;
         int originalAlpha = alpha;
         Move bestMove = Move.None;
         int bestScore = -Infinity;
         int searched = 0;
         int quietsSearched = 0;
+        int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
 
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
@@ -573,9 +577,41 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         Span<Move> triedQuiets = stackalloc Move[64];
         int triedQuietCount = 0;
 
-        for (int i = 0; i < moves.Count; i++)
+        for (int i = 0; ; i++)
         {
+            // Stage transitions: generate the next batch when the list runs
+            // out, or when serving is about to reach a losing capture (those
+            // must wait until after the quiets). Loops because a stage can
+            // come up empty (no captures / no quiets).
+            bool exhausted = false;
+            while (i == moves.Count || (stage == 1 && moves.Scores[i] < 0))
+            {
+                if (stage == 0)
+                {
+                    stage = 1;
+                    MoveGenerator.AppendCaptureMoves(board, moves);
+                    MovePicker.ScoreAndSortCaptures(moves, i, board);
+                }
+                else if (stage == 1)
+                {
+                    stage = 2;
+                    int quietsFrom = moves.Count;
+                    MoveGenerator.AppendQuietMoves(board, moves);
+                    MovePicker.ScoreAndSortQuiets(moves, quietsFrom, sortFrom: i, board,
+                        _killers, _history, ply, _contHist, prevPiece, prevTo, counterMove);
+                }
+                else
+                {
+                    exhausted = true;
+                    break;
+                }
+            }
+            if (exhausted)
+                break;
+
             Move move = moves[i];
+            if (ttServed && i > 0 && move == ttMove)
+                continue; // The generators re-emit the TT move; already served.
             if (move == excluded)
                 continue; // Singular verification searches everything BUT this.
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
@@ -617,6 +653,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             _stackTo[ply] = move.To;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
+
+            // Lazy legality: a pseudo-legal move that leaves our king attacked
+            // is discarded here, at the only make it will ever get.
+            if (board.IsSquareAttacked(board.KingSquare(stm), board.SideToMove))
+            {
+                board.UnmakeMove();
+                _incremental?.Pop();
+                continue;
+            }
 
             int score;
 
@@ -728,6 +773,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 }
             }
         }
+
+        // No legal move was made: mate or stalemate. The ply is added to the
+        // mate score so the engine prefers the SHORTEST mate and, when mated,
+        // drags it out as long as possible. In singular verification mode the
+        // excluded TT move is the only legal move — report a fail-low so the
+        // caller marks it singular (never a mate score: the move exists).
+        if (searched == 0)
+            return excluded != Move.None ? alpha
+                 : inCheck ? -MateScore + ply : 0;
 
         // Every move may have been SEE-pruned except the first; bestMove is
         // then still valid (the first move is never pruned).
