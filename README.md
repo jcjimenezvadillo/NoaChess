@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current strength: ~2833 Elo estimated** (v2.5.0: +101.3 ± 36.8 Elo SPRT over v2.4.5, on top of the v2.3.0 baseline that measured ~2710 CCRL-equivalent in a 231-game LTC precision gauntlet — see [CHANGELOG](CHANGELOG.md)).
+**Current strength: ~2768 Elo** (v2.5.0: 392-game LTC precision gauntlet at tc=60+0.6 vs 7 engines rated 2580–2788 CCRL; scored 67.5% (+127 Elo over the 2641-average field) — see [CHANGELOG](CHANGELOG.md)).
 
 ### **Main Features (v2.5.0)**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -76,7 +76,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Fuerza actual: ~2833 Elo estimado** (v2.5.0: +101.3 ± 36.8 Elo por SPRT sobre la v2.4.5, sobre la base de la v2.3.0 que midió ~2710 equivalente CCRL en un gauntlet LTC de precisión de 231 partidas — ver [CHANGELOG](CHANGELOG.md)).
+**Fuerza actual: ~2768 Elo** (v2.5.0: gauntlet LTC de precisión de 392 partidas a tc=60+0.6 contra 7 motores con 2580–2788 CCRL; resultado 67.5% (+127 Elo sobre el campo medio de 2641) — ver [CHANGELOG](CHANGELOG.md)).
 
 ### **Características principales (v2.5.0)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).

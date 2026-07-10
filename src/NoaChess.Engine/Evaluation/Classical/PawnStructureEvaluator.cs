@@ -8,7 +8,8 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // - Doubled pawns: extra pawns on the same file.
 // - Isolated pawns: no friendly pawns on adjacent files.
 // - Phalanx: friendly pawn on the same rank and adjacent file (side-by-side).
-// - Backward pawns: stop square attacked by enemy, no friendly support from behind.
+// - Backward pawns: stop square attacked by enemy, no friendly pawn level or
+//   behind on adjacent files; not isolated (that has its own penalty).
 // - Passed pawns: no enemy pawns ahead on the same or adjacent files, with a
 //   bonus that grows with the rank (endgame-heavy: a passer wins endgames).
 //
@@ -120,7 +121,8 @@ public sealed class PawnStructureEvaluator
             int relativeRank = color == Color.White ? rank : 7 - rank;
 
             // Isolated pawn: no friendly pawn on adjacent files.
-            if ((ourPawns & AdjacentFilesMask[file]) == 0)
+            bool isolated = (ourPawns & AdjacentFilesMask[file]) == 0;
+            if (isolated)
                 score += EvaluationParams.IsolatedPawn;
 
             // Phalanx: friendly pawn on the same rank and adjacent file.
@@ -128,14 +130,19 @@ public sealed class PawnStructureEvaluator
             if ((ourPawns & AdjacentFilesMask[file] & rankMask) != 0)
                 score += EvaluationParams.Phalanx[relativeRank];
 
-            // Backward pawn: stop square attacked by enemy pawn AND no
-            // friendly pawn behind on adjacent files that could give support.
+            // Backward pawn: stop square attacked by an enemy pawn AND no
+            // friendly pawn on adjacent files at the SAME rank or behind (a
+            // level neighbour defends the stop square directly — a phalanx
+            // member is never backward — and one behind can advance to help).
+            // Exclusive of isolated: an isolated pawn trivially has no support
+            // and already pays its own penalty; stacking both double-counts.
             int stopSq = color == Color.White ? sq + 8 : sq - 8;
-            ulong behindMask = color == Color.White
-                ? (1UL << (rank * 8)) - 1          // ranks 0..rank-1
-                : ~((1UL << ((rank + 1) * 8)) - 1); // ranks rank+1..7
-            if ((theirPawnAttacks & Bitboard.SquareBB(stopSq)) != 0
-                && (ourPawns & AdjacentFilesMask[file] & behindMask) == 0)
+            ulong supportMask = color == Color.White
+                ? (1UL << ((rank + 1) * 8)) - 1     // ranks 0..rank
+                : ~((1UL << (rank * 8)) - 1);        // ranks rank..7
+            if (!isolated
+                && (theirPawnAttacks & Bitboard.SquareBB(stopSq)) != 0
+                && (ourPawns & AdjacentFilesMask[file] & supportMask) == 0)
             {
                 score += EvaluationParams.BackwardPawn;
             }
