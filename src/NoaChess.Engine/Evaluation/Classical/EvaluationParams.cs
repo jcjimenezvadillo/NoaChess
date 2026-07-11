@@ -21,26 +21,45 @@ public static class EvaluationParams
     public static readonly int[] PhaseWeight = [0, 1, 1, 2, 4, 0];
     public const int PhaseMax = 24;
 
-    // ---- Mobility ----
-    // Each piece scores by how many squares it can move to, excluding squares
-    // occupied by friendly pieces and squares attacked by enemy pawns (going
-    // there just loses the piece). Centered around a typical count so the term
-    // averages near zero and does not silently inflate the material values.
-    // Mobility keeps the HAND values (SPRT-validated in v2.2.0) and is
-    // excluded from texel tuning: every tuning run, on old AND fresh data,
-    // converges to negative endgame mobility for the minors — a spurious
-    // correlation (the winning side simplifies and restricts enemy mobility,
-    // so low own-mobility correlates with winning), and playing by it makes
-    // the engine cage its own pieces in endgames.
-    public static readonly int[] MobilityBaseline = [0, 4, 6, 7, 14, 0]; // by PieceType
-    public static readonly Score[] MobilityStep =
+    // ---- Mobility (SF 15.1 MobilityBonus, rescaled x0.48, re-centered) ----
+    // Non-linear lookup indexed by [pieceType - knight][number of attacked
+    // squares inside the mobility area]. The old linear model underpriced the
+    // caged end of the curve: going from 2 to 3 knight squares matters far
+    // more than going from 7 to 8. Values are SF evaluate.cpp:213-226 times
+    // 100/208 (see the SF scale rule above), then re-centered by subtracting
+    // the entry at the typical mobility count (knight 4, bishop 6, rook 7,
+    // queen 14 — the SPRT-validated baselines of the old linear term). SF's
+    // raw tables carry a big positive offset at typical mobility (rook +59 eg,
+    // queen +63 eg) that SF absorbs in its own piece values; injected as-is it
+    // silently inflates NoaChess's texel-tuned material balance. Centering
+    // keeps the non-linear SHAPE (the actual signal) with a ~zero average.
+    // NOT texel-tunable: every tuning run converges to negative endgame
+    // mobility via spurious correlation (the winning side simplifies and
+    // restricts enemy mobility).
+    public static readonly Score[][] MobilityBonus =
     [
-        default,          // pawn (no mobility term)
-        new(4, 4),        // knight
-        new(3, 3),        // bishop
-        new(2, 4),        // rook (open lines matter more in the endgame)
-        new(1, 2),        // queen
-        default,          // king
+        [ // Knight (9 entries). SF: (-62,-79)(-53,-57)(-12,-31)(-3,-17)(3,7)(12,13)(21,16)(28,21)(37,26)
+            new(-31, -41), new(-26, -30), new(-7, -18), new(-2, -11), new(0, 0),
+            new(5, 3), new(9, 5), new(12, 7), new(17, 10),
+        ],
+        [ // Bishop (14). SF: (-47,-59)(-20,-25)(14,-8)(29,12)(39,21)(53,40)(53,56)(60,58)(62,65)(69,72)(78,78)(83,87)(91,88)(96,98)
+            new(-48, -55), new(-35, -39), new(-18, -31), new(-11, -21), new(-6, -17),
+            new(0, -8), new(0, 0), new(4, 1), new(5, 4), new(8, 8),
+            new(13, 11), new(15, 15), new(19, 15), new(21, 20),
+        ],
+        [ // Rook (15). SF: (-60,-82)(-24,-15)(0,17)(3,43)(4,72)(14,100)(20,102)(30,122)(41,133)(41,139)(41,153)(45,160)(57,165)(58,170)(67,175)
+            new(-43, -98), new(-26, -66), new(-14, -51), new(-13, -38), new(-12, -24),
+            new(-7, -11), new(-4, -10), new(0, 0), new(6, 5), new(6, 8),
+            new(6, 15), new(8, 18), new(13, 20), new(14, 23), new(18, 25),
+        ],
+        [ // Queen (28). SF: (-29,-49)(-16,-29)(-8,-8)(-8,17)(18,39)(25,54)(23,59)(37,73)(41,76)(54,95)(65,95)(68,101)(69,124)(70,128)(70,132)(70,133)(71,136)(72,140)(74,147)(76,149)(90,153)(104,169)(105,171)(106,171)(112,178)(114,185)(114,187)(119,221)
+            new(-48, -87), new(-42, -77), new(-38, -67), new(-38, -55), new(-25, -44),
+            new(-22, -37), new(-23, -35), new(-16, -28), new(-14, -26), new(-8, -17),
+            new(-3, -17), new(-1, -14), new(-1, -3), new(0, -1), new(0, 0),
+            new(0, 1), new(0, 2), new(1, 4), new(2, 8), new(3, 9),
+            new(9, 11), new(16, 18), new(16, 19), new(17, 19), new(20, 23),
+            new(21, 26), new(21, 27), new(23, 43),
+        ],
     ];
 
     // ---- King safety ----

@@ -1,5 +1,20 @@
 ﻿# CHANGELOG
 
+## 2026-07-11 (v2.6.2) — block 4C: non-linear mobility, x-ray attacks, SF mobility area
+
+**SPRT vs v2.6.1 (tc 10+0.1): +6.6 ± 11.5 Elo, LOS 87%, 2000 games (bounds not reached)** — kept: likely positive, no regression risk, and the 4C infrastructure (blockers, pins, x-rays, SF mobility area) is a prerequisite for blocks 4D/4E anyway. Smaller than the 4B jump by nature: it replaces an already SPRT-validated linear mobility term rather than filling a gap.
+
+**Strength: 2780 ± 20 CCRL measured**, confirmed by two independent LTC gauntlets at tc=60+0.6: a 1900-game wide gauntlet (19 engines, 2550–3500 CCRL, ChatGPT-verified ratings) and an 811-game precision gauntlet (10 diverse engines rated 2750–2917; per-opponent anchored calculation over 9 engines after excluding Igel 1.6.0, which underperforms its 2750 label in both gauntlets). The previous ~2870 figure was an extrapolation from the 4B STC SPRT; eval gains shrink at LTC and the old 2580–2788 reference field had miscalibrated labels.
+
+- eval: non-linear mobility — MobilityBonus[pieceType][attackedSquares] lookup tables (SF evaluate.cpp:213-226, rescaled x0.48) replace the linear MobilityStep * (moves - baseline) model. The linear model underpriced the caged end of the curve: going from 2 to 3 knight squares matters far more than going from 7 to 8.
+- eval: mobility tables RE-CENTERED — the raw SF tables carry a large positive offset at typical mobility counts (rook +59 eg, queen +63 eg) that SF absorbs in its own tuned piece values; injected as-is it silently inflated NoaChess's texel-tuned material balance (first SPRT run: +2 ± 18 after 870 games, aborted). Each table now has the entry at the old SPRT-validated baseline count (knight 4, bishop 6, rook 7, queen 14) subtracted, keeping the non-linear shape with a ~zero average contribution.
+- eval: SF mobility area (Evaluation::initialize) — excludes pawns that are blocked or on the first two relative ranks, the own king and queen, blockers for the own king (pinned pieces) and squares controlled by enemy pawns. Previously: everything not occupied by a friendly piece and not pawn-attacked. Also feeds the KnightOnQueen/SliderOnQueen safe filter in threats, which is now SF-exact.
+- eval: x-ray attacks (Evaluation::pieces) — bishops see through queens of both colors; rooks see through queens and own rooks. Batteries now project their real pressure into mobility, threats and king attack accounting.
+- eval: pinned-piece attack restriction — a piece that is the single blocker of an enemy slider line to its own king only attacks along the pin line (LineThrough[king][piece] mask). Applies before the attackedBy bookkeeping, so threats and king danger stop counting phantom attacks from pinned pieces.
+- infra: LineThrough[64x64] / Between[64x64] static tables and ComputeBlockersForKing (SF pos.blockers_for_king equivalent: enemy sliders aimed at the king with exactly one piece in between, either color).
+- tests: MobilityTests — pinned bishop has zero attacks, pinned rook keeps only the pin line, rook x-ray through own rook but not through a knight, bishop x-ray through queen, mobility-area exclusions (K/Q/low pawns/enemy pawn control/pinned pieces), non-linear curve shape (66 tests green).
+- bench: no NPS regression (the blockers computation is offset by the cheaper mobility lookup).
+
 ## 2026-07-10 (v2.6.1) — block 4B: Stockfish threat evaluation
 
 **SPRT vs v2.5.0 (tc 10+0.1): +103 ± 35 Elo, llr 2.99, H1 accepted in 243 games, score 109-42-81 [64.4%]** — far above the +25-35 estimate; the largest single evaluation gain of the project (NoaChess had zero threat terms, the biggest gap identified in the SF 15.1 analysis).
