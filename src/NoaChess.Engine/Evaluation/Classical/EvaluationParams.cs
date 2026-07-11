@@ -62,17 +62,65 @@ public static class EvaluationParams
         ],
     ];
 
-    // ---- King safety ----
-    // Attack weight per enemy piece type for each king-zone square it attacks.
-    // The accumulated "attack units" index a quadratic danger curve.
-    public static readonly int[] KingAttackWeight = [0, 2, 2, 3, 5, 0]; // by PieceType
-    // Extra units for each of the three files around the king with no friendly
-    // pawn ahead of it (a missing pawn shield / open file towards the king).
-    public const int OpenFileNearKingUnits = 3;
-    // Danger curve: penalty = min(units^2 / Divisor, Cap), applied to the
-    // middlegame score only (a king in the open is fine once the queens go).
-    public const int KingDangerDivisor = 6;
-    public const int KingDangerCap = 500;
+    // ---- King safety (SF 15.1 evaluate.cpp king() + pawns.cpp shelter) ----
+    // The danger accumulator works in RAW SF internal units on purpose: the
+    // quadratic transform (danger^2/4096) and every constant below come from
+    // SF's jointly-tuned system, so the whole king-safety Score is computed in
+    // SF units first and converted to NoaChess centipawns (x0.48) once at the
+    // end. No re-centering needed: each side has exactly one king, so any
+    // constant offset cancels in the White-minus-Black subtraction.
+    // Safe/unsafe check terms are deliberately NOT ported (the v2.4.6 failure
+    // was a safe-check mask bug); they are a possible future sub-block.
+
+    // Attack weight per attacking piece type (SF KingAttackWeights, raw units).
+    public static readonly int[] KingAttackWeights = [0, 76, 46, 45, 14, 0]; // by PieceType
+
+    // Shelter strength by [file distance from edge][relative rank of our pawn].
+    // Rank 0 = no pawn on that file (or pawn behind the king). Raw SF values.
+    public static readonly int[][] ShelterStrength =
+    [
+        [-2, 85, 95, 53, 39, 23, 25, 0],
+        [-55, 64, 32, -55, -30, -11, -61, 0],
+        [-11, 75, 19, -6, 26, 9, -47, 0],
+        [-41, -11, -27, -58, -42, -66, -163, 0],
+    ];
+
+    // Enemy pawn storm by [file distance from edge][relative rank of their
+    // pawn]. Rank 0 = no enemy pawn on that file. Raw SF values.
+    public static readonly int[][] UnblockedStorm =
+    [
+        [94, -280, -170, 90, 59, 47, 53, 0],
+        [43, -17, 128, 39, 26, -17, 15, 0],
+        [-9, 62, 170, 34, -5, -20, -11, 0],
+        [-27, -19, 106, 10, 2, -13, -24, 0],
+    ];
+
+    // Reduced storm penalty when our pawn blocks theirs (their pawn directly
+    // in front of ours), indexed by THEIR pawn's relative rank. Raw SF values.
+    public static readonly Score[] BlockedStorm =
+    [
+        default, default, new(64, 75), new(-3, 14), new(-12, 19), new(-7, 4), new(-10, 5), default,
+    ];
+
+    // King standing on a file: [our file is semi-open][their file is semi-open]
+    // (semi-open for a color = that color has no pawn on the file). Subtracted
+    // from the shelter score. Raw SF values.
+    public static readonly Score[,] KingOnFile = new Score[2, 2]
+    {
+        { new(-18, 11), new(-6, -3) },
+        { new(0, 0), new(5, -4) },
+    };
+
+    // Penalty when the king sits on a flank with no pawns of either color, and
+    // per-attack penalty on the king's flank. Raw SF values.
+    public static readonly Score PawnlessFlank = new(19, 97);
+    public static readonly Score FlankAttacks = new(8, 0);
+
+    // Bonus in the piece loop for a rook/bishop aimed at the enemy king ring
+    // (even with pieces in the way). These live in normal evaluation space, so
+    // they are stored x0.48. SF: RookOnKingRing (16,0), BishopOnKingRing (24,0).
+    public static Score RookOnKingRing = new(8, 0);
+    public static Score BishopOnKingRing = new(12, 0);
 
     // ---- Minor positional terms ----
     // Non-readonly on purpose: the texel tuner (tools/NoaChess.Tuner) adjusts

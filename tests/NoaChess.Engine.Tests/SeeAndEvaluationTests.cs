@@ -178,8 +178,9 @@ public class SeeAndEvaluationTests
         Assert.Equal(direct, mirrored);
     }
 
-    // Flips a FEN top-to-bottom and swaps piece colours; castling/en passant
-    // are dropped (irrelevant to the evaluation symmetry being checked).
+    // Flips a FEN top-to-bottom and swaps piece colours. Castling rights are
+    // colour-swapped too (the evaluation reads them since v2.6.3: the shelter
+    // takes the post-castling maximum); en passant is dropped (eval-irrelevant).
     private static string MirrorFen(string fen)
     {
         string[] parts = fen.Split(' ');
@@ -188,7 +189,12 @@ public class SeeAndEvaluationTests
         var swapped = ranks.Select(rank => new string(rank.Select(SwapCase).ToArray()));
         string board = string.Join('/', swapped);
         string sideToMove = parts[1] == "w" ? "b" : "w";
-        return $"{board} {sideToMove} - - 0 1";
+        string castling = parts[2] == "-"
+            ? "-"
+            : new string(parts[2].Select(SwapCase).OrderBy(CastlingOrder).ToArray());
+        return $"{board} {sideToMove} {castling} - 0 1";
+
+        static int CastlingOrder(char c) => c switch { 'K' => 0, 'Q' => 1, 'k' => 2, _ => 3 };
 
         static char SwapCase(char c) =>
             char.IsUpper(c) ? char.ToLower(c) : char.IsLower(c) ? char.ToUpper(c) : c;
@@ -226,8 +232,9 @@ public class SeeAndEvaluationTests
 
     // Builds the FEN of the colour-mirrored position: every piece moves to its
     // vertically flipped square with the opposite colour, and the side to move
-    // is swapped. Castling/en passant are dropped (the evaluator does not read
-    // them).
+    // is swapped. Castling rights are colour-swapped (the evaluator reads them
+    // since v2.6.3: the shelter takes the post-castling maximum); en passant
+    // is dropped (eval-irrelevant).
     private static string MirrorBoardFen(Board board)
     {
         var sb = new System.Text.StringBuilder();
@@ -253,7 +260,16 @@ public class SeeAndEvaluationTests
             if (rank > 0) sb.Append('/');
         }
         string stm = board.SideToMove == Color.White ? "b" : "w";
-        return $"{sb} {stm} - - 0 1";
+
+        var rights = board.CastlingRights;
+        var cast = new System.Text.StringBuilder();
+        if ((rights & CastlingRights.BlackKingSide) != 0) cast.Append('K');
+        if ((rights & CastlingRights.BlackQueenSide) != 0) cast.Append('Q');
+        if ((rights & CastlingRights.WhiteKingSide) != 0) cast.Append('k');
+        if ((rights & CastlingRights.WhiteQueenSide) != 0) cast.Append('q');
+        string castling = cast.Length == 0 ? "-" : cast.ToString();
+
+        return $"{sb} {stm} {castling} - 0 1";
     }
 
     [Fact]

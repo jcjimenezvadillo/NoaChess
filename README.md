@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current version: v2.6.2 — 2780 ± 20 Elo measured** (non-linear mobility, x-ray attacks, SF mobility area: +6.6 ± 11.5 Elo SPRT over v2.6.1, LOS 87%). Strength confirmed by two independent LTC gauntlets at tc=60+0.6: a 1900-game wide gauntlet (19 engines, 2550–3500 CCRL) and an 811-game precision gauntlet (9 diverse engines within ±150, per-opponent anchored calculation) — both converge on ~2780 CCRL. See [CHANGELOG](CHANGELOG.md).
+**Current version: v2.6.3 — 2800 ± 25 Elo measured** (full Stockfish king safety: shelter/storm, king danger formula; +76.9 ± 31.2 Elo SPRT vs v2.6.2, LOS 100%, validated by a 420-game LTC precision gauntlet at tc=60+0.6). **Previous validated: v2.6.2 — 2780 ± 20 CCRL**. See [CHANGELOG](CHANGELOG.md).
 
 ### **Main Features (v2.6.2)**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -59,7 +59,9 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.6.0** — attackedBy infrastructure (Stockfish-style attack bitboards, enabler for threats / mobility / king safety). ✅ (evaluation-neutral)
 - **v2.6.1** — Full Stockfish threat evaluation (10 terms, rescaled to NoaChess units). ✅ (+103 ± 35 Elo SPRT vs v2.5.0 — largest single evaluation gain of the project)
 - **v2.6.2** — Non-linear mobility (SF lookup tables, re-centered), x-ray attacks, SF mobility area, pinned-piece attack restriction. ✅ (+6.6 ± 11.5 Elo SPRT vs v2.6.1, LOS 87%; **2780 ± 20 CCRL** measured across two independent LTC gauntlets, 2700+ games)
-- **Next** — SF classical eval block (king safety, piece terms) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
+- **v2.6.3** — Full Stockfish king safety: shelter/storm tables, KingOnFile, pre-castling shelter max, EG king-pawn proximity, SF king-danger formula (no safe checks), king flank terms, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT vs v2.6.2, LOS 100%; **2800 ± 25 CCRL** measured)
+- **v2.6.4** — Adaptive time management (increment ×85%, adaptive horizon, best-move instability extension). 🔄 Next
+- **Next** — SF classical eval block (piece terms, passed pawns, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -79,7 +81,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Versión actual: v2.6.2 — 2780 ± 20 Elo medido** (movilidad no-lineal, ataques x-ray, área de movilidad SF: +6.6 ± 11.5 Elo por SPRT sobre la v2.6.1, LOS 87%). Fuerza confirmada por dos gauntlets LTC independientes a tc=60+0.6: uno amplio de 1900 partidas (19 motores, 2550–3500 CCRL) y uno de precisión de 811 partidas (9 motores diversos a ±150, cálculo anclado por rival) — ambos convergen en ~2780 CCRL. Ver [CHANGELOG](CHANGELOG.md).
+**Versión actual: v2.6.3 — 2800 ± 25 Elo medido** (seguridad del rey completa de Stockfish: shelter/storm, fórmula de peligro; +76.9 ± 31.2 Elo SPRT contra v2.6.2, LOS 100%, validado por gauntlet LTC de 420 partidas a tc=60+0.6). **Anterior validada: v2.6.2 — 2780 ± 20 CCRL**. Ver [CHANGELOG](CHANGELOG.md).
 
 ### **Características principales (v2.6.2)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).
@@ -132,7 +134,9 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.6.0** — Infraestructura attackedBy (bitboards de ataque al estilo Stockfish, habilitador de amenazas / movilidad / seguridad del rey). ✅ (neutral en evaluación)
 - **v2.6.1** — Evaluación de amenazas completa de Stockfish (10 términos, reescalados a unidades NoaChess). ✅ (+103 ± 35 Elo por SPRT contra la v2.5.0 — el mayor salto de evaluación del proyecto)
 - **v2.6.2** — Movilidad no-lineal (tablas lookup de SF, re-centradas), ataques x-ray, área de movilidad SF, restricción de piezas clavadas. ✅ (+6.6 ± 11.5 Elo por SPRT contra la v2.6.1, LOS 87%; **2780 ± 20 CCRL** medidos en dos gauntlets LTC independientes, 2700+ partidas)
-- **Siguiente** — Bloque de evaluación clásica SF (seguridad del rey, términos de piezas) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
+- **v2.6.3** — Seguridad del rey completa de Stockfish: tablas shelter/storm, KingOnFile, máximo de shelter pre-enroque, proximidad rey-peones en el final, fórmula de peligro SF (sin safe checks), términos de flanco del rey, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT contra v2.6.2, LOS 100%; **2800 ± 25 CCRL** medidos)
+- **v2.6.4** — Gestión de tiempo adaptativa (incremento ×85%, horizonte adaptativo, extensión por inestabilidad del best move). 🔄 Siguiente
+- **Siguiente** — Bloque de evaluación clásica SF (términos de piezas, peones pasados, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 

@@ -1,5 +1,23 @@
 ﻿# CHANGELOG
 
+## 2026-07-11 (v2.6.3) — block 4D: SF shelter/storm + full king safety
+
+**SPRT vs v2.6.2 (tc 10+0.1): +76.9 ± 31.2 Elo, LOS 100%, H1 accepted in 335 games, score 132-97-106 [55.2%]** — the largest single evaluation gain of the project since threats (+103). Well above the +15–30 estimate; king safety was a bigger gap than anticipated.
+
+**Strength: 2800 ± 25 CCRL measured**, LTC gauntlet (tc=60+0.6, 420 games, 8 rivals rated 2780–2917; per-opponent anchored calculation excluding confirmed outlier Leorik-2780). Individual anchored estimates: 2761–2837 across the 7 most reliable opponents, mean ~2807; rounded conservatively to 2800.
+
+- eval: full Stockfish 15.1 king safety replaces the simple attack-units + pawn-shield scheme. The whole system is computed in RAW SF internal units (the danger formula, the quadratic transform danger^2/4096 and every table are jointly tuned) and converted to NoaChess centipawns (x0.48) once at the end. No re-centering needed: each side has exactly one king, so constant offsets cancel in the White-minus-Black subtraction.
+- eval: shelter/storm (pawns.cpp evaluate_shelter) — ShelterStrength[4][8] per file distance from edge and pawn rank, UnblockedStorm[4][8] for enemy storm pawns, BlockedStorm when our pawn blocks theirs, KingOnFile[ourSemiOpen][theirSemiOpen], computed on the king file and both adjacent files.
+- eval: pre-castling shelter (pawns.cpp do_king_safety) — while castling rights remain, the shelter takes the maximum (by MG value) of the current king square and the post-castling squares (g1/c1 relative), so the engine stops fearing phantom attacks on a king that can still castle away.
+- eval: endgame king-pawn proximity — shelter minus (0, 16 x Chebyshev distance to the closest own pawn); the king must shepherd its pawns once the danger fades.
+- eval: SF king ring (Evaluation::initialize) — king attacks of the king square clamped to files b-g / ranks 2-7 plus the square itself, minus squares defended by two own pawns; enemy pawn attacks on the ring seed the attacker count.
+- eval: SF king danger formula (evaluate.cpp king(), all terms EXCEPT safe/unsafe checks — the v2.4.6 failure was a safe-check mask bug; they remain a possible future sub-block): attackersCount x attackersWeight (weights 76/46/45/14), 183 x weak ring squares, 98 x blockers for the king, 69 x attacks adjacent to the king, king flank attack^2 term, MG mobility difference, -873 when the attacker has no queen, -100 for a knight defender next to the king, shelter feedback, flank defense, +37 bias; penalty (danger^2/4096, danger/16) when danger > 100.
+- eval: king flank terms — PawnlessFlank (19,97) when no pawns of either color live on the king's flank; FlankAttacks (8,0) per enemy attack (double attacks counted twice) on the flank inside our camp.
+- eval: RookOnKingRing / BishopOnKingRing (stored x0.48: (8,0)/(12,0)) in the piece loop for rooks/bishops aimed at the enemy king ring without directly attacking it.
+- perf: shelter cache — direct-mapped 16K-entry table keyed by pawn Zobrist key + king square + own castling rights + color (SF caches king safety in its pawn hash entry and only recomputes when the king moves, ~20% of calls).
+- tests: KingSafetyTests (shelter delta, storm delta, pawnless flank sanity, king-ring danger, no-queen discount, pre-castling rights >= no rights, mirror symmetry) — 74 tests green. The color-symmetry fuzz now mirrors castling rights too (the eval reads them since this version).
+- bench: fixed-node per-node time +16% vs v2.6.2 in the search bench — partly a tree-shape artifact (the same bench overstated 4C by ~35% in the opposite direction); the SPRT arbitrates the real cost/benefit.
+
 ## 2026-07-11 (v2.6.2) — block 4C: non-linear mobility, x-ray attacks, SF mobility area
 
 **SPRT vs v2.6.1 (tc 10+0.1): +6.6 ± 11.5 Elo, LOS 87%, 2000 games (bounds not reached)** — kept: likely positive, no regression risk, and the 4C infrastructure (blockers, pins, x-rays, SF mobility area) is a prerequisite for blocks 4D/4E anyway. Smaller than the 4B jump by nature: it replaces an already SPRT-validated linear mobility term rather than filling a gap.
