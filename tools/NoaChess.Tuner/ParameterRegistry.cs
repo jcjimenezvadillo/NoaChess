@@ -44,10 +44,12 @@ public static class ParameterRegistry
         AddScore(list, "BackwardPawn",
             () => EvaluationParams.BackwardPawn, v => EvaluationParams.BackwardPawn = v);
 
-        // MobilityStep is deliberately NOT tunable: every texel run converges
-        // to negative endgame mobility for the minors (spurious correlation:
-        // the winning side simplifies), which plays disastrously. The hand
-        // values passed SPRT in v2.2.0 and stay fixed.
+        // MobilityBonus (the SF non-linear tables, v2.6.2) is deliberately NOT
+        // tunable: every texel run converges to negative endgame mobility for
+        // the minors (spurious correlation: the winning side simplifies),
+        // which plays disastrously. SF values, rescaled x0.48, stay fixed.
+        // The threat terms (also SF x0.48) stay fixed for the same reason:
+        // they are SPRT-validated as a package, not texel-derived.
         AddScoreArray(list, "PassedPawn", EvaluationParams.PassedPawn, 1, 6);
         AddScoreArray(list, "Phalanx", EvaluationParams.Phalanx, 1, 6);
 

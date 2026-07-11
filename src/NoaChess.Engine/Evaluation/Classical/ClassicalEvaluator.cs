@@ -49,9 +49,23 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     public ulong AttackedBy(Color color, PieceType type) => _attackedBy[(int)color, (int)type];
     public ulong AttackedByAll(Color color) => _attackedBy[(int)color, AllPieces];
     public ulong AttackedBy2(Color color) => _attackedBy2[(int)color];
+    public ulong MobilityArea(Color color) => _mobilityArea[(int)color];
+    public ulong BlockersForKing(Color color) => _blockersForKing[(int)color];
 
     // Space area per color: files c-f, relative ranks 2-4.
     private static readonly ulong[] SpaceMask = new ulong[2];
+
+    // LineThrough[s1*64+s2]: the full line (rank/file/diagonal) through both
+    // squares including them, or 0 if not aligned. Between[s1*64+s2]: squares
+    // strictly between two aligned squares. Used for pins (a piece blocking a
+    // slider attack on its king may only move along the pin line).
+    private static readonly ulong[] LineThrough = new ulong[64 * 64];
+    private static readonly ulong[] Between = new ulong[64 * 64];
+
+    // Pieces (of either color) that are the single blocker of an enemy slider
+    // attack on this color's king, filled each call. A friendly piece here is
+    // pinned; its attacks are restricted to the pin line.
+    private readonly ulong[] _blockersForKing = new ulong[2];
 
     static ClassicalEvaluator()
     {
@@ -61,6 +75,50 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         ulong blackRanks = (0xFFUL << 48) | (0xFFUL << 40) | (0xFFUL << 32); // ranks 7-5
         SpaceMask[(int)Color.White] = files & whiteRanks;
         SpaceMask[(int)Color.Black] = files & blackRanks;
+
+        for (int s1 = 0; s1 < 64; s1++)
+        {
+            for (int s2 = 0; s2 < 64; s2++)
+            {
+                if (s1 == s2)
+                    continue;
+                ulong bb1 = Bitboard.SquareBB(s1), bb2 = Bitboard.SquareBB(s2);
+                if ((Attacks.Rook(s1, 0) & bb2) != 0)
+                {
+                    LineThrough[s1 * 64 + s2] =
+                        (Attacks.Rook(s1, 0) & Attacks.Rook(s2, 0)) | bb1 | bb2;
+                    Between[s1 * 64 + s2] = Attacks.Rook(s1, bb2) & Attacks.Rook(s2, bb1);
+                }
+                else if ((Attacks.Bishop(s1, 0) & bb2) != 0)
+                {
+                    LineThrough[s1 * 64 + s2] =
+                        (Attacks.Bishop(s1, 0) & Attacks.Bishop(s2, 0)) | bb1 | bb2;
+                    Between[s1 * 64 + s2] = Attacks.Bishop(s1, bb2) & Attacks.Bishop(s2, bb1);
+                }
+            }
+        }
+    }
+
+    // Pieces of either color that are the only blocker between an enemy
+    // slider and this color's king (SF pos.blockers_for_king).
+    private static ulong ComputeBlockersForKing(Board board, Color us)
+    {
+        int ksq = board.KingSquare(us);
+        Color them = Board.OppositeColor(us);
+        ulong occ = board.AllOccupancy;
+        ulong snipers =
+              (Attacks.Rook(ksq, 0) & (board.Pieces(them, PieceType.Rook) | board.Pieces(them, PieceType.Queen)))
+            | (Attacks.Bishop(ksq, 0) & (board.Pieces(them, PieceType.Bishop) | board.Pieces(them, PieceType.Queen)));
+        ulong blockers = 0;
+
+        while (snipers != 0)
+        {
+            int s = Bitboard.PopLsb(ref snipers);
+            ulong b = Between[ksq * 64 + s] & occ;
+            if (b != 0 && (b & (b - 1)) == 0) // exactly one piece in between
+                blockers |= b;
+        }
+        return blockers;
     }
 
     public int Evaluate(Board board)
@@ -86,9 +144,11 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 
         for (int c = 0; c < 2; c++)
         {
-            _kingSquare[c] = board.KingSquare((Color)c);
+            var us = (Color)c;
+            _kingSquare[c] = board.KingSquare(us);
             _kingZone[c] = Attacks.King(_kingSquare[c]) | Bitboard.SquareBB(_kingSquare[c]);
             _kingDanger[c] = 0;
+            _blockersForKing[c] = ComputeBlockersForKing(board, us);
 
             // attackedBy seed (SF Evaluation::initialize): king and pawn attack
             // sets are known up front; the piece loop below adds the rest.
@@ -101,6 +161,24 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             _attackedBy[c, (int)PieceType.King] = kingAttacks;
             _attackedBy[c, AllPieces] = kingAttacks | pawnAttacks[c];
             _attackedBy2[c] = _pawnDoubleAttacks[c] | (kingAttacks & pawnAttacks[c]);
+
+            // Mobility area (SF Evaluation::initialize): exclude pawns that
+            // are blocked or on the first two relative ranks, our king and
+            // queen, blockers for our king (pinned pieces cannot really move)
+            // and squares controlled by enemy pawns.
+            ulong ownPawns = us == Color.White ? whitePawns : blackPawns;
+            ulong occAll = board.AllOccupancy;
+            ulong lowRanks = us == Color.White
+                ? (0xFFUL << 8) | (0xFFUL << 16)    // ranks 2-3
+                : (0xFFUL << 48) | (0xFFUL << 40);  // ranks 7-6
+            ulong shiftedDown = us == Color.White ? occAll >> 8 : occAll << 8;
+            ulong dullPawns = ownPawns & (shiftedDown | lowRanks);
+            Color enemyOf = Board.OppositeColor(us);
+            _mobilityArea[c] = ~(dullPawns
+                               | board.Pieces(us, PieceType.King)
+                               | board.Pieces(us, PieceType.Queen)
+                               | _blockersForKing[c]
+                               | pawnAttacks[(int)enemyOf]);
         }
 
         Score score = default; // White's point of view.
@@ -111,13 +189,16 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             Color color = (Color)c;
             int sign = color == Color.White ? 1 : -1;
             Color enemy = Board.OppositeColor(color);
-            ulong ownPieces = board.Occupancy(color);
             ulong occ = board.AllOccupancy;
+            ulong mobilityArea = _mobilityArea[c];
 
-            // Mobility area: anywhere not blocked by our own pieces and not
-            // covered by an enemy pawn.
-            ulong mobilityArea = ~ownPieces & ~pawnAttacks[(int)enemy];
-            _mobilityArea[c] = mobilityArea;
+            // X-ray occupancies (SF Evaluation::pieces): bishops see through
+            // queens of both colors; rooks see through queens and own rooks.
+            ulong allQueens = board.Pieces(Color.White, PieceType.Queen)
+                            | board.Pieces(Color.Black, PieceType.Queen);
+            ulong bishopOcc = occ ^ allQueens;
+            ulong rookOcc = occ ^ allQueens ^ board.Pieces(color, PieceType.Rook);
+            int ownKingSq = _kingSquare[c];
 
             Score side = default;
 
@@ -141,10 +222,15 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                         ulong attacks = type switch
                         {
                             PieceType.Knight => Attacks.Knight(sq),
-                            PieceType.Bishop => Attacks.Bishop(sq, occ),
-                            PieceType.Rook => Attacks.Rook(sq, occ),
+                            PieceType.Bishop => Attacks.Bishop(sq, bishopOcc),
+                            PieceType.Rook => Attacks.Rook(sq, rookOcc),
                             _ => Attacks.Queen(sq, occ),
                         };
+
+                        // A piece pinned against its own king only really
+                        // attacks along the pin line (SF pieces() 410-411).
+                        if ((_blockersForKing[c] & Bitboard.SquareBB(sq)) != 0)
+                            attacks &= LineThrough[ownKingSq * 64 + sq];
 
                         // attackedBy bookkeeping (SF Evaluation::pieces): any
                         // square this piece hits that was already covered by an
@@ -153,10 +239,10 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                         _attackedBy[c, p] |= attacks;
                         _attackedBy[c, AllPieces] |= attacks;
 
-                        // Mobility, centered on a typical count for the piece.
+                        // Non-linear mobility: table lookup by the number of
+                        // attacked squares inside the mobility area.
                         int moves = Bitboard.PopCount(attacks & mobilityArea);
-                        side += EvaluationParams.MobilityStep[p]
-                              * (moves - EvaluationParams.MobilityBaseline[p]);
+                        side += EvaluationParams.MobilityBonus[p - 1][moves];
 
                         // Pressure on the enemy king's zone.
                         int zoneHits = Bitboard.PopCount(attacks & _kingZone[(int)enemy]);
