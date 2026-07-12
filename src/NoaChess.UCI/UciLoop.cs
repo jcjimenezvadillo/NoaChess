@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.6.3";
+    public const string EngineVersion = "2.6.4";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -314,8 +314,11 @@ public sealed class UciLoop
         {
             long inc = (_board.SideToMove == Color.White ? Value("winc") : Value("binc")) ?? 0;
             int? movesToGo = Value("movestogo") is long mtg ? (int)mtg : null;
+            // Game ply (halfmoves elapsed) drives the adaptive horizon: the
+            // engine spends a growing share of its clock as the game advances.
+            int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
             return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo,
-                                         _engine.Profile.AssumedMovesToGo);
+                                         _engine.Profile.AssumedMovesToGo, gamePly);
         }
 
         return SearchLimits.Depth(_engine.DefaultDepth);

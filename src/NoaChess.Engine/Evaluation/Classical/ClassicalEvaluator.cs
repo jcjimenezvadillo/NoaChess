@@ -19,13 +19,13 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 {
     private readonly PawnStructureEvaluator _pawnStructure = new();
 
-    // Per-color king square and king ring (SF kingRing: the king attacks of
-    // the king square clamped to files b-g / ranks 2-7, plus the square
-    // itself, minus squares defended by two of our own pawns), filled each call.
+    // Per-color king square and king ring (the king attacks of the king square
+    // clamped to files b-g / ranks 2-7, plus the square itself, minus squares
+    // defended by two of our own pawns), filled each call.
     private readonly int[] _kingSquare = new int[2];
     private readonly ulong[] _kingRing = new ulong[2];
 
-    // SF king-attack bookkeeping, indexed by the ATTACKING color: number of
+    // King-attack bookkeeping, indexed by the ATTACKING color: number of
     // pieces attacking the enemy king ring, their summed attack weights, and
     // the count of their attacks on squares adjacent to the enemy king.
     private readonly int[] _kingAttackersCount = new int[2];
@@ -35,7 +35,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // Summed mobility Score per color (feeds the king danger formula).
     private readonly Score[] _mobilitySum = new Score[2];
 
-    // Shelter cache. SF stores king safety in its pawn hash entry and only
+    // Shelter cache. A strong engine stores king safety in its pawn hash entry and only
     // recomputes when the king square or castling rights change (~20% of
     // calls); this direct-mapped table keyed by pawn key + king square +
     // castling rights + color achieves the same reuse. Slot 0 sentinel-safe:
@@ -72,7 +72,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // Space area per color: files c-f, relative ranks 2-4.
     private static readonly ulong[] SpaceMask = new ulong[2];
 
-    // King flank by king file (SF KingFlank): the files "around" the king used
+    // King flank by king file: the files "around" the king used
     // by the flank attack/defense terms. Queenside = a-d, center = c-f,
     // kingside = e-h, with the outermost file dropped on the very edges.
     private static readonly ulong[] KingFlank = BuildKingFlanks();
@@ -136,7 +136,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     }
 
     // Pieces of either color that are the only blocker between an enemy
-    // slider and this color's king (SF pos.blockers_for_king).
+    // slider and this color's king (blockers_for_king).
     private static ulong ComputeBlockersForKing(Board board, Color us)
     {
         int ksq = board.KingSquare(us);
@@ -174,7 +174,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         pawnAttacks[(int)Color.Black] = blackPawnsWest | blackPawnsEast;
 
         // A square attacked from both directions is attacked by two pawns
-        // (SF pawn_double_attacks_bb).
+        // (pawn double-attack bitboard).
         _pawnDoubleAttacks[(int)Color.White] = whitePawnsWest & whitePawnsEast;
         _pawnDoubleAttacks[(int)Color.Black] = blackPawnsWest & blackPawnsEast;
 
@@ -185,7 +185,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             _blockersForKing[c] = ComputeBlockersForKing(board, us);
             _mobilitySum[c] = default;
 
-            // King ring (SF initialize): king attacks of the king square
+            // King ring: king attacks of the king square
             // clamped to files b-g and ranks 2-7 (so edge kings get a full
             // 3x3 ring pointing inward), plus the clamped square itself,
             // minus squares defended by two of our own pawns.
@@ -196,12 +196,12 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                          & ~_pawnDoubleAttacks[c];
 
             // Enemy pawns attacking our ring seed their side's attacker count
-            // (SF: kingAttackersCount[Them] = popcount(kingRing[Us] & pawns)).
+            // (kingAttackersCount[Them] = popcount(kingRing[Us] & pawns)).
             _kingAttackersCount[1 - c] = Bitboard.PopCount(_kingRing[c] & pawnAttacks[1 - c]);
             _kingAttackersWeight[1 - c] = 0;
             _kingAttacksCount[1 - c] = 0;
 
-            // attackedBy seed (SF Evaluation::initialize): king and pawn attack
+            // attackedBy seed: king and pawn attack
             // sets are known up front; the piece loop below adds the rest.
             ulong kingAttacks = Attacks.King(_kingSquare[c]);
             _attackedBy[c, (int)PieceType.Pawn] = pawnAttacks[c];
@@ -213,7 +213,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             _attackedBy[c, AllPieces] = kingAttacks | pawnAttacks[c];
             _attackedBy2[c] = _pawnDoubleAttacks[c] | (kingAttacks & pawnAttacks[c]);
 
-            // Mobility area (SF Evaluation::initialize): exclude pawns that
+            // Mobility area: exclude pawns that
             // are blocked or on the first two relative ranks, our king and
             // queen, blockers for our king (pinned pieces cannot really move)
             // and squares controlled by enemy pawns.
@@ -243,7 +243,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             ulong occ = board.AllOccupancy;
             ulong mobilityArea = _mobilityArea[c];
 
-            // X-ray occupancies (SF Evaluation::pieces): bishops see through
+            // X-ray occupancies: bishops see through
             // queens of both colors; rooks see through queens and own rooks.
             ulong allQueens = board.Pieces(Color.White, PieceType.Queen)
                             | board.Pieces(Color.Black, PieceType.Queen);
@@ -279,11 +279,11 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                         };
 
                         // A piece pinned against its own king only really
-                        // attacks along the pin line (SF pieces() 410-411).
+                        // attacks along the pin line.
                         if ((_blockersForKing[c] & Bitboard.SquareBB(sq)) != 0)
                             attacks &= LineThrough[ownKingSq * 64 + sq];
 
-                        // attackedBy bookkeeping (SF Evaluation::pieces): any
+                        // attackedBy bookkeeping: any
                         // square this piece hits that was already covered by an
                         // earlier friendly unit becomes a double attack.
                         _attackedBy2[c] |= _attackedBy[c, AllPieces] & attacks;
@@ -298,7 +298,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                         side += mob;
                         _mobilitySum[c] += mob;
 
-                        // King-attack bookkeeping (SF pieces): a piece hitting
+                        // King-attack bookkeeping: a piece hitting
                         // the enemy king ring registers as an attacker; rooks
                         // and bishops merely AIMED at the ring (through any
                         // blockers) earn a small positional bonus instead.
@@ -349,7 +349,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             score += side * sign;
         }
 
-        // King safety (SF system): shelter/storm plus the quadratic danger
+        // King safety: shelter/storm plus the quadratic danger
         // curve fed by the attack bookkeeping gathered in the piece loop.
         score += KingSafety(board, Color.White) * 1;
         score += KingSafety(board, Color.Black) * -1;
@@ -375,7 +375,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             ? ((pawns & ~Bitboard.FileA) << 7) | ((pawns & ~Bitboard.FileH) << 9)
             : ((pawns & ~Bitboard.FileA) >> 9) | ((pawns & ~Bitboard.FileH) >> 7);
 
-    // Threats (SF Evaluation::threats): bonuses by the types of the attacking
+    // Threats: bonuses by the types of the attacking
     // and the attacked pieces. The key concept is "strongly protected": a
     // square defended by an enemy pawn, or defended more times than we attack
     // it. Enemy pieces that are attacked and NOT strongly protected are
@@ -616,13 +616,13 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         return bonus;
     }
 
-    // King safety (SF Evaluation::king + Pawns::Entry::do_king_safety).
-    // Everything here is computed in RAW SF internal units — the attack
-    // weights, the shelter/storm tables and the quadratic danger transform
+    // King safety (danger accumulator + do-king-safety shelter).
+    // Everything here is computed in RAW internal units — the attack weights,
+    // the shelter/storm tables and the quadratic danger transform
     // (danger^2/4096) are a jointly-tuned system — and the final Score is
     // converted to NoaChess centipawns (x0.48) once at the end. Safe/unsafe
     // check terms are deliberately not ported (the v2.4.6 attempt failed on a
-    // safe-check mask bug); everything else of SF's king() is here.
+    // safe-check mask bug); everything else of the danger formula is here.
     private Score KingSafety(Board board, Color us)
     {
         Color them = Board.OppositeColor(us);
@@ -654,7 +654,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         int kingFlankAttack = Bitboard.PopCount(b1) + Bitboard.PopCount(b2);
         int kingFlankDefense = Bitboard.PopCount(b3);
 
-        // Mobility difference in SF units (our tables are stored x0.48).
+        // Mobility difference in internal units (our tables are stored x0.48).
         int mobilityDiffMg = (_mobilitySum[t].Mg - _mobilitySum[u].Mg) * 208 / 100;
 
         int kingDanger =
@@ -682,13 +682,13 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // Penalty proportional to the attacks on the king's flank.
         score -= EvaluationParams.FlankAttacks * kingFlankAttack;
 
-        // SF units -> NoaChess centipawns.
+        // internal units -> NoaChess centipawns.
         return new Score(score.Mg * 48 / 100, score.Eg * 48 / 100);
     }
 
-    // SF Pawns::Entry::do_king_safety — shelter at the current king square,
-    // improved by the post-castling shelter when castling is still possible,
-    // plus an endgame pull towards the closest own pawn. Raw SF units.
+    // do-king-safety — shelter at the current king square, improved by the
+    // post-castling shelter when castling is still possible, plus an endgame
+    // pull towards the closest own pawn. Raw internal units.
     private Score DoKingSafety(Board board, Color us)
     {
         int ksq = _kingSquare[(int)us];
@@ -713,7 +713,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             ? (rights & CastlingRights.WhiteQueenSide) != 0
             : (rights & CastlingRights.BlackQueenSide) != 0;
 
-        // Compare by middlegame value only, like SF.
+        // Compare by middlegame value only.
         if (kingSide)
         {
             Score s = EvaluateShelter(board, us, white ? 6 : 62); // g1 / g8
@@ -749,9 +749,8 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         return result;
     }
 
-    // SF Pawns::Entry::evaluate_shelter — shelter bonus and storm penalty on
-    // the king file and the two adjacent files, plus the KingOnFile term.
-    // Raw SF units.
+    // evaluate-shelter — shelter bonus and storm penalty on the king file and
+    // the two adjacent files, plus the KingOnFile term. Raw internal units.
     private Score EvaluateShelter(Board board, Color us, int ksq)
     {
         Color them = Board.OppositeColor(us);

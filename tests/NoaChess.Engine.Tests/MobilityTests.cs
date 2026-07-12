@@ -3,7 +3,7 @@ using NoaChess.Engine.Evaluation.Classical;
 
 namespace NoaChess.Engine.Tests;
 
-// Tests of the 4C mobility upgrade: SF mobility area, pinned-piece attack
+// Tests of the 4C mobility upgrade: refined mobility area, pinned-piece attack
 // restriction and x-ray attacks (bishops through queens, rooks through
 // queens and own rooks). All probed through the attackedBy / mobility-area
 // accessors after a full Evaluate() call.
@@ -94,7 +94,7 @@ public class MobilityTests
     [Fact]
     public void Mobility_CagedKnightIsPenalizedNonLinearly()
     {
-        // Direct table sanity: the SF curve is steep at the caged end and
+        // Direct table sanity: the curve is steep at the caged end and
         // flat at the top (knight: 0 moves -30 mg, 4 moves +1, 8 moves +18).
         Score caged = EvaluationParams.MobilityBonus[0][0];
         Score mid = EvaluationParams.MobilityBonus[0][4];

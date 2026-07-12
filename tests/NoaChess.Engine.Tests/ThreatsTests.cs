@@ -3,7 +3,7 @@ using NoaChess.Engine.Evaluation.Classical;
 
 namespace NoaChess.Engine.Tests;
 
-// Behavioral tests of the threat terms (Bloque 4B, SF Evaluation::threats).
+// Behavioral tests of the threat terms (Bloque 4B threat evaluation).
 // Each test compares two positions that differ only in the threat feature
 // under test, so PSTs and material stay as equal as possible.
 public class ThreatsTests

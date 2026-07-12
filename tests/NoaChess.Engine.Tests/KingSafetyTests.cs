@@ -4,7 +4,7 @@ using Xunit;
 
 namespace NoaChess.Engine.Tests;
 
-// Block 4D: SF shelter/storm + king safety. The suite probes behaviour
+// Block 4D: shelter/storm + king safety. The suite probes behaviour
 // through full Evaluate() deltas on mirrored/paired positions so PST and
 // material confounds cancel out.
 public class KingSafetyTests
