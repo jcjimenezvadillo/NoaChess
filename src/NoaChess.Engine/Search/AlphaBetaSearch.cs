@@ -193,13 +193,21 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             if (_stopped)
                 break;
 
-            // Predictive soft cut (clock mode only): the next iteration costs
-            // at least as much as everything spent so far, so starting one
-            // past HALF the soft budget means finishing well beyond it.
-            // Better to move now and bank the clock.
-            if (depth > 1 && clockMode && _timer.ElapsedMilliseconds * 2 >= limits.SoftTimeMs)
-                break;
-            if (depth > 1 && _timer.ElapsedMilliseconds >= limits.SoftTimeMs)
+            // Soft budget (clock mode). The budget is the static per-move slice
+            // computed by TimeManager (a small, conservative fraction of the
+            // clock plus 85% of the increment). Past it, do not START another
+            // iteration — the moves banked so far are complete and the rest of
+            // the clock is preserved for the rest of the game. An iteration
+            // already under way is bounded by the mid-root soft stop and, past
+            // that, by the hard deadline.
+            //
+            // NOTE (v2.6.4): a best-move-instability / falling-eval extension
+            // was tried here and reverted — without an eval-complexity metric it
+            // fired hardest in the volatile opening (where any reasonable move is
+            // fine), spending 3-4x the budget on the first moves and rushing the
+            // rest of the game (SPRT -5.7 Elo). It belongs with the later search
+            // block that also ports the complexity signal.
+            if (depth > 1 && _timer.ElapsedMilliseconds >= _softTimeMs)
                 break;
 
             // Aspiration window around the previous iteration's score (only
