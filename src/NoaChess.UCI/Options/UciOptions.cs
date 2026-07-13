@@ -4,14 +4,17 @@ namespace NoaChess.UCI.Options;
 // - Hash: transposition table size in MB.
 // - Threads: accepted for GUI compatibility, but only 1 is supported until
 //   Lazy SMP arrives in v3.0.
-// - MoveOverhead: milliseconds subtracted from every time budget to absorb
-//   GUI/network latency (prevents losing on time by a few ms).
+// - MoveOverhead: per-move milliseconds reserved for GUI/network latency.
+//   The time manager deducts it once per expected remaining move
+//   (overhead x horizon), so the default must stay small: 100 ms would
+//   reserve over 5 s of the clock and collapse low-clock bullet endgames to
+//   instant moves. Raise it for laggy online play, not for local GUIs.
 // - UseNNUE / EvalFile: neural evaluation switch and model path (v2.0).
 public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
     public int Threads { get; private set; } = 1;
-    public int MoveOverhead { get; private set; } = 100;
+    public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
     public bool UseNnue { get; private set; }
     public string EvalFile { get; private set; } = "";
@@ -22,7 +25,7 @@ public sealed class UciOptions
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
         output.WriteLine("option name Threads type spin default 1 min 1 max 1");
-        output.WriteLine("option name MoveOverhead type spin default 100 min 0 max 5000");
+        output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name EvalFile type string default <empty>");
