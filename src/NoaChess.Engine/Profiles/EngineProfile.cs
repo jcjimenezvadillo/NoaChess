@@ -15,21 +15,16 @@ public sealed record EngineProfile(
     // LMR triggers: reduce quiet moves ranked at or after this position...
     int LmrMinMoves,
     // ...when at least this depth remains.
-    int LmrMinDepth,
-
-    // Time manager horizon: the clock is assumed to cover this many more
-    // moves. Larger = more conservative spending per move.
-    int AssumedMovesToGo)
+    int LmrMinDepth)
 {
     // Balanced defaults for rapid/classical play.
     public static readonly EngineProfile Default = new("Default",
-        AspirationWindow: 50, LmrMinMoves: 4, LmrMinDepth: 3, AssumedMovesToGo: 25);
+        AspirationWindow: 50, LmrMinMoves: 4, LmrMinDepth: 3);
 
-    // Bullet: prune later moves sooner and harder, avoid re-searches, and
-    // spread the clock over more moves (running out of time IS the main
-    // losing condition at these speeds).
+    // Bullet: prune later moves sooner and harder, and avoid re-searches
+    // (the time manager itself already scales with the clock).
     public static readonly EngineProfile Bullet = new("Bullet",
-        AspirationWindow: 80, LmrMinMoves: 3, LmrMinDepth: 2, AssumedMovesToGo: 32);
+        AspirationWindow: 80, LmrMinMoves: 3, LmrMinDepth: 2);
 
     public static EngineProfile ByName(string name) =>
         name.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? Bullet : Default;

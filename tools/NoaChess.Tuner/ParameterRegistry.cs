@@ -66,6 +66,60 @@ public static class ParameterRegistry
         return list;
     }
 
+    // Only the 4E piece terms (v2.6.5), everything else frozen. The reference
+    // values are calibrated against the reference's own PSTs; tuning them on
+    // NoaChess self-play data re-calibrates them against the PeSTO PSTs and
+    // the rest of the existing evaluation, which is what x0.48 scaling cannot do.
+    public static List<TunableParam> Build4E()
+    {
+        var list = new List<TunableParam>();
+
+        AddScore(list, "TrappedRook",
+            () => EvaluationParams.TrappedRook, v => EvaluationParams.TrappedRook = v);
+        AddScore(list, "RookOnClosedFile",
+            () => EvaluationParams.RookOnClosedFile, v => EvaluationParams.RookOnClosedFile = v);
+        AddScore(list, "LongDiagonalBishop",
+            () => EvaluationParams.LongDiagonalBishop, v => EvaluationParams.LongDiagonalBishop = v);
+        AddScore(list, "MinorBehindPawn",
+            () => EvaluationParams.MinorBehindPawn, v => EvaluationParams.MinorBehindPawn = v);
+        AddScore(list, "BishopXRayPawns",
+            () => EvaluationParams.BishopXRayPawns, v => EvaluationParams.BishopXRayPawns = v);
+        AddScore(list, "BishopOutpost",
+            () => EvaluationParams.BishopOutpost, v => EvaluationParams.BishopOutpost = v);
+        AddScore(list, "ReachableOutpost",
+            () => EvaluationParams.ReachableOutpost, v => EvaluationParams.ReachableOutpost = v);
+        AddScore(list, "UncontestedOutpost",
+            () => EvaluationParams.UncontestedOutpost, v => EvaluationParams.UncontestedOutpost = v);
+        AddScore(list, "WeakQueen",
+            () => EvaluationParams.WeakQueen, v => EvaluationParams.WeakQueen = v);
+        AddScore(list, "KnightOutpost",
+            () => EvaluationParams.KnightOutpost, v => EvaluationParams.KnightOutpost = v);
+        AddScoreArray(list, "KingProtector", EvaluationParams.KingProtector, 0, 1);
+        AddScoreArray(list, "BishopPawns", EvaluationParams.BishopPawns, 0, 3);
+
+        return list;
+    }
+
+    // Renders only the 4E values as a paste-ready snippet.
+    public static string ToSnippet4E()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("// Tuned 4E values (texel, NoaChess.Tuner) — paste into EvaluationParams:");
+        Append(sb, "TrappedRook", EvaluationParams.TrappedRook);
+        Append(sb, "RookOnClosedFile", EvaluationParams.RookOnClosedFile);
+        Append(sb, "LongDiagonalBishop", EvaluationParams.LongDiagonalBishop);
+        Append(sb, "MinorBehindPawn", EvaluationParams.MinorBehindPawn);
+        Append(sb, "BishopXRayPawns", EvaluationParams.BishopXRayPawns);
+        Append(sb, "BishopOutpost", EvaluationParams.BishopOutpost);
+        Append(sb, "ReachableOutpost", EvaluationParams.ReachableOutpost);
+        Append(sb, "UncontestedOutpost", EvaluationParams.UncontestedOutpost);
+        Append(sb, "WeakQueen", EvaluationParams.WeakQueen);
+        Append(sb, "KnightOutpost", EvaluationParams.KnightOutpost);
+        AppendArray(sb, "KingProtector", EvaluationParams.KingProtector);
+        AppendArray(sb, "BishopPawns", EvaluationParams.BishopPawns);
+        return sb.ToString();
+    }
+
     private static void AddScore(List<TunableParam> list, string name,
         Func<Score> get, Action<Score> set)
     {

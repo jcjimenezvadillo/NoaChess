@@ -53,6 +53,12 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // against the enemy queen use it as their "safe square" filter).
     private readonly ulong[] _mobilityArea = new ulong[2];
 
+    // Outpost squares for this color: relative ranks 4-6, protected by one of
+    // our pawns OR with any pawn directly in front (shield), and never
+    // attackable by an enemy pawn (outside the enemy pawn-attacks-span).
+    // Filled from the pawn cache each call (pawn-only inputs).
+    private readonly ulong[] _outpostSquares = new ulong[2];
+
     // attackedBy[color, pieceType]: squares attacked by that piece type; the
     // extra AllPieces slot holds the union over every type. attackedBy2[color]
     // is the set of squares attacked by two or more units of the same color
@@ -71,6 +77,12 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 
     // Space area per color: files c-f, relative ranks 2-4.
     private static readonly ulong[] SpaceMask = new ulong[2];
+
+    // Board halves by file, used by the UncontestedOutpost wing logic.
+    private const ulong QueenSideFiles = Bitboard.FileA | (Bitboard.FileA << 1)
+                                       | (Bitboard.FileA << 2) | (Bitboard.FileA << 3);
+    private const ulong KingSideFiles = (Bitboard.FileA << 4) | (Bitboard.FileA << 5)
+                                      | (Bitboard.FileA << 6) | (Bitboard.FileA << 7);
 
     // King flank by king file: the files "around" the king used
     // by the flank attack/defense terms. Queenside = a-d, center = c-f,
@@ -232,6 +244,14 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                                | pawnAttacks[(int)enemyOf]);
         }
 
+        // Pawn structure (cached, tapered, already White-relative). Runs
+        // before the piece loop because the piece terms consume the cached
+        // outpost squares; also hands back the passer bitboards for the
+        // piece-dependent passer terms below.
+        Score pawnScore = _pawnStructure.Evaluate(board,
+            out ulong whitePassers, out ulong blackPassers,
+            out _outpostSquares[(int)Color.White], out _outpostSquares[(int)Color.Black]);
+
         Score score = default; // White's point of view.
         int phase = 0;
 
@@ -315,6 +335,155 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                         else if (type == PieceType.Bishop
                               && (Attacks.Bishop(sq, whitePawns | blackPawns) & _kingRing[e]) != 0)
                             side += EvaluationParams.BishopOnKingRing;
+
+                        // ---- 4E piece-specific terms ----
+                        if (type is PieceType.Knight or PieceType.Bishop)
+                        {
+                            ulong sqBB = Bitboard.SquareBB(sq);
+
+                            // Outposts (else-if chain like the reference): a
+                            // knight on a SIDE-file outpost with nothing to hit
+                            // gets only the endgame UncontestedOutpost value
+                            // (scaled by the pawns on that wing); any other
+                            // minor on an outpost square gets the full bonus;
+                            // a knight that can jump to a free outpost square
+                            // next move earns ReachableOutpost.
+                            ulong outposts = _outpostSquares[c];
+                            if ((outposts & sqBB) != 0)
+                            {
+                                int file = Squares.FileOf(sq);
+                                ulong wing = file <= 3 ? QueenSideFiles : KingSideFiles;
+                                ulong targets = board.Occupancy(enemy)
+                                              & ~board.Pieces(enemy, PieceType.Pawn);
+                                ulong wingTargets = targets & wing;
+                                if (type == PieceType.Knight
+                                    && (file <= 1 || file >= 6)                // side outpost (a/b/g/h)
+                                    && (attacks & targets) == 0                // no relevant attacks
+                                    && (wingTargets & (wingTargets - 1)) == 0) // <= 1 target on the wing
+                                {
+                                    side += EvaluationParams.UncontestedOutpost
+                                          * Bitboard.PopCount((whitePawns | blackPawns) & wing);
+                                }
+                                else
+                                {
+                                    side += type == PieceType.Bishop
+                                        ? EvaluationParams.BishopOutpost
+                                        : EvaluationParams.KnightOutpost;
+                                }
+                            }
+                            else if (type == PieceType.Knight
+                                  && (outposts & attacks & ~board.Occupancy(color)) != 0)
+                            {
+                                side += EvaluationParams.ReachableOutpost;
+                            }
+
+                            // MinorBehindPawn: bonus when a pawn of EITHER color
+                            // sits directly in front of the minor (shielded /
+                            // blockading).
+                            int fwdSq = color == Color.White ? sq + 8 : sq - 8;
+                            if ((uint)fwdSq < 64
+                                && ((whitePawns | blackPawns) & Bitboard.SquareBB(fwdSq)) != 0)
+                                side += EvaluationParams.MinorBehindPawn;
+
+                            // KingProtector: PENALTY per Chebyshev distance to
+                            // own king, indexed [knight, bishop].
+                            int chebyshev = Math.Max(
+                                Math.Abs(Squares.FileOf(sq) - Squares.FileOf(ownKingSq)),
+                                Math.Abs(Squares.RankOf(sq) - Squares.RankOf(ownKingSq)));
+                            side -= EvaluationParams.KingProtector[type == PieceType.Bishop ? 1 : 0]
+                                  * chebyshev;
+
+                            if (type == PieceType.Bishop)
+                            {
+                                ulong ownPawnsB  = color == Color.White ? whitePawns : blackPawns;
+                                ulong enemyPawnsB = color == Color.White ? blackPawns : whitePawns;
+                                // Bishop color: light when (file + rank) is odd, i.e. (sq ^ rank) LSB = 1.
+                                // LightSquares = bits set where file+rank is odd: b1,d1,f1,h1,a2,c2,...
+                                const ulong LightSquares = 0x55AA55AA55AA55AAUL;
+                                ulong sameColorMask = ((sq ^ (sq >> 3)) & 1) == 1 ? LightSquares : ~LightSquares;
+                                // BishopPawns: penalty per own pawn on the bishop's color,
+                                // indexed by file edge distance and scaled by (not pawn-
+                                // protected + own pawns blocked on the center files).
+                                int sameColorPawns = Bitboard.PopCount(ownPawnsB & sameColorMask);
+                                if (sameColorPawns != 0)
+                                {
+                                    // Center files C|D|E|F (files 2..5).
+                                    const ulong CenterFiles = (Bitboard.FileA << 2) | (Bitboard.FileA << 3)
+                                                            | (Bitboard.FileA << 4) | (Bitboard.FileA << 5);
+                                    ulong blocked = color == Color.White
+                                        ? ownPawnsB & (occ >> 8)
+                                        : ownPawnsB & (occ << 8);
+                                    bool pawnProtected = (_attackedBy[c, (int)PieceType.Pawn] & sqBB) != 0;
+                                    int mult = (pawnProtected ? 0 : 1) + Bitboard.PopCount(blocked & CenterFiles);
+                                    int edgeDist = Math.Min(Squares.FileOf(sq), 7 - Squares.FileOf(sq));
+                                    side -= EvaluationParams.BishopPawns[edgeDist] * (sameColorPawns * mult);
+                                }
+                                // BishopXRayPawns: PENALTY per enemy pawn on the bishop's
+                                // full diagonals (x-ray, empty-board) — they restrict it.
+                                ulong diagFull = Attacks.Bishop(sq, 0UL);
+                                side -= EvaluationParams.BishopXRayPawns * Bitboard.PopCount(enemyPawnsB & diagFull);
+                                // LongDiagonalBishop: sees >= 2 of the 4 center squares through pawns.
+                                const ulong Center = (1UL << 27) | (1UL << 28) | (1UL << 35) | (1UL << 36);
+                                if (Bitboard.PopCount(Attacks.Bishop(sq, whitePawns | blackPawns) & Center) >= 2)
+                                    side += EvaluationParams.LongDiagonalBishop;
+                            }
+                        }
+                        else if (type == PieceType.Rook)
+                        {
+                            // Closed-file / trapped terms apply ONLY when the rook is
+                            // NOT on a file that is (semi-)open for us — i.e. there is
+                            // an own pawn on its file. Open/semi-open bonuses are handled
+                            // separately in RookFileBonus (the reference's `if` branch).
+                            ulong ownPawnsR = color == Color.White ? whitePawns : blackPawns;
+                            ulong fileMask = Bitboard.FileA << Squares.FileOf(sq);
+                            if ((ownPawnsR & fileMask) != 0)
+                            {
+                                // RookOnClosedFile: penalty only when our pawn on this
+                                // file is blocked (a piece directly in front of it).
+                                ulong blockedPawns = color == Color.White
+                                    ? ownPawnsR & (occ >> 8)
+                                    : ownPawnsR & (occ << 8);
+                                if ((blockedPawns & fileMask) != 0)
+                                    side -= EvaluationParams.RookOnClosedFile;
+
+                                // TrappedRook: rook with ≤3 mobility squares, boxed in on
+                                // the same side as its own king (kf<E) == (rookFile<kf),
+                                // doubled when the side can no longer castle.
+                                if (moves <= 3)
+                                {
+                                    int kf = Squares.FileOf(ownKingSq);
+                                    int rfile = Squares.FileOf(sq);
+                                    if ((kf < 4) == (rfile < kf))
+                                    {
+                                        CastlingRights ownRights = color == Color.White
+                                            ? CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide
+                                            : CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide;
+                                        bool canCastle = (board.CastlingRights & ownRights) != 0;
+                                        side -= EvaluationParams.TrappedRook * (canCastle ? 1 : 2);
+                                    }
+                                }
+                            }
+                        }
+                        else if (type == PieceType.Queen)
+                        {
+                            // WeakQueen: the queen is the lone blocker between an enemy
+                            // rook/bishop and a target behind it (relative pin / latent
+                            // discovered attack). Uses the same sniper logic as king pins.
+                            ulong snipers =
+                                  (Attacks.Rook(sq, 0) & board.Pieces(enemy, PieceType.Rook))
+                                | (Attacks.Bishop(sq, 0) & board.Pieces(enemy, PieceType.Bishop));
+                            ulong occNoSnipers = occ ^ snipers;
+                            while (snipers != 0)
+                            {
+                                int ssq = Bitboard.PopLsb(ref snipers);
+                                ulong between = Between[sq * 64 + ssq] & occNoSnipers;
+                                if (between != 0 && (between & (between - 1)) == 0)
+                                {
+                                    side += EvaluationParams.WeakQueen;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -330,20 +499,18 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             score += side * sign;
         }
 
-        // Pawn structure (cached, tapered, already White-relative). Also hands
-        // back the cached passer bitboards for the piece-dependent terms.
-        score += _pawnStructure.Evaluate(board, out ulong whitePassers, out ulong blackPassers);
+        // Pawn structure score (computed before the piece loop, see above).
+        score += pawnScore;
 
         // Second pass: terms that mix pawn structure with piece locations
-        // (outposts, passer blockers/escorts, space). Runs after the piece loop
-        // so both sides' pawn attacks are already computed.
+        // (passer blockers/escorts, space, threats). Runs after the piece loop
+        // so both sides' attack tables are already computed.
         for (int c = 0; c < 2; c++)
         {
             Color color = (Color)c;
             int sign = color == Color.White ? 1 : -1;
             ulong passers = color == Color.White ? whitePassers : blackPassers;
-            Score side = KnightOutposts(board, color, pawnAttacks)
-                       + PasserPieceTerms(board, color, passers)
+            Score side = PasserPieceTerms(board, color, passers)
                        + Space(board, color, pawnAttacks)
                        + Threats(board, color);
             score += side * sign;
@@ -502,33 +669,6 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         ulong seventhRank = color == Color.White ? 0xFFUL << 48 : 0xFFUL << 8;
         ulong rooks = board.Pieces(color, PieceType.Rook) & seventhRank;
         return EvaluationParams.RookOnSeventh * Bitboard.PopCount(rooks);
-    }
-
-    // Knight outposts: a knight on relative ranks 4-6, protected by a friendly
-    // pawn, on a square no enemy pawn can ever attack (no enemy pawns on the
-    // adjacent files ahead of it). Such a knight is a permanent thorn.
-    private static Score KnightOutposts(Board board, Color color, ulong[] pawnAttacks)
-    {
-        Color enemy = Board.OppositeColor(color);
-        ulong enemyPawns = board.Pieces(enemy, PieceType.Pawn);
-        ulong knights = board.Pieces(color, PieceType.Knight) & pawnAttacks[(int)color];
-        Score score = default;
-
-        while (knights != 0)
-        {
-            int sq = Bitboard.PopLsb(ref knights);
-            int relativeRank = color == Color.White ? Squares.RankOf(sq) : 7 - Squares.RankOf(sq);
-            if (relativeRank is < 3 or > 5)
-                continue;
-
-            // The passed-pawn cone minus the own file = squares from which an
-            // enemy pawn could ever attack this square's file neighbours.
-            ulong evictors = PawnStructureEvaluator.PassedPawnMask[(int)color, sq]
-                           & PawnStructureEvaluator.AdjacentFilesMask[Squares.FileOf(sq)];
-            if ((enemyPawns & evictors) == 0)
-                score += EvaluationParams.KnightOutpost;
-        }
-        return score;
     }
 
     // Piece-dependent passed pawn terms (the rank bonus itself lives in the

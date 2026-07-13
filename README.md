@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current version: v2.6.4** (time management: 85% increment use + conservative ply-adaptive horizon; SPRT in progress). **Last validated: v2.6.3 — 2800 ± 25 Elo measured** (full reference-engine king safety; +76.9 ± 31.2 Elo SPRT vs v2.6.2, LOS 100%, 420-game LTC precision gauntlet). See [CHANGELOG](CHANGELOG.md).
+**Current version: v2.6.5** (reference piece terms — TrappedRook, BishopPawns, LongDiagonalBishop, exact outposts with pawn-attacks-span, WeakQueen… — plus the full reference time manager: optimum/maximum formulas and dynamic stop factors; +19.5 ± 13.6 Elo SPRT vs v2.6.4). **Measured: 2835 ± 25 CCRL** (two LTC gauntlets at 60+0.6, 880 clean games, 10 reliable anchors 2688–3027; the v2.6.4 field was anchored differently — the reliable relative signal is the SPRT). See [CHANGELOG](CHANGELOG.md).
 
 ### **Main Features (v2.6.2)**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -60,8 +60,9 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.6.1** — Full reference-engine threat evaluation (10 terms, rescaled to NoaChess units). ✅ (+103 ± 35 Elo SPRT vs v2.5.0 — largest single evaluation gain of the project)
 - **v2.6.2** — Non-linear mobility (reference lookup tables, re-centered), x-ray attacks, reference mobility area, pinned-piece attack restriction. ✅ (+6.6 ± 11.5 Elo SPRT vs v2.6.1, LOS 87%; **2780 ± 20 CCRL** measured across two independent LTC gauntlets, 2700+ games)
 - **v2.6.3** — Full reference-engine king safety: shelter/storm tables, KingOnFile, pre-castling shelter max, EG king-pawn proximity, reference king-danger formula (no safe checks), king flank terms, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT vs v2.6.2, LOS 100%; **2800 ± 25 CCRL** measured)
-- **v2.6.4** — Time management: 85% increment use + conservative ply-adaptive horizon (a best-move instability extension was tried and reverted — regressed at fast TC and overspent in bullet). 🔄 SPRT pending
-- **Next** — reference classical eval block (piece terms, passed pawns, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
+- **v2.6.4** — Time management: 85% increment use + conservative ply-adaptive horizon (a best-move instability extension was tried and reverted — regressed at fast TC and overspent in bullet). ✅ **2875 ± 20 CCRL measured** (LTC gauntlet 2728 games, field 2580–2917)
+- **v2.6.5** — Reference piece terms (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, reference-exact outposts with pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector disabled) + full reference time manager (optimum/maximum + fallingEval/stability/instability stop factors). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** measured, 880 LTC games)
+- **Next** — reference classical eval block (passed pawns, pawn structure, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -81,7 +82,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Versión actual: v2.6.4** (gestión de tiempo: uso del 85% del incremento + horizonte adaptativo conservador por ply; SPRT en curso). **Última validada: v2.6.3 — 2800 ± 25 Elo medido** (seguridad del rey completa de referencia; +76.9 ± 31.2 Elo SPRT contra v2.6.2, LOS 100%, gauntlet LTC de 420 partidas). Ver [CHANGELOG](CHANGELOG.md).
+**Versión actual: v2.6.5** (términos de piezas de referencia — TrappedRook, BishopPawns, LongDiagonalBishop, outposts exactos con pawn-attacks-span, WeakQueen… — más el gestor de tiempo completo de referencia: fórmulas optimum/maximum y factores dinámicos de parada; +19.5 ± 13.6 Elo SPRT vs v2.6.4). **Medido: 2835 ± 25 CCRL** (dos gauntlets LTC 60+0.6, 880 partidas limpias, 10 anclas fiables 2688–3027; el field de la v2.6.4 estaba anclado distinto — la señal relativa fiable es el SPRT). Ver [CHANGELOG](CHANGELOG.md).
 
 ### **Características principales (v2.6.2)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).
@@ -135,8 +136,9 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.6.1** — Evaluación de amenazas completa de referencia (10 términos, reescalados a unidades NoaChess). ✅ (+103 ± 35 Elo por SPRT contra la v2.5.0 — el mayor salto de evaluación del proyecto)
 - **v2.6.2** — Movilidad no-lineal (tablas lookup de referencia, re-centradas), ataques x-ray, área de movilidad de referencia, restricción de piezas clavadas. ✅ (+6.6 ± 11.5 Elo por SPRT contra la v2.6.1, LOS 87%; **2780 ± 20 CCRL** medidos en dos gauntlets LTC independientes, 2700+ partidas)
 - **v2.6.3** — Seguridad del rey completa de referencia: tablas shelter/storm, KingOnFile, máximo de shelter pre-enroque, proximidad rey-peones en el final, fórmula de peligro de referencia (sin safe checks), términos de flanco del rey, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT contra v2.6.2, LOS 100%; **2800 ± 25 CCRL** medidos)
-- **v2.6.4** — Gestión de tiempo: uso del 85% del incremento + horizonte adaptativo conservador por ply (se probó una extensión por inestabilidad del best move y se revirtió — regresó a ritmo rápido y sobregastaba en bullet). 🔄 SPRT pendiente
-- **Siguiente** — Bloque de evaluación clásica de referencia (términos de piezas, peones pasados, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
+- **v2.6.4** — Gestión de tiempo: uso del 85% del incremento + horizonte adaptativo conservador por ply (se probó una extensión por inestabilidad del best move y se revirtió — regresó a ritmo rápido y sobregastaba en bullet). ✅ **2875 ± 20 CCRL medido** (gauntlet LTC 2728 partidas, campo 2580–2917)
+- **v2.6.5** — Términos de piezas de referencia (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, outposts exactos con pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector desactivado) + gestor de tiempo completo de referencia (optimum/maximum + factores fallingEval/estabilidad/inestabilidad). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** medidos, 880 partidas LTC)
+- **Siguiente** — Bloque de evaluación clásica de referencia (peones pasados, estructura de peones, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 
