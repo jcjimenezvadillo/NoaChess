@@ -27,9 +27,16 @@ public sealed class UciLoop
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
-    private readonly TextWriter _output;
+    private TextWriter _output;
     private readonly ChessEngine _engine = new();
     private readonly UciOptions _options = new();
+
+    // UCI traffic log ("Debug Log File" option or NOACHESS_DEBUG_LOG env
+    // var): every stdin line ("<<"), every stdout line (">>") and the stdin
+    // EOF, timestamped. The only way to see what a GUI actually sends when it
+    // misbehaves (Arena's engine-frozen-after-new-game reports).
+    private StreamWriter? _log;
+    private readonly Lock _logLock = new();
 
     private Board _board = new();
     private CancellationTokenSource? _searchCts;
@@ -48,6 +55,49 @@ public sealed class UciLoop
         _input = input;
         // The search task and the command loop both write here.
         _output = TextWriter.Synchronized(output);
+        if (Environment.GetEnvironmentVariable("NOACHESS_DEBUG_LOG") is string path
+            && path.Length > 0)
+            OpenLog(path);
+    }
+
+    // Opens (or switches) the traffic log and tees stdout through it. Never
+    // throws: a bad path just reports and leaves logging off.
+    private void OpenLog(string path)
+    {
+        try
+        {
+            lock (_logLock)
+            {
+                _log?.Dispose();
+                _log = new StreamWriter(File.Open(path, FileMode.Append, FileAccess.Write,
+                                                  FileShare.ReadWrite))
+                { AutoFlush = true };
+                _log.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] === log opened (pid {Environment.ProcessId}, {EngineName} {EngineVersion}) ===");
+            }
+            if (_output is not TeeWriter)
+                _output = new TeeWriter(_output, this);
+        }
+        catch (Exception ex)
+        {
+            _output.WriteLine($"info string debug log rejected: {ex.Message}");
+        }
+    }
+
+    private void LogLine(string direction, string text)
+    {
+        lock (_logLock)
+            _log?.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {direction} {text}");
+    }
+
+    // Tees every engine->GUI line into the traffic log.
+    private sealed class TeeWriter(TextWriter main, UciLoop owner) : TextWriter
+    {
+        public override System.Text.Encoding Encoding => main.Encoding;
+        public override void WriteLine(string? value)
+        {
+            main.WriteLine(value);
+            owner.LogLine(">>", value ?? "");
+        }
     }
 
     public void Run()
@@ -55,6 +105,7 @@ public sealed class UciLoop
         string? line;
         while ((line = _input.ReadLine()) != null)
         {
+            LogLine("<<", line);
             string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (tokens.Length == 0)
                 continue;
@@ -71,6 +122,7 @@ public sealed class UciLoop
                 _output.WriteLine($"info string command error: {ex.GetType().Name}: {ex.Message}");
             }
         }
+        LogLine("--", "stdin EOF — read loop ends");
     }
 
     // Executes one UCI command. Returns false when the loop must exit (quit).
@@ -153,6 +205,8 @@ public sealed class UciLoop
     {
         if (suppressBestmove)
             _suppressBestmove = true;
+        if (_searchTask is { IsCompleted: false })
+            LogLine("--", $"waiting for search task (suppress={suppressBestmove})");
         _searchCts?.Cancel();
         // A faulted search task re-throws its exception here, on the UCI loop
         // thread — which would kill the read loop and leave a zombie process
@@ -184,6 +238,8 @@ public sealed class UciLoop
             _engine.ResizeHash(_options.Hash);
         if (changed == "Profile")
             _engine.Profile = EngineProfile.ByName(_options.Profile);
+        if (changed == "Debug Log File" && _options.DebugLogFile.Length > 0)
+            OpenLog(_options.DebugLogFile);
 
         // NNUE wiring: EvalFile loads/validates the model; UseNNUE switches
         // the evaluator. Failures are reported as "info string" (per UCI, a
@@ -322,12 +378,18 @@ public sealed class UciLoop
         // "ponderhit"/new position (-> cancelled with bestmove suppressed).
         // Answering early violates UCI and desyncs the GUI.
         if (waitForStop && !token.IsCancellationRequested)
+        {
+            LogLine("--", "ponder/infinite search self-finished, parked until stop/ponderhit");
             token.WaitHandle.WaitOne();
+        }
 
         // A ponder search converted by "ponderhit" must stay silent: its only
         // job was warming the TT; the relaunched timed search answers.
         if (_suppressBestmove)
+        {
+            LogLine("--", "search finished with bestmove suppressed");
             return;
+        }
 
         if (result.BestMove == Move.None)
         {
@@ -335,14 +397,30 @@ public sealed class UciLoop
             return;
         }
 
-        // "bestmove X ponder Y": Y is the predicted opponent reply. Without
-        // it the GUI has nothing to ponder on and never sends "go ponder".
-        // Only offered when the last reported PV actually starts with the
-        // returned best move (a soft-stopped partial iteration may differ).
-        bool hasPonderHint = lastPv.Length >= 2 && lastPv[0] == result.BestMove;
-        _output.WriteLine(hasPonderHint
-            ? $"bestmove {result.BestMove} ponder {lastPv[1]}"
-            : $"bestmove {result.BestMove}");
+        // "bestmove X ponder Y": Y is the predicted opponent reply. The PV
+        // provides it when it starts with the returned best move (a
+        // soft-stopped partial iteration may have improved past the last
+        // completed PV). When it does not, predict ANY legal reply instead of
+        // omitting the hint: Arena's Permanent Brain stalls its whole game
+        // controller on a bare bestmove — it waits forever for the ponder
+        // position, the engine's clock runs out, and not even a new game
+        // recovers until the engine process is restarted (seen in the
+        // 2026-07-14 traffic log). A wrong prediction is harmless: a ponder
+        // miss is just stop -> discard -> fresh go.
+        Move ponderHint = lastPv.Length >= 2 && lastPv[0] == result.BestMove
+            ? lastPv[1]
+            : Move.None;
+        if (ponderHint == Move.None)
+        {
+            _board.MakeMove(result.BestMove);
+            var replies = MoveGenerator.GenerateLegalMoves(_board);
+            if (replies.Count > 0)
+                ponderHint = replies[0];
+            _board.UnmakeMove();
+        }
+        _output.WriteLine(ponderHint == Move.None
+            ? $"bestmove {result.BestMove}"
+            : $"bestmove {result.BestMove} ponder {ponderHint}");
     }
 
     private SearchLimits ParseLimits(string[] tokens)
