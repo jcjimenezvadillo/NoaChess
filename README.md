@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current version: v2.6.6** (reference passed pawns — full reference passed definition with candidate passers, blocked-passer filter, king proximity to the block square, 6-level path-to-queen safety ladder, PassedFile; **+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%**). **Measured: 2880 ± 25 CCRL** (LTC gauntlet 60+0.6, 450 games, 8 reliable anchors). See [CHANGELOG](CHANGELOG.md).
+**Current version: v2.6.7** (reference pawn-structure scoring chain — full Connected formula, WeakUnopposed, WeakLever, DoubledEarly, blocked pawns on ranks 5-6; +28.4 ± 17.5 Elo SPRT, **2895 ± 25 CCRL** estimated). **Last measured: v2.6.6 — 2880 ± 25 CCRL** (LTC gauntlet 60+0.6, 450 games, 8 reliable anchors; +45.8 ± 23.1 Elo SPRT vs v2.6.5). See [CHANGELOG](CHANGELOG.md).
 
 ### **Main Features (v2.6.2)**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -63,6 +63,7 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.6.4** — Time management: 85% increment use + conservative ply-adaptive horizon (a best-move instability extension was tried and reverted — regressed at fast TC and overspent in bullet). ✅ **2875 ± 20 CCRL measured** (LTC gauntlet 2728 games, field 2580–2917)
 - **v2.6.5** — Reference piece terms (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, reference-exact outposts with pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector disabled) + full reference time manager (optimum/maximum + fallingEval/stability/instability stop factors). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** measured, 880 LTC games)
 - **v2.6.6** — Reference passed pawns (reference passed definition + candidate passers, blocked-passer filter, king proximity to the block square, path-to-queen safety ladder, PassedFile). ✅ (+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%; **2880 ± 25 CCRL** estimated)
+- **v2.6.7** — Reference pawn-structure scoring chain (full Connected formula, WeakUnopposed, WeakLever, DoubledEarly, blocked pawns on ranks 5-6, reference Doubled/Isolated/Backward semantics). ✅ (+28.4 ± 17.5 Elo SPRT vs v2.6.6, LOS 99.9%; **2895 ± 25 CCRL** estimated)
 - **Next** — reference classical eval block (pawn structure, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
@@ -83,7 +84,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Versión actual: v2.6.6** (peones pasados de referencia — definición completa de pasado con candidatos, filtro de pasados bloqueados, proximidad de reyes a la casilla de bloqueo, escalera de seguridad del camino a dama de 6 niveles, PassedFile; **+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%**). **Medida: 2880 ± 25 CCRL** (gauntlet LTC 60+0.6, 450 partidas, 8 anclas fiables). Ver [CHANGELOG](CHANGELOG.md).
+**Versión actual: v2.6.7** (cadena de evaluación de estructura de peones de referencia — fórmula Connected completa, WeakUnopposed, WeakLever, DoubledEarly, peones bloqueados en filas 5-6; +28.4 ± 17.5 Elo SPRT, **2895 ± 25 CCRL** estimados). **Última medida: v2.6.6 — 2880 ± 25 CCRL** (gauntlet LTC 60+0.6, 450 partidas, 8 anclas fiables; +45.8 ± 23.1 Elo SPRT vs v2.6.5). Ver [CHANGELOG](CHANGELOG.md).
 
 ### **Características principales (v2.6.2)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).
@@ -140,6 +141,7 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.6.4** — Gestión de tiempo: uso del 85% del incremento + horizonte adaptativo conservador por ply (se probó una extensión por inestabilidad del best move y se revirtió — regresó a ritmo rápido y sobregastaba en bullet). ✅ **2875 ± 20 CCRL medido** (gauntlet LTC 2728 partidas, campo 2580–2917)
 - **v2.6.5** — Términos de piezas de referencia (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, outposts exactos con pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector desactivado) + gestor de tiempo completo de referencia (optimum/maximum + factores fallingEval/estabilidad/inestabilidad). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** medidos, 880 partidas LTC)
 - **v2.6.6** — Peones pasados de referencia (definición de pasado de referencia + candidatos, filtro de pasados bloqueados, proximidad de reyes a la casilla de bloqueo, escalera de seguridad del camino a dama, PassedFile). ✅ (+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%; **2880 ± 25 CCRL** estimado)
+- **v2.6.7** — Cadena de evaluación de estructura de peones de referencia (fórmula Connected completa, WeakUnopposed, WeakLever, DoubledEarly, peones bloqueados en filas 5-6, semántica Doubled/Isolated/Backward de referencia). ✅ (+28.4 ± 17.5 Elo SPRT vs v2.6.6, LOS 99.9%; **2895 ± 25 CCRL** estimados)
 - **Siguiente** — Bloque de evaluación clásica de referencia (estructura de peones, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
