@@ -298,7 +298,8 @@ public static class EvaluationParams
     // Rook behind its own passed pawn (Tarrasch): pushes the pawn and never
     // blocks it. Applied per (rook, passer) pair on the same file.
     public static Score RookBehindPasser = new(12, 14);
-    // A passer whose stop square is occupied by an enemy piece is going
-    // nowhere for now: give back a third of the rank bonus.
-    public const int BlockedPasserDivisor = 3;
+    // Penalty per file distance from the edge: flank passers are worth more
+    // than central ones (the defending king covers fewer squares). Reference
+    // S(13,8) x0.48. Subtracted per passer.
+    public static Score PassedFile = new(6, 4);
 }

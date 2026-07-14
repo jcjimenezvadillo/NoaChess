@@ -6,7 +6,7 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current version: v2.6.5** (reference piece terms — TrappedRook, BishopPawns, LongDiagonalBishop, exact outposts with pawn-attacks-span, WeakQueen… — plus the full reference time manager: optimum/maximum formulas and dynamic stop factors; +19.5 ± 13.6 Elo SPRT vs v2.6.4). **Measured: 2835 ± 25 CCRL** (two LTC gauntlets at 60+0.6, 880 clean games, 10 reliable anchors 2688–3027; the v2.6.4 field was anchored differently — the reliable relative signal is the SPRT). See [CHANGELOG](CHANGELOG.md).
+**Current version: v2.6.6** (reference passed pawns — full reference passed definition with candidate passers, blocked-passer filter, king proximity to the block square, 6-level path-to-queen safety ladder, PassedFile; **+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%**). **Measured: 2880 ± 25 CCRL** (LTC gauntlet 60+0.6, 450 games, 8 reliable anchors). See [CHANGELOG](CHANGELOG.md).
 
 ### **Main Features (v2.6.2)**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -62,7 +62,8 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.6.3** — Full reference-engine king safety: shelter/storm tables, KingOnFile, pre-castling shelter max, EG king-pawn proximity, reference king-danger formula (no safe checks), king flank terms, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT vs v2.6.2, LOS 100%; **2800 ± 25 CCRL** measured)
 - **v2.6.4** — Time management: 85% increment use + conservative ply-adaptive horizon (a best-move instability extension was tried and reverted — regressed at fast TC and overspent in bullet). ✅ **2875 ± 20 CCRL measured** (LTC gauntlet 2728 games, field 2580–2917)
 - **v2.6.5** — Reference piece terms (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, reference-exact outposts with pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector disabled) + full reference time manager (optimum/maximum + fallingEval/stability/instability stop factors). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** measured, 880 LTC games)
-- **Next** — reference classical eval block (passed pawns, pawn structure, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
+- **v2.6.6** — Reference passed pawns (reference passed definition + candidate passers, blocked-passer filter, king proximity to the block square, path-to-queen safety ladder, PassedFile). ✅ (+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%; **2880 ± 25 CCRL** estimated)
+- **Next** — reference classical eval block (pawn structure, imbalance) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -82,7 +83,7 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Versión actual: v2.6.5** (términos de piezas de referencia — TrappedRook, BishopPawns, LongDiagonalBishop, outposts exactos con pawn-attacks-span, WeakQueen… — más el gestor de tiempo completo de referencia: fórmulas optimum/maximum y factores dinámicos de parada; +19.5 ± 13.6 Elo SPRT vs v2.6.4). **Medido: 2835 ± 25 CCRL** (dos gauntlets LTC 60+0.6, 880 partidas limpias, 10 anclas fiables 2688–3027; el field de la v2.6.4 estaba anclado distinto — la señal relativa fiable es el SPRT). Ver [CHANGELOG](CHANGELOG.md).
+**Versión actual: v2.6.6** (peones pasados de referencia — definición completa de pasado con candidatos, filtro de pasados bloqueados, proximidad de reyes a la casilla de bloqueo, escalera de seguridad del camino a dama de 6 niveles, PassedFile; **+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%**). **Medida: 2880 ± 25 CCRL** (gauntlet LTC 60+0.6, 450 partidas, 8 anclas fiables). Ver [CHANGELOG](CHANGELOG.md).
 
 ### **Características principales (v2.6.2)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).
@@ -138,7 +139,8 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.6.3** — Seguridad del rey completa de referencia: tablas shelter/storm, KingOnFile, máximo de shelter pre-enroque, proximidad rey-peones en el final, fórmula de peligro de referencia (sin safe checks), términos de flanco del rey, Rook/BishopOnKingRing. ✅ (+76.9 ± 31.2 Elo SPRT contra v2.6.2, LOS 100%; **2800 ± 25 CCRL** medidos)
 - **v2.6.4** — Gestión de tiempo: uso del 85% del incremento + horizonte adaptativo conservador por ply (se probó una extensión por inestabilidad del best move y se revirtió — regresó a ritmo rápido y sobregastaba en bullet). ✅ **2875 ± 20 CCRL medido** (gauntlet LTC 2728 partidas, campo 2580–2917)
 - **v2.6.5** — Términos de piezas de referencia (TrappedRook, RookOnClosedFile, BishopPawns, BishopXRayPawns, LongDiagonalBishop, MinorBehindPawn, outposts exactos con pawn-attacks-span, UncontestedOutpost, WeakQueen; KingProtector desactivado) + gestor de tiempo completo de referencia (optimum/maximum + factores fallingEval/estabilidad/inestabilidad). ✅ (+19.5 ± 13.6 Elo SPRT vs v2.6.4, LOS 99.7%; **2835 ± 25 CCRL** medidos, 880 partidas LTC)
-- **Siguiente** — Bloque de evaluación clásica de referencia (peones pasados, estructura de peones, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
+- **v2.6.6** — Peones pasados de referencia (definición de pasado de referencia + candidatos, filtro de pasados bloqueados, proximidad de reyes a la casilla de bloqueo, escalera de seguridad del camino a dama, PassedFile). ✅ (+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%; **2880 ± 25 CCRL** estimado)
+- **Siguiente** — Bloque de evaluación clásica de referencia (estructura de peones, desequilibrio) · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 
