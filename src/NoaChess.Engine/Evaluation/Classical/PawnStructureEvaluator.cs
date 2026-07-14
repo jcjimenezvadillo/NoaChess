@@ -5,13 +5,19 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // Pawn structure evaluation with a dedicated cache ("pawn hash").
 //
 // Terms evaluated (see EvaluationParams for the values):
-// - Doubled pawns: extra pawns on the same file.
-// - Isolated pawns: no friendly pawns on adjacent files.
-// - Phalanx: friendly pawn on the same rank and adjacent file (side-by-side).
-// - Backward pawns: stop square attacked by enemy, no friendly pawn level or
-//   behind on adjacent files; not isolated (that has its own penalty).
-// - Passed pawns: no enemy pawns ahead on the same or adjacent files, with a
-//   bonus that grows with the rank (endgame-heavy: a passer wins endgames).
+// - Connected pawns: supported and/or phalanx pawns score a rank-indexed
+//   formula that also counts whether the pawn is opposed and how many
+//   supporters it has.
+// - Isolated pawns: no neighbours at all; extra WeakUnopposed when the file
+//   ahead is free (rook target), or the trebled-pawn Doubled special case.
+// - Backward pawns: all neighbours strictly ahead and the pawn cannot advance
+//   safely; extra WeakUnopposed off the rook files.
+// - Doubled (own pawn directly behind, unsupported), WeakLever (unsupported
+//   pawn attacked by two enemy pawns), DoubledEarly (doubled while the enemy
+//   structure is still fluid).
+// - Blocked pawns on relative ranks 5-6: cramping bonus.
+// - Passed pawns: full passed definition (levers, lever-pushes vs phalanx,
+//   blocked candidates), with a rank bonus (endgame-heavy).
 //
 // Why a cache: pawns move rarely, so consecutive positions in the search tree
 // almost always share the exact same pawn formation. The structure score is
@@ -167,33 +173,29 @@ public sealed class PawnStructureEvaluator
 
     private static Score EvaluateSide(Board board, Color color, out ulong passersOut)
     {
+        bool white = color == Color.White;
         ulong ourPawns = board.Pieces(color, PieceType.Pawn);
         ulong theirPawns = board.Pieces(Board.OppositeColor(color), PieceType.Pawn);
         Score score = default;
 
-        // Enemy pawn attacks: used for the backward-pawn check below.
-        ulong theirPawnAttacks = color == Color.White
-            ? ((theirPawns & ~Bitboard.FileA) >> 9) | ((theirPawns & ~Bitboard.FileH) >> 7)
-            : ((theirPawns & ~Bitboard.FileA) << 7) | ((theirPawns & ~Bitboard.FileH) << 9);
-
-        // Doubled pawns: counted per file (each pawn beyond the first).
-        for (int f = 0; f < 8; f++)
-        {
-            int pawnsOnFile = Bitboard.PopCount(ourPawns & FileMask[f]);
-            if (pawnsOnFile > 1)
-                score += EvaluationParams.DoubledPawn * (pawnsOnFile - 1);
-        }
-
-        // Squares their pawns attack twice: used by the candidate-passer help
-        // condition below (a support pawn cannot step into a doubly-covered
-        // square).
-        ulong theirLeft = color == Color.White
+        // Squares their pawns attack (and attack twice): used by the
+        // candidate-passer help condition and the DoubledEarly gate below.
+        ulong theirLeft = white
             ? (theirPawns & ~Bitboard.FileA) >> 9
             : (theirPawns & ~Bitboard.FileA) << 7;
-        ulong theirRight = color == Color.White
+        ulong theirRight = white
             ? (theirPawns & ~Bitboard.FileH) >> 7
             : (theirPawns & ~Bitboard.FileH) << 9;
         ulong theirDoubleAttacks = theirLeft & theirRight;
+        ulong theirAttacks = theirLeft | theirRight;
+
+        // DoubledEarly fires while NO enemy pawn is fixed: none of our pawns
+        // rams an enemy pawn or stands on a square their pawns cover. Once
+        // the structures lock, doubling can be a legitimate byproduct of a
+        // capture toward the center; before that it is just a weakness.
+        bool noEnemyPawnFixed = (ourPawns
+            & (white ? (theirPawns | theirAttacks) >> 8
+                     : (theirPawns | theirAttacks) << 8)) == 0;
 
         // Per-pawn terms. Passers collected so the connected-passers bonus
         // can look at the full set afterwards.
@@ -204,34 +206,84 @@ public sealed class PawnStructureEvaluator
             int sq = Bitboard.PopLsb(ref pawns);
             int file = Squares.FileOf(sq);
             int rank = Squares.RankOf(sq);
-            int relativeRank = color == Color.White ? rank : 7 - rank;
+            int relativeRank = white ? rank : 7 - rank;
+            int stopSq = white ? sq + 8 : sq - 8;
 
-            // Isolated pawn: no friendly pawn on adjacent files.
-            bool isolated = (ourPawns & AdjacentFilesMask[file]) == 0;
-            if (isolated)
-                score += EvaluationParams.IsolatedPawn;
-
-            // Phalanx: friendly pawn on the same rank and adjacent file.
+            ulong sqBB = Bitboard.SquareBB(sq);
+            ulong stopBB = Bitboard.SquareBB(stopSq);
             ulong rankMask = 0xFFUL << (rank * 8);
-            if ((ourPawns & AdjacentFilesMask[file] & rankMask) != 0)
-                score += EvaluationParams.Phalanx[relativeRank];
 
-            // Backward pawn: stop square attacked by an enemy pawn AND no
-            // friendly pawn on adjacent files at the SAME rank or behind (a
-            // level neighbour defends the stop square directly — a phalanx
-            // member is never backward — and one behind can advance to help).
-            // Exclusive of isolated: an isolated pawn trivially has no support
-            // and already pays its own penalty; stacking both double-counts.
-            int stopSq = color == Color.White ? sq + 8 : sq - 8;
-            ulong supportMask = color == Color.White
+            ulong opposed = theirPawns & PassedPawnMask[(int)color, sq] & FileMask[file];
+            ulong blocked = theirPawns & stopBB;
+            ulong stoppers = theirPawns & PassedPawnMask[(int)color, sq];
+            ulong lever = theirPawns & PawnAttacks(color, sqBB);
+            ulong leverPush = theirPawns & PawnAttacks(color, stopBB);
+            ulong doubled = ourPawns & (white ? sqBB >> 8 : sqBB << 8);
+            ulong neighbours = ourPawns & AdjacentFilesMask[file];
+            ulong phalanx = neighbours & rankMask;
+            ulong support = neighbours & (white ? rankMask >> 8 : rankMask << 8);
+
+            if (doubled != 0 && noEnemyPawnFixed)
+                score -= EvaluationParams.DoubledEarly;
+
+            // Backward: every neighbour is strictly ahead (a level phalanx
+            // member or one behind could advance to help) AND the pawn cannot
+            // step forward (blocked, or the stop square is covered by an
+            // enemy pawn one push away).
+            ulong levelOrBehind = white
                 ? (1UL << ((rank + 1) * 8)) - 1     // ranks 0..rank
                 : ~((1UL << (rank * 8)) - 1);        // ranks rank..7
-            if (!isolated
-                && (theirPawnAttacks & Bitboard.SquareBB(stopSq)) != 0
-                && (ourPawns & AdjacentFilesMask[file] & supportMask) == 0)
+            bool backward = (neighbours & levelOrBehind) == 0
+                && (leverPush | blocked) != 0;
+
+            // Scoring chain — the branches are mutually exclusive on purpose:
+            // a pawn is either connected, isolated (no neighbours) or backward.
+            if ((support | phalanx) != 0)
             {
-                score += EvaluationParams.BackwardPawn;
+                // Connected formula in RAW reference units, converted x0.48 at
+                // the end: base grows with rank, doubles for a phalanx member,
+                // shrinks when opposed, +22 per direct supporter; the endgame
+                // half only kicks in from relative rank 3 up.
+                int v = EvaluationParams.Connected[relativeRank]
+                            * (2 + (phalanx != 0 ? 1 : 0) - (opposed != 0 ? 1 : 0))
+                        + 22 * Bitboard.PopCount(support);
+                score += new Score(v * 100 / 208,
+                                   v * (relativeRank - 2) / 4 * 100 / 208);
             }
+            else if (neighbours == 0)
+            {
+                // A trebled/doubled isolated pawn behind an own pawn on a file
+                // with no enemy neighbours pays the (heavier) Doubled penalty
+                // instead; other isolani pay Isolated, plus WeakUnopposed when
+                // the file ahead is free (a rook target that cannot be traded).
+                ulong ownAheadHere = ourPawns & PassedPawnMask[(int)color, sq] & FileMask[file];
+                if (opposed != 0 && ownAheadHere != 0
+                    && (theirPawns & AdjacentFilesMask[file]) == 0)
+                    score -= EvaluationParams.Doubled;
+                else
+                    score -= EvaluationParams.Isolated
+                           + EvaluationParams.WeakUnopposed * (opposed == 0 ? 1 : 0);
+            }
+            else if (backward)
+            {
+                score -= EvaluationParams.Backward
+                       + EvaluationParams.WeakUnopposed
+                             * (opposed == 0 && file != 0 && file != 7 ? 1 : 0);
+            }
+
+            // Unsupported pawns: doubled directly behind an own pawn, and the
+            // weak lever (attacked by two enemy pawns — whichever way we
+            // recapture, we lose the exchange of pawns).
+            if (support == 0)
+            {
+                score -= EvaluationParams.Doubled * (doubled != 0 ? 1 : 0)
+                       + EvaluationParams.WeakLever
+                             * (Bitboard.PopCount(lever) > 1 ? 1 : 0);
+            }
+
+            // A blocked pawn on relative rank 5-6 cramps the defense.
+            if (blocked != 0 && relativeRank >= 4)
+                score += EvaluationParams.BlockedPawnRank[relativeRank - 4];
 
             // Passed pawn — reference definition, wider than the classic mask
             // test. A pawn is passed when one of three conditions holds:
@@ -244,16 +296,6 @@ public sealed class PawnStructureEvaluator
             //       up to offer the freeing trade (candidate passer — refined
             //       further by the piece-aware blocked-passer filter).
             // A pawn behind an own pawn on the same file is never passed.
-            ulong sqBB = Bitboard.SquareBB(sq);
-            ulong stopBB = Bitboard.SquareBB(stopSq);
-            ulong stoppers = theirPawns & PassedPawnMask[(int)color, sq];
-            ulong lever = theirPawns & PawnAttacks(color, sqBB);
-            ulong leverPush = theirPawns & PawnAttacks(color, stopBB);
-            ulong blocked = theirPawns & stopBB;
-            ulong neighbours = ourPawns & AdjacentFilesMask[file];
-            ulong phalanx = neighbours & rankMask;
-            ulong support = neighbours & (color == Color.White
-                ? rankMask >> 8 : rankMask << 8);
             ulong ownAhead = ourPawns & PassedPawnMask[(int)color, sq] & FileMask[file];
 
             bool passed = ownAhead == 0
@@ -261,7 +303,7 @@ public sealed class PawnStructureEvaluator
                     || (stoppers == leverPush
                         && Bitboard.PopCount(phalanx) >= Bitboard.PopCount(leverPush))
                     || (stoppers == blocked && blocked != 0 && relativeRank >= 4
-                        && ((color == Color.White ? support << 8 : support >> 8)
+                        && ((white ? support << 8 : support >> 8)
                             & ~(theirPawns | theirDoubleAttacks)) != 0));
 
             if (passed)
