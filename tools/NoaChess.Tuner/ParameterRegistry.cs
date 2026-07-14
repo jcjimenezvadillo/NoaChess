@@ -41,6 +41,8 @@ public static class ParameterRegistry
             () => EvaluationParams.ConnectedPassers, v => EvaluationParams.ConnectedPassers = v);
         AddScore(list, "RookBehindPasser",
             () => EvaluationParams.RookBehindPasser, v => EvaluationParams.RookBehindPasser = v);
+        AddScore(list, "PassedFile",
+            () => EvaluationParams.PassedFile, v => EvaluationParams.PassedFile = v);
         AddScore(list, "BackwardPawn",
             () => EvaluationParams.BackwardPawn, v => EvaluationParams.BackwardPawn = v);
 
@@ -166,6 +168,7 @@ public static class ParameterRegistry
         Append(sb, "IsolatedPawn", EvaluationParams.IsolatedPawn);
         Append(sb, "ConnectedPassers", EvaluationParams.ConnectedPassers);
         Append(sb, "RookBehindPasser", EvaluationParams.RookBehindPasser);
+        Append(sb, "PassedFile", EvaluationParams.PassedFile);
         Append(sb, "BackwardPawn", EvaluationParams.BackwardPawn);
         AppendArray(sb, "PassedPawn", EvaluationParams.PassedPawn);
         AppendArray(sb, "Phalanx", EvaluationParams.Phalanx);

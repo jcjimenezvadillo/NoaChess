@@ -42,8 +42,6 @@ public sealed class PawnStructureEvaluator
 
     // True when the pawn on 'sq' has no enemy pawns ahead on its own or the
     // adjacent files — the same test the cached evaluation uses.
-    internal static bool IsPassed(Color color, int sq, ulong theirPawns)
-        => (theirPawns & PassedPawnMask[(int)color, sq]) == 0;
 
     static PawnStructureEvaluator()
     {
@@ -162,6 +160,11 @@ public sealed class PawnStructureEvaluator
         return span;
     }
 
+    // Attack squares of an arbitrary pawn set of the given color.
+    private static ulong PawnAttacks(Color color, ulong pawns) => color == Color.White
+        ? ((pawns & ~Bitboard.FileA) << 7) | ((pawns & ~Bitboard.FileH) << 9)
+        : ((pawns & ~Bitboard.FileA) >> 9) | ((pawns & ~Bitboard.FileH) >> 7);
+
     private static Score EvaluateSide(Board board, Color color, out ulong passersOut)
     {
         ulong ourPawns = board.Pieces(color, PieceType.Pawn);
@@ -180,6 +183,17 @@ public sealed class PawnStructureEvaluator
             if (pawnsOnFile > 1)
                 score += EvaluationParams.DoubledPawn * (pawnsOnFile - 1);
         }
+
+        // Squares their pawns attack twice: used by the candidate-passer help
+        // condition below (a support pawn cannot step into a doubly-covered
+        // square).
+        ulong theirLeft = color == Color.White
+            ? (theirPawns & ~Bitboard.FileA) >> 9
+            : (theirPawns & ~Bitboard.FileA) << 7;
+        ulong theirRight = color == Color.White
+            ? (theirPawns & ~Bitboard.FileH) >> 7
+            : (theirPawns & ~Bitboard.FileH) << 9;
+        ulong theirDoubleAttacks = theirLeft & theirRight;
 
         // Per-pawn terms. Passers collected so the connected-passers bonus
         // can look at the full set afterwards.
@@ -219,10 +233,40 @@ public sealed class PawnStructureEvaluator
                 score += EvaluationParams.BackwardPawn;
             }
 
-            // Passed pawn: no enemy pawn ahead on same or adjacent files.
-            if (IsPassed(color, sq, theirPawns))
+            // Passed pawn — reference definition, wider than the classic mask
+            // test. A pawn is passed when one of three conditions holds:
+            //   (a) no stoppers at all except pawns we can capture right now
+            //       (levers);
+            //   (b) the only stoppers are lever-pushes (enemy pawns that would
+            //       attack our stop square) and our phalanx outnumbers them;
+            //   (c) the only stopper is the blocker directly in front, we are
+            //       on relative rank 5+, and a supporting pawn can safely step
+            //       up to offer the freeing trade (candidate passer — refined
+            //       further by the piece-aware blocked-passer filter).
+            // A pawn behind an own pawn on the same file is never passed.
+            ulong sqBB = Bitboard.SquareBB(sq);
+            ulong stopBB = Bitboard.SquareBB(stopSq);
+            ulong stoppers = theirPawns & PassedPawnMask[(int)color, sq];
+            ulong lever = theirPawns & PawnAttacks(color, sqBB);
+            ulong leverPush = theirPawns & PawnAttacks(color, stopBB);
+            ulong blocked = theirPawns & stopBB;
+            ulong neighbours = ourPawns & AdjacentFilesMask[file];
+            ulong phalanx = neighbours & rankMask;
+            ulong support = neighbours & (color == Color.White
+                ? rankMask >> 8 : rankMask << 8);
+            ulong ownAhead = ourPawns & PassedPawnMask[(int)color, sq] & FileMask[file];
+
+            bool passed = ownAhead == 0
+                && (stoppers == lever
+                    || (stoppers == leverPush
+                        && Bitboard.PopCount(phalanx) >= Bitboard.PopCount(leverPush))
+                    || (stoppers == blocked && blocked != 0 && relativeRank >= 4
+                        && ((color == Color.White ? support << 8 : support >> 8)
+                            & ~(theirPawns | theirDoubleAttacks)) != 0));
+
+            if (passed)
             {
-                passers |= Bitboard.SquareBB(sq);
+                passers |= sqBB;
                 score += EvaluationParams.PassedPawn[relativeRank];
             }
         }

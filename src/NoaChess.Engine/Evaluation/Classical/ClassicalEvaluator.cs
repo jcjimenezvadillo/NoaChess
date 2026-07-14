@@ -672,31 +672,124 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     }
 
     // Piece-dependent passed pawn terms (the rank bonus itself lives in the
-    // cached pawn evaluation): a blocked passer gives back part of its bonus,
-    // a rook behind the passer earns the Tarrasch bonus.
-    private static Score PasserPieceTerms(Board board, Color color, ulong passers)
+    // cached pawn evaluation). Reference passed() geometry: the blocked-passer
+    // filter, king proximity to the block square, the 6-level path-to-queen
+    // safety ladder and the PassedFile edge-distance penalty, plus the
+    // NoaChess Tarrasch rook-behind bonus. Runs in the second pass so the
+    // attackedBy tables are current. The new reference terms are computed in
+    // reference internal units and converted x0.48 per pawn at the end.
+    private Score PasserPieceTerms(Board board, Color color, ulong passers)
     {
         if (passers == 0)
             return default;
 
         Color enemy = Board.OppositeColor(color);
+        int u = (int)color, t = (int)enemy;
+        bool white = color == Color.White;
         ulong ownRooks = board.Pieces(color, PieceType.Rook);
+        ulong ownPawns = board.Pieces(color, PieceType.Pawn);
+        ulong theirPawns = board.Pieces(enemy, PieceType.Pawn);
+        ulong theirPieces = board.Occupancy(enemy);
         Score score = default;
+
+        // Blocked-passer filter: a passer with an enemy pawn directly on its
+        // stop square only counts if a friendly pawn one step behind an
+        // adjacent file can safely step up and offer a trade (a "helper": the
+        // push square is empty and not doubly attacked unless we defend it).
+        // Passers filtered out here also give back the rank bonus the pawn
+        // cache granted them (equivalent to the reference dropping them from
+        // the passed loop entirely).
+        ulong blockedPassers = passers & (white ? theirPawns >> 8 : theirPawns << 8);
+        if (blockedPassers != 0)
+        {
+            ulong helpers = (white ? ownPawns << 8 : ownPawns >> 8)
+                          & ~theirPieces
+                          & (~_attackedBy2[t] | _attackedBy[u, AllPieces]);
+            ulong helped = ((helpers & ~Bitboard.FileA) >> 1)
+                         | ((helpers & ~Bitboard.FileH) << 1);
+            ulong dropped = blockedPassers & ~helped;
+            passers &= ~dropped;
+            while (dropped != 0)
+            {
+                int dsq = Bitboard.PopLsb(ref dropped);
+                int drank = white ? Squares.RankOf(dsq) : 7 - Squares.RankOf(dsq);
+                score -= EvaluationParams.PassedPawn[drank];
+            }
+        }
+
+        int ourKing = board.KingSquare(color);
+        int theirKing = board.KingSquare(enemy);
 
         while (passers != 0)
         {
             int sq = Bitboard.PopLsb(ref passers);
             int relativeRank = color == Color.White ? Squares.RankOf(sq) : 7 - Squares.RankOf(sq);
-            int stopSq = color == Color.White ? sq + 8 : sq - 8;
 
-            // Blocked passer: an enemy piece parked on the stop square.
-            if (stopSq is >= 0 and < 64
-                && (board.Occupancy(enemy) & Bitboard.SquareBB(stopSq)) != 0)
+            // Reference passer terms beyond rank 3, in raw internal units.
+            int mg = 0, eg = 0;
+            if (relativeRank > 2)
             {
-                Score pp = EvaluationParams.PassedPawn[relativeRank];
-                score += new Score(-pp.Mg / EvaluationParams.BlockedPasserDivisor,
-                                   -pp.Eg / EvaluationParams.BlockedPasserDivisor);
+                int w = 5 * relativeRank - 13;
+                int blockSq = white ? sq + 8 : sq - 8;
+
+                // The passer's value grows with the enemy king's distance to
+                // the block square and shrinks with our own king's distance.
+                eg += (KingProximity(theirKing, blockSq) * 19 / 4
+                     - KingProximity(ourKing, blockSq) * 2) * w;
+
+                // If the block square is not the queening square, our king
+                // must also cover the second push.
+                if (relativeRank != 6)
+                    eg -= KingProximity(ourKing, white ? blockSq + 8 : blockSq - 8) * w;
+
+                // Path-to-queen safety ladder, only when the pawn is free to
+                // step forward.
+                if ((board.AllOccupancy & Bitboard.SquareBB(blockSq)) == 0)
+                {
+                    ulong fileBB = PawnStructureEvaluator.FileMask[Squares.FileOf(sq)];
+                    ulong squaresToQueen = white
+                        ? fileBB & ~(Bitboard.SquareBB(sq) | (Bitboard.SquareBB(sq) - 1))
+                        : fileBB & (Bitboard.SquareBB(sq) - 1);
+                    ulong unsafeSquares = PawnStructureEvaluator.PassedPawnMask[u, sq];
+
+                    // Rooks/queens behind the pawn (either color) control the
+                    // whole path from behind.
+                    ulong behindBB = white
+                        ? fileBB & (Bitboard.SquareBB(sq) - 1)
+                        : fileBB & ~(Bitboard.SquareBB(sq) | (Bitboard.SquareBB(sq) - 1));
+                    ulong rq = (board.Pieces(Color.White, PieceType.Rook)
+                              | board.Pieces(Color.White, PieceType.Queen)
+                              | board.Pieces(Color.Black, PieceType.Rook)
+                              | board.Pieces(Color.Black, PieceType.Queen)) & behindBB;
+
+                    if ((theirPieces & rq) == 0)
+                        unsafeSquares &= _attackedBy[t, AllPieces] | theirPieces;
+
+                    // No enemy presence on the whole span: big bonus; enemy
+                    // presence but all of it covered by our pawns: slightly
+                    // smaller; clean path to queen: smaller still; only the
+                    // block square is safe: small; otherwise nothing.
+                    int k = unsafeSquares == 0 ? 36
+                          : (unsafeSquares & ~_attackedBy[u, (int)PieceType.Pawn]) == 0 ? 30
+                          : (unsafeSquares & squaresToQueen) == 0 ? 17
+                          : (unsafeSquares & Bitboard.SquareBB(blockSq)) == 0 ? 7
+                          : 0;
+
+                    // Extra when the block square is defended (or an own
+                    // rook/queen pushes from behind).
+                    if ((board.Occupancy(color) & rq) != 0
+                        || (_attackedBy[u, AllPieces] & Bitboard.SquareBB(blockSq)) != 0)
+                        k += 5;
+
+                    mg += k * w;
+                    eg += k * w;
+                }
             }
+
+            // Flank passers are worth less than central ones.
+            int edgeDist = Math.Min(Squares.FileOf(sq), 7 - Squares.FileOf(sq));
+            score += new Score(mg * 100 / 208 - EvaluationParams.PassedFile.Mg * edgeDist,
+                               eg * 100 / 208 - EvaluationParams.PassedFile.Eg * edgeDist);
 
             // Rook behind the passer on the same file (behind = towards the
             // own back rank), with nothing between rook and pawn.
@@ -722,6 +815,12 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         }
         return score;
     }
+
+    // Chebyshev distance from a king to a square, saturated at 5 (the
+    // reference king_proximity: past that distance the king is simply "far").
+    private static int KingProximity(int kingSq, int sq)
+        => Math.Min(Math.Max(Math.Abs(Squares.FileOf(kingSq) - Squares.FileOf(sq)),
+                             Math.Abs(Squares.RankOf(kingSq) - Squares.RankOf(sq))), 5);
 
     // Space: safe central squares (files c-f, relative ranks 2-4) that are not
     // occupied by friendly pawns and not attacked by enemy pawns. Only worth
