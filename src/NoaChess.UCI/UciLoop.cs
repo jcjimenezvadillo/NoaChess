@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.6.7";
+    public const string EngineVersion = "2.6.7.1";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -59,8 +59,25 @@ public sealed class UciLoop
             if (tokens.Length == 0)
                 continue;
 
-            switch (tokens[0])
+            // One bad command (e.g. a malformed FEN) must not kill the read
+            // loop: report it and keep serving the GUI.
+            try
             {
+                if (!Dispatch(tokens))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                _output.WriteLine($"info string command error: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    // Executes one UCI command. Returns false when the loop must exit (quit).
+    private bool Dispatch(string[] tokens)
+    {
+        switch (tokens[0])
+        {
                 case "uci":
                     // Identification + option declarations + end of handshake.
                     _output.WriteLine($"id name {EngineName} {EngineVersion}");
@@ -117,12 +134,14 @@ public sealed class UciLoop
 
                 case "quit":
                     _searchCts?.Cancel();
-                    _searchTask?.Wait(TimeSpan.FromSeconds(2));
-                    return;
+                    try { _searchTask?.Wait(TimeSpan.FromSeconds(2)); }
+                    catch (AggregateException) { }
+                    return false;
 
                 // Unknown commands are silently ignored, as UCI mandates.
             }
-        }
+
+        return true;
     }
 
     // Cancels and joins any running search. Called before commands that touch
@@ -135,7 +154,12 @@ public sealed class UciLoop
         if (suppressBestmove)
             _suppressBestmove = true;
         _searchCts?.Cancel();
-        _searchTask?.Wait();
+        // A faulted search task re-throws its exception here, on the UCI loop
+        // thread — which would kill the read loop and leave a zombie process
+        // (alive but deaf; Arena's Ctrl+N new game shows exactly this). The
+        // search already reported the failure; the loop must survive it.
+        try { _searchTask?.Wait(); }
+        catch (AggregateException) { }
         _searchTask = null;
         _suppressBestmove = false;
     }
@@ -231,18 +255,48 @@ public sealed class UciLoop
         // resolves it with "ponderhit" (prediction right -> timed re-search
         // over a warm TT) or "stop" (prediction wrong -> discarded).
         bool ponder = Array.IndexOf(tokens, "ponder") != -1;
+        bool infinite = Array.IndexOf(tokens, "infinite") != -1;
         _pendingPonderTokens = ponder ? tokens : null;
 
         SearchLimits limits = ponder
             ? SearchLimits.Depth(SearchLimits.DepthUnlimited)
             : ParseLimits(tokens);
 
+        // UCI: during "go ponder" / "go infinite" the engine must NOT send
+        // "bestmove" until the GUI resolves the search with "stop" or
+        // "ponderhit" — even if the search finishes on its own (a forced mate
+        // breaks iterative deepening in milliseconds, which happens all the
+        // time in pondered positions near the end of a game). A bestmove
+        // leaked here desyncs the GUI: Arena consumes it as the answer to the
+        // NEXT "go" and the engine looks frozen from the next game on.
+        bool waitForStop = ponder || infinite;
+
         var cts = new CancellationTokenSource();
         _searchCts = cts;
-        _searchTask = Task.Run(() => RunSearch(limits, cts.Token));
+        _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop));
     }
 
-    private void RunSearch(SearchLimits limits, CancellationToken token)
+    private void RunSearch(SearchLimits limits, CancellationToken token, bool waitForStop)
+    {
+        // Never let an exception escape: a faulted task would poison the next
+        // WaitForSearchToFinish, and a GUI that never receives "bestmove"
+        // considers the engine hung. Report the error and answer with a legal
+        // move so the game (and the process) survives.
+        try
+        {
+            RunSearchCore(limits, token, waitForStop);
+        }
+        catch (Exception ex)
+        {
+            _output.WriteLine($"info string search error: {ex.GetType().Name}: {ex.Message}");
+            if (_suppressBestmove)
+                return;
+            Move fallback = MoveGenerator.GenerateLegalMoves(_board).FirstOrDefault();
+            _output.WriteLine(fallback == Move.None ? "bestmove 0000" : $"bestmove {fallback}");
+        }
+    }
+
+    private void RunSearchCore(SearchLimits limits, CancellationToken token, bool waitForStop)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -262,6 +316,13 @@ public sealed class UciLoop
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);
+
+        // Ponder/infinite search that finished on its own (forced mate, depth
+        // cap): park here until the GUI sends "stop" (-> answer below) or
+        // "ponderhit"/new position (-> cancelled with bestmove suppressed).
+        // Answering early violates UCI and desyncs the GUI.
+        if (waitForStop && !token.IsCancellationRequested)
+            token.WaitHandle.WaitOne();
 
         // A ponder search converted by "ponderhit" must stay silent: its only
         // job was warming the TT; the relaunched timed search answers.
