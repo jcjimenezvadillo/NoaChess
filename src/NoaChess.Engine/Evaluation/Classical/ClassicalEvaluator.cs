@@ -4,7 +4,8 @@ namespace NoaChess.Engine.Evaluation.Classical;
 
 // Classical evaluator, v3.0: a tapered (middlegame/endgame) evaluation with
 // material, piece-square tables, mobility, king safety, pawn structure and a
-// handful of positional terms (bishop pair, rooks on open files).
+// handful of positional terms (bishop pair, rooks on open files, trapped
+// rook, outposts...).
 //
 // "Tapered" means every term is a (middlegame, endgame) pair; the two are
 // blended by the game phase, computed from the non-pawn material still on the
@@ -488,7 +489,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                 }
             }
 
-            // Bishop pair: two bishops cover both colors and are worth a bonus.
+            // The bishop pair covers both square colors.
             if (Bitboard.PopCount(board.Pieces(color, PieceType.Bishop)) >= 2)
                 side += EvaluationParams.BishopPair;
 
