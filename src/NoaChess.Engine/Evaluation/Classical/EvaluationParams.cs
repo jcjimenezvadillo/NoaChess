@@ -10,10 +10,13 @@ namespace NoaChess.Engine.Evaluation.Classical;
 public static class EvaluationParams
 {
     // ---- Material (centipawns), indexed by PieceType. The king has no
-    //      material value: it is never captured. Values are the PeSTO set,
-    //      calibrated together with the piece-square tables below. ----
-    public static readonly int[] MaterialMg = [82, 337, 365, 477, 1025, 0];
-    public static readonly int[] MaterialEg = [94, 281, 297, 512, 936, 0];
+    //      material value: it is never captured. Pawn values are the PeSTO
+    //      anchor; knight..queen were texel-retuned (v2.6.8) WITH the
+    //      material-imbalance polynomial active, so the polynomial's average
+    //      synergies moved out of the base values (equal mg/eg offsets over
+    //      PeSTO: N +60, B +94, R +226, Q +473 — see MaterialImbalance). ----
+    public static readonly int[] MaterialMg = [82, 357, 399, 603, 1248, 0];
+    public static readonly int[] MaterialEg = [94, 301, 331, 638, 1159, 0];
 
     // Game-phase weight of each piece type. Summed over all pieces on the board
     // it yields 24 at the start (pure middlegame) and 0 with only kings/pawns
@@ -127,7 +130,7 @@ public static class EvaluationParams
     // these in-process and the engine never mutates them itself.
     // Values below are texel-tuned (v2.4.0) on fresh v2.3.0-strength self-play
     // data (noa-2.4.0-tune.noadata), jointly with the PSTs.
-    public static Score BishopPair = new(44, 68);
+    public static Score BishopPair = new(67, 110);
     public static Score RookOpenFile = new(58, -16);    // no pawns at all
     public static Score RookSemiOpenFile = new(25, 18); // no friendly pawns
     // A rook on the 7th rank cuts the enemy king off and attacks its pawns.

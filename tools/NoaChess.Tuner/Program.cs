@@ -32,6 +32,8 @@ public static class Program
         int passes = 3;
         string? outFile = null;
         bool only4E = false;
+        bool only4H = false;
+        bool stats4H = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -41,6 +43,8 @@ public static class Program
                 case "--passes": passes = int.Parse(args[++i]); break;
                 case "--out": outFile = args[++i]; break;
                 case "--only-4e": only4E = true; break;
+                case "--only-4h": only4H = true; break;
+                case "--4h-stats": stats4H = true; break;
                 default: files.Add(args[i]); break;
             }
         }
@@ -56,15 +60,30 @@ public static class Program
         Console.WriteLine($"Loaded {positions.Count:N0} positions in {sw.Elapsed.TotalSeconds:F1}s");
         if (positions.Count == 0) return 1;
 
+        if (stats4H)
+        {
+            Print4HMarginalStats(positions);
+            return 0;
+        }
+
         var tuner = new TexelTuner(positions);
         double k = tuner.OptimizeK();
         Console.WriteLine($"Optimal K = {k:F4}, initial error = {tuner.Error(k):F6}");
 
-        var parameters = only4E ? ParameterRegistry.Build4E() : ParameterRegistry.Build();
-        Console.WriteLine($"Tuning {parameters.Count} scalar values over {passes} passes...");
-        tuner.CoordinateDescent(parameters, k, passes);
+        var parameters = only4H ? ParameterRegistry.Build4H()
+                       : only4E ? ParameterRegistry.Build4E()
+                       : ParameterRegistry.Build();
+        Console.WriteLine($"Tuning {parameters.Count} scalar values...");
+        if (only4H)
+            // Material values may need to travel tens of centipawns, so the
+            // 4H retune uses the greedy line-search descent.
+            tuner.CoordinateDescentGreedy(parameters, k, [16, 8, 4, 2, 1]);
+        else
+            tuner.CoordinateDescent(parameters, k, passes);
 
-        string snippet = only4E ? ParameterRegistry.ToSnippet4E() : ParameterRegistry.ToSnippet();
+        string snippet = only4H ? ParameterRegistry.ToSnippet4H()
+                       : only4E ? ParameterRegistry.ToSnippet4E()
+                       : ParameterRegistry.ToSnippet();
         Console.WriteLine();
         Console.WriteLine(snippet);
         if (outFile != null)
@@ -77,6 +96,57 @@ public static class Program
     // A position ready to evaluate: the reconstructed board plus the game
     // result from White's point of view (1 / 0.5 / 0).
     public readonly record struct Position(Board Board, double ResultWhite);
+
+    // The average marginal value the imbalance polynomial assigns to one
+    // extra knight/bishop/rook/queen over the dataset (adding the piece to
+    // either side, from that side's point of view). Subtracting these from
+    // MaterialMg/Eg re-centers the polynomial analytically: the AVERAGE
+    // material valuation stays exactly at the PeSTO anchor and the
+    // polynomial contributes only the deviation from typical material
+    // configurations (the alternative to the data-fitted --only-4h retune).
+    private static void Print4HMarginalStats(List<Position> positions)
+    {
+        string[] names = ["", "Pawn", "Knight", "Bishop", "Rook", "Queen"];
+        long[] sumMg = new long[6];
+        long[] sumEg = new long[6];
+        long samples = 0;
+
+        Span<int> white = stackalloc int[6];
+        Span<int> black = stackalloc int[6];
+
+        foreach (var position in positions)
+        {
+            MaterialImbalance.FillCounts(position.Board, Color.White, white);
+            MaterialImbalance.FillCounts(position.Board, Color.Black, black);
+            Score baseline = MaterialImbalance.ComputeFromCounts(white, black);
+
+            for (int p = 2; p <= 5; p++) // knight..queen in the counts layout
+            {
+                white[p]++;
+                if (p == 3) white[0] = white[3] > 1 ? 1 : 0;
+                Score plusWhite = MaterialImbalance.ComputeFromCounts(white, black);
+                white[p]--;
+                if (p == 3) white[0] = white[3] > 1 ? 1 : 0;
+
+                black[p]++;
+                if (p == 3) black[0] = black[3] > 1 ? 1 : 0;
+                Score plusBlack = MaterialImbalance.ComputeFromCounts(white, black);
+                black[p]--;
+                if (p == 3) black[0] = black[3] > 1 ? 1 : 0;
+
+                // White's marginal is the delta itself; Black's marginal from
+                // Black's point of view is the negated delta.
+                sumMg[p] += (plusWhite.Mg - baseline.Mg) - (plusBlack.Mg - baseline.Mg);
+                sumEg[p] += (plusWhite.Eg - baseline.Eg) - (plusBlack.Eg - baseline.Eg);
+            }
+            samples += 2;
+        }
+
+        Console.WriteLine("Average imbalance marginal per piece (centipawns, both sides pooled):");
+        for (int p = 2; p <= 5; p++)
+            Console.WriteLine($"  {names[p]}: mg {(double)sumMg[p] / samples:F1}, eg {(double)sumEg[p] / samples:F1}");
+        Console.WriteLine("Re-centering offsets = the NEGATED averages above.");
+    }
 
     private static List<Position> LoadPositions(List<string> files, int maxPositions)
     {

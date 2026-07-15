@@ -76,6 +76,26 @@ public static class TimeManager
         // extra -10 ms absorbs the node-batched stop-check granularity.
         long maximum = (long)Math.Min(0.8 * time - moveOverheadMs, maxScale * optimum) - 10;
         maximum = Math.Max(1, maximum);
+
+        // Sustainability guard (v2.6.8.1, NoaChess addition, sudden death
+        // only). The reference formula folds 49 future increments into the
+        // usable time, betting that the increment always comes back; its only
+        // brake is the 20%-of-clock cap, which lets the clock decay
+        // geometrically instead of stabilizing the spend around the
+        // increment. Observed in Arena bullet (2+1): 3-4s per move in the
+        // middlegame bleeding 2-3s net each move, then 1-2s moves (hard
+        // deadline ~4s!) with 5s on the clock — time losses in won positions.
+        // Bound the target by inc + clock/16 and the hard deadline by
+        // inc + clock/4: every move stays affordable, and near-exhausted
+        // clocks stabilize around the increment instead of flagging.
+        if (movesToGo is null or <= 0)
+        {
+            long sustainableOptimum = incrementMs + time / 16;
+            long sustainableMaximum = Math.Max(1, incrementMs + time / 4 - moveOverheadMs);
+            optimum = Math.Min(optimum, sustainableOptimum);
+            maximum = Math.Min(maximum, sustainableMaximum);
+        }
+
         if (optimum > maximum)
             optimum = maximum;
 
