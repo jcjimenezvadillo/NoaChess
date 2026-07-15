@@ -3,8 +3,9 @@ using NoaChess.Core;
 namespace NoaChess.Engine.Evaluation.Classical;
 
 // Classical evaluator, v3.0: a tapered (middlegame/endgame) evaluation with
-// material, piece-square tables, mobility, king safety, pawn structure and a
-// handful of positional terms (bishop pair, rooks on open files).
+// material, material imbalance, piece-square tables, mobility, king safety,
+// pawn structure and a handful of positional terms (bishop pair, rooks on
+// open files, trapped rook, outposts...).
 //
 // "Tapered" means every term is a (middlegame, endgame) pair; the two are
 // blended by the game phase, computed from the non-pawn material still on the
@@ -18,6 +19,7 @@ namespace NoaChess.Engine.Evaluation.Classical;
 public sealed class ClassicalEvaluator : IPositionEvaluator
 {
     private readonly PawnStructureEvaluator _pawnStructure = new();
+    private readonly MaterialImbalance _imbalance = new();
 
     // Per-color king square and king ring (the king attacks of the king square
     // clamped to files b-g / ranks 2-7, plus the square itself, minus squares
@@ -488,7 +490,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                 }
             }
 
-            // Bishop pair: two bishops cover both colors and are worth a bonus.
+            // The bishop pair covers both square colors.
             if (Bitboard.PopCount(board.Pieces(color, PieceType.Bishop)) >= 2)
                 side += EvaluationParams.BishopPair;
 
@@ -501,6 +503,10 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 
         // Pawn structure score (computed before the piece loop, see above).
         score += pawnScore;
+
+        // Material imbalance (4H): pairwise piece synergies, White minus
+        // Black, cached by the packed piece counts.
+        score += _imbalance.Compute(board);
 
         // Second pass: terms that mix pawn structure with piece locations
         // (passer blockers/escorts, space, threats). Runs after the piece loop
