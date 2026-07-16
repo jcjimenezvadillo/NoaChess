@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using NoaChess.Core;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
 using Xunit;
@@ -112,5 +114,37 @@ public class TimeManagerTests
 
         Assert.True(twoMoves.SoftTimeMs > suddenDeath.SoftTimeMs,
             $"suddenDeath={suddenDeath.SoftTimeMs} twoMoves={twoMoves.SoftTimeMs}");
+    }
+
+    [Fact]
+    public void ElapsedOffset_DefaultsToZero()
+    {
+        // Every existing construction path must keep a zero offset — only the
+        // ponderhit relaunch sets it.
+        Assert.Equal(0, SearchLimits.Clock(100, 200).ElapsedOffsetMs);
+        Assert.Equal(0, TimeManager.FromClock(60_000, 600, 30).ElapsedOffsetMs);
+        Assert.Equal(0, SearchLimits.Depth(10).ElapsedOffsetMs);
+        Assert.Equal(0, SearchLimits.Time(1_000).ElapsedOffsetMs);
+    }
+
+    [Fact]
+    public void PonderCredit_ConsumedBudget_AnswersAlmostInstantly()
+    {
+        // A ponderhit after a long ponder: the budget is nearly exhausted
+        // before the search starts, so it must come back in well under the
+        // nominal soft time — and still with a legal move (the position is
+        // mid-game, 20+ legal moves, so the forced-move shortcut is not what
+        // answers here).
+        var engine = new ChessEngine();
+        var board = new Board();
+        SearchLimits limits = SearchLimits.Clock(softMs: 3_000, hardMs: 6_000)
+            with { ElapsedOffsetMs = 5_900 };
+
+        var sw = Stopwatch.StartNew();
+        var result = engine.FindBestMove(board, limits);
+        sw.Stop();
+
+        Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
+        Assert.True(sw.ElapsedMilliseconds < 1_500, $"took {sw.ElapsedMilliseconds}ms");
     }
 }
