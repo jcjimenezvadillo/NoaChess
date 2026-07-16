@@ -1,5 +1,17 @@
 ﻿# CHANGELOG
 
+## 2026-07-16 (v2.6.9) — block 4I: winnable / endgame scale factors
+
+**SPRT vs v2.6.8 (tc 10+0.1, bounds elo0=0 elo1=10): +34.3 ± 19.5 Elo, LOS 100.0%, H1 accepted at 580 games [0.549], DrawRatio 52.6%.** **Strength: ~2941 ± 25 CCRL measured** — LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3200; +16 ±23 relative, absolute from the pool centroid equation). Statistically the same absolute anchor as v2.6.8 (2944 ±15): the STC gain shrinks at LTC into the error bars, the project's known pattern — the SPRT carries the reliable relative signal.
+
+Block 4I: the reference `winnable()` correction plus the material-entry drawish factor — the final score is adjusted for positions that are structurally harder or easier to win than the raw eval claims. Applied to the total White-relative score right before the phase interpolation.
+
+- eval: complexity/initiative — `9×passers + 12×pawns + 9×outflanking + 21×pawnsOnBothFlanks + 24×infiltration + 51×purePawnEnding − 43×almostUnwinnable − 110`, computed in raw reference internal units and converted ×0.48 once (the mg/eg caps are NoaChess centipawns). The adjustment can only shrink the midgame component, can push the endgame component either way, and never flips the sign of either (`u = sign(mg)·clamp(complexity+50, −|mg|, 0)`, `v = sign(eg)·max(complexity, −|eg|)`). `almostUnwinnable` = kings crossed past each other (outflanking < 0) with every pawn on one flank.
+- eval: endgame scale factor — the eg half of the tapered blend is multiplied by sf/64. Material-configuration factor first (material.cpp): a side with no pawns and at most a bishop of extra material rarely wins — sf=0 below a rook in total (KK, KBK, KNK dead draws), sf=4 against a bare minor (KRKB, KRKN), sf=14 otherwise (KmmKm and friends). If no specific factor applies, general heuristics (evaluate.cpp `winnable()`): pure opposite-colored bishops `18 + 4×strongPassers`; OCB with more material `22 + 3×strongUnits`; single-rook endgames with ≤1 pawn of advantage, the strong pawns on one flank and the weak king defending its pawns → 36; queen vs no queen `37 + 3×queenlessMinors`; everything else capped at `36 + 7×strongPawns` (−4 more on a single flank); and a final −4 on every branch when all pawns sit on one flank. Scale factors are dimensionless ratios — deliberately NOT ×0.48-rescaled.
+- eval: specialized endgame functions (KXK, KBPsK, KQKRPs, KPsK, KPKP, KNNK...) are NOT ported — out of 4I scope; Syzygy (block 9) covers exact endgames later.
+- perf: no cache needed — a handful of popcounts once per Evaluate; depth-16 wall time unchanged (1.23s vs 1.22s).
+- tests: WinnableTests — every scale-factor branch pinned by hand (KBK=0, KRKB=4, KRBKR=14, pure OCB 18+4×passers, mixed OCB 22+3×units, rook ending 32, queen-vs-minors 43, default cap 57), complexity+interpolation pipeline pinned end-to-end on two hand-computed positions, KBK near-draw and color-symmetry checks — 135 tests green.
+
 ## 2026-07-16 (v2.6.8) — 4H material-imbalance polynomial + joint material retune + bullet sustainability guard
 
 **SPRT vs v2.6.7.1 (tc 10+0.1, bounds elo0=0 elo1=10): +78.4 ± 31.5 Elo, LOS 100.0%, H1 accepted at 284 games [0.611], DrawRatio 40.5%.** **Strength: ~2944 ± 15 CCRL** — LTC gauntlet (tc=60+0.6, 1560 games, 13 clean anchors 2680–3200; NoaChess +19 ±15 relative to the field, absolute Elo solved from the pool centroid equation).

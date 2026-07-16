@@ -4,8 +4,9 @@ namespace NoaChess.Engine.Evaluation.Classical;
 
 // Classical evaluator, v3.0: a tapered (middlegame/endgame) evaluation with
 // material, material imbalance, piece-square tables, mobility, king safety,
-// pawn structure and a handful of positional terms (bishop pair, rooks on
-// open files, trapped rook, outposts...).
+// pawn structure, winnable/scale-factor correction and a handful of
+// positional terms (bishop pair, rooks on open files, trapped rook,
+// outposts...).
 //
 // "Tapered" means every term is a (middlegame, endgame) pair; the two are
 // blended by the game phase, computed from the non-pawn material still on the
@@ -530,7 +531,11 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         if (phase > EvaluationParams.PhaseMax)
             phase = EvaluationParams.PhaseMax; // Early promotions can exceed it.
 
-        int tapered = score.Taper(phase);
+        // Winnable / scale factors (4I): complexity adjustment plus the
+        // endgame scale factor folded into the phase interpolation (drawish
+        // structures — OCB, lone-flank rook endings, no-pawn material edges —
+        // keep the raw score from overstating the win).
+        int tapered = Winnable.Apply(board, score, phase, whitePassers, blackPassers);
 
         // Mop-up: nudge a won bare-king endgame towards the mate (see below).
         tapered += MopUp(board, Color.White) - MopUp(board, Color.Black);

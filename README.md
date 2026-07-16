@@ -4,9 +4,9 @@
 
 ## UCI Chess Engine in C# (.NET 10)
 
-NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
+NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on. Development is AI-assisted; the architecture, the one-term-per-SPRT methodology, the calibrated gauntlets and every accept/cut decision are the author's own.
 
-**Current version: v2.6.8 — ~2944 ± 15 CCRL** (4H material-imbalance polynomial: Romstad second-degree polynomial with bishop-pair diagonal zeroed + joint texel retune of piece values WITH polynomial active; bullet sustainability guard. +78.4 ± 31.5 Elo SPRT vs v2.6.7.1, LOS 100%, H1 accepted at 284 games). See [CHANGELOG](CHANGELOG.md).
+**Current version: v2.6.9 — ~2941 ± 25 CCRL** (4I winnable / endgame scale factors: complexity initiative, almostUnwinnable, opposite-colored bishops, single-rook endings, queen-vs-no-queen, no-pawn material draws — the classical evaluation block is now complete. +34.3 ± 19.5 Elo SPRT vs v2.6.8, LOS 100%, H1 accepted at 580 games). See [CHANGELOG](CHANGELOG.md).
 
 ### **Main Features**
 - Bitboard board representation with **magic bitboards** for sliding pieces (**PEXT/BMI2** lookup on CPUs where it is fast — Intel and AMD Zen3+ — with an automatic CPUID guard).
@@ -65,8 +65,9 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v2.6.6** — Reference passed pawns (reference passed definition + candidate passers, blocked-passer filter, king proximity to the block square, path-to-queen safety ladder, PassedFile). ✅ (+45.8 ± 23.1 Elo SPRT vs v2.6.5, LOS 100%; **2880 ± 25 CCRL** estimated)
 - **v2.6.7** — Reference pawn-structure scoring chain (full Connected formula, WeakUnopposed, WeakLever, DoubledEarly, blocked pawns on ranks 5-6, reference Doubled/Isolated/Backward semantics). ✅ (+28.4 ± 17.5 Elo SPRT vs v2.6.6, LOS 99.9%; **2895 ± 25 CCRL** estimated)
 - **v2.6.7.1** — Time-management patch (opening damp, neutral first-move factors — 3+2 first move 19s → 6s) + UCI protocol hardening: guaranteed ponder hint on every bestmove (a bare bestmove stalls Arena's Permanent Brain until the engine is restarted), no bestmove leak on self-terminated ponder/infinite searches, fault-proof command loop, Debug Log File traffic log. ✅ (+14.3 ± 13.5 Elo SPRT vs v2.6.7, LOS 98.1%; **~2920 ± 20 CCRL** — confirmed at CCRL exact TC 40/15 round-robin)
-- **v2.6.8** — Time-management patch: bullet sustainability guard — the per-move budget is bounded by `inc + clock/16` (target) and `inc + clock/4` (hard deadline) in sudden-death, so the clock stabilizes around the increment instead of decaying geometrically (2+1 with 5s left: hard deadline 3.96s → 2.22s; fixes time losses in won bullet games). ✅ Non-regression confirmed vs v2.6.7.1 (420 games [0.509], +6.9 ± 23.7 Elo, LOS 71.7%). Dev record: block 4H polynomial material imbalance was attempted and cut (SPRT a: −30, b: ±0 — texel piece values already absorbed the synergies; rescue path: joint texel retune WITH the term, see ROADMAP.md Revisión Final).
-- **Next** — reference classical eval block (winnable/scale factors) · NNUE retrain · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
+- **v2.6.8** — 4H material-imbalance polynomial (Romstad second-degree, bishop-pair diagonal zeroed, packed-counts cache) + joint texel retune of piece values WITH the polynomial active (N+20, B+34, R+126, Q+223 over PeSTO; BishopPair 67/110) + bullet sustainability time guard (`inc + clock/16` target, `inc + clock/4` hard deadline in sudden-death). ✅ (+78.4 ± 31.5 Elo SPRT vs v2.6.7.1, LOS 100%; **~2944 ± 15 CCRL** measured, 1560 LTC games)
+- **v2.6.9** — 4I winnable / endgame scale factors (complexity initiative with almostUnwinnable, opposite-colored-bishop scaling, single-flank rook endings, queen-vs-no-queen, no-pawn material draws KBK/KRKB/KmmKm) — **classical evaluation block complete**. ✅ (+34.3 ± 19.5 Elo SPRT vs v2.6.8, LOS 100%; **~2941 ± 25 CCRL** measured, 624 LTC games)
+- **Next** — reference search block (improving flag, LMR suite, double extensions, TT clustering) · NNUE training · Lazy SMP · Book/tablebases · see [ROADMAP.md](ROADMAP.md).
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -84,9 +85,9 @@ For other uses, please contact the owner.
 
 ## Motor de ajedrez UCI en C# (.NET 10)
 
-NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
+NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar. El desarrollo está asistido por IA (Claude como herramienta de pair-programming); la arquitectura, la metodología de un término por SPRT, los gauntlets calibrados y cada decisión de aceptar o cortar un término son del autor.
 
-**Versión actual: v2.6.8 — ~2944 ± 15 CCRL** (bloque 4H: polinomio de desequilibrio material de referencia — Romstad segundo grado con diagonal del par de alfiles zeroed + retune texel conjunto de los valores de pieza CON el polinomio activo + guardarraíl de sostenibilidad bullet. +78.4 ± 31.5 Elo SPRT vs v2.6.7.1, LOS 100%, H1 aceptado a 284 partidas). Ver [CHANGELOG](CHANGELOG.md).
+**Versión actual: v2.6.9 — ~2941 ± 25 CCRL** (bloque 4I: winnable / factores de escala de final — complexity, almostUnwinnable, alfiles de colores opuestos, finales de torre, dama contra sin dama, tablas de material sin peones — el bloque de evaluación clásica queda COMPLETO. +34.3 ± 19.5 Elo SPRT vs v2.6.8, LOS 100%, H1 aceptado a 580 partidas). Ver [CHANGELOG](CHANGELOG.md).
 
 ### **Características principales**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes (lookup **PEXT/BMI2** en CPUs donde es rápido — Intel y AMD Zen3+ — con guarda automática por CPUID).
@@ -146,7 +147,8 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v2.6.7** — Cadena de evaluación de estructura de peones de referencia (fórmula Connected completa, WeakUnopposed, WeakLever, DoubledEarly, peones bloqueados en filas 5-6, semántica Doubled/Isolated/Backward de referencia). ✅ (+28.4 ± 17.5 Elo SPRT vs v2.6.6, LOS 99.9%; **2895 ± 25 CCRL** estimados)
 - **v2.6.7.1** — Parche de gestión de tiempo (freno de apertura, factores neutros de primer movimiento — primera jugada a 3+2: 19s → 6s) + endurecimiento del protocolo UCI: hint de ponder garantizado en cada bestmove (un bestmove desnudo atasca el Permanent Brain de Arena hasta reiniciar el motor), sin fuga de bestmove en búsquedas ponder/infinite auto-terminadas, bucle de comandos a prueba de fallos, log de tráfico Debug Log File. ✅ (+14.3 ± 13.5 Elo SPRT vs v2.6.7, LOS 98.1%; **~2920 ± 20 CCRL** — confirmado en round-robin a ritmo exacto CCRL 40/15)
 - **v2.6.8** — Bloque 4H: polinomio de desequilibrio material de referencia (Romstad segundo grado, diagonal par de alfiles zeroed) + retune texel conjunto de los valores de pieza CON el polinomio activo (offsets N+20 B+34 R+126 Q+223, BishopPair 67/110) + guardarraíl de sostenibilidad en bullet (presupuesto acotado a `inc + reloj/16` objetivo e `inc + reloj/4` deadline duro). ✅ +78.4 ± 31.5 Elo SPRT vs v2.6.7.1, LOS 100%, H1 aceptado a 284 partidas; **~2944 ± 15 CCRL** medido (gauntlet 1560 partidas, campo 2680–3200).
-- **Siguiente** — Bloque 4I: factores de escala / Winnable · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
+- **v2.6.9** — Bloque 4I: winnable / factores de escala de final (complexity con almostUnwinnable, escalado por alfiles de colores opuestos, finales de torre a un flanco, dama contra sin dama, tablas de material sin peones KBK/KRKB/KmmKm) — **bloque de evaluación clásica COMPLETO**. ✅ +34.3 ± 19.5 Elo SPRT vs v2.6.8, LOS 100%, H1 aceptado a 580 partidas; **~2941 ± 25 CCRL** medido (gauntlet 624 partidas, campo 2680–3200).
+- **Siguiente** — Bloque 5: búsqueda de referencia (improving flag, suite LMR, double extensions, TT clustering) · Entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver [ROADMAP.md](ROADMAP.md).
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 
