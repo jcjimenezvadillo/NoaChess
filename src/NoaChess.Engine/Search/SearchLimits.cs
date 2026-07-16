@@ -8,7 +8,13 @@ namespace NoaChess.Engine.Search;
 //   in progress may finish. Distinguishing soft/hard lets time-managed games
 //   use their budget well without ever flagging.
 // - MaxNodes: node cap ("go nodes N").
-public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long SoftTimeMs, long MaxNodes)
+// - ElapsedOffsetMs: time already charged against this move's budget before
+//   the search starts. Set on a ponderhit relaunch: the reference scheduler
+//   anchors its clock at "go ponder", so the pondering time counts toward the
+//   budget and a long successful ponder answers almost instantly instead of
+//   spending the whole optimum again over the warm TT.
+public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long SoftTimeMs, long MaxNodes,
+                                           long ElapsedOffsetMs = 0)
 {
     // Depth cap used when the search is limited by something other than depth.
     public const int DepthUnlimited = 64;

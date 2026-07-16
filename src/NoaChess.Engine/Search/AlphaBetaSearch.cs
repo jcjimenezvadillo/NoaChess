@@ -73,7 +73,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // played to REACH each ply. -1 piece marks "no usable previous move"
     // (a null move); continuation history and counter moves then skip it.
     private readonly int[] _stackPiece = new int[MaxPly + 2];
-    private readonly int[] _stackTo = new int[MaxPly + 2];
+    private readonly int[] _stackTo   = new int[MaxPly + 2];
+    // Static eval at each ply (sentinel NoEval when in check). Used to derive
+    // the improving flag: eval[ply] > eval[ply-2] means our position is trending
+    // upward, which gates several pruning and reduction heuristics.
+    private const int NoEval = int.MinValue / 2;
+    private readonly int[] _stackEval = new int[MaxPly + 2];
 
     // One reusable MoveList per ply (plus root and PV scratch lists): move
     // generation in the search allocates NOTHING. At any moment a given ply
@@ -112,6 +117,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private long _softTimeMs;
     private long _maxNodes;
     private CancellationToken _cancellation;
+
+    // Time already spent against this move's budget before the search started
+    // (pondering time on a ponderhit relaunch). Added to every elapsed-time
+    // check so the budget spans go-ponder -> ponderhit -> move, like the
+    // reference scheduler.
+    private long _elapsedOffsetMs;
+    private long ElapsedMs => _timer.ElapsedMilliseconds + _elapsedOffsetMs;
 
     // ---- Adaptive time management state (v2.6.5) ----
     // The per-move budget from TimeManager is the OPTIMUM time; every
@@ -192,6 +204,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _softTimeMs = limits.SoftTimeMs;
         _softDeadlineMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
+        _elapsedOffsetMs = limits.ElapsedOffsetMs;
         _timer.Restart();
 
         // Clock mode is recognizable by soft < hard; "movetime" sets them
@@ -353,7 +366,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
-                if (_timer.ElapsedMilliseconds > totalTime)
+                if (ElapsedMs > totalTime)
                     break;
                 _softDeadlineMs = (long)totalTime;
             }
@@ -476,7 +489,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // at least one searched move and never fires at depth 1 (a full
             // depth-1 pass costs nothing and guarantees a sane fallback move).
             if (depth > 1 && bestMove != Move.None
-                && _timer.ElapsedMilliseconds >= _softDeadlineMs)
+                && ElapsedMs >= _softDeadlineMs)
             {
                 _softStopped = true;
                 break;
@@ -574,13 +587,25 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // in check (the position is not "quiet" and the eval is meaningless).
         int staticEval = inCheck ? 0 : _evaluator.Evaluate(board);
 
+        // ---- Improving flag ----
+        // true when our static eval at this ply exceeds our eval two plies ago
+        // (same side's previous position). Indicates the position is trending
+        // upward: prunings fire less aggressively, LMR reduces less.
+        _stackEval[ply] = inCheck ? NoEval : staticEval;
+        bool improving = !inCheck && ply >= 2
+            && _stackEval[ply - 2] != NoEval
+            && staticEval > _stackEval[ply - 2];
+
         // ---- Reverse futility pruning (a.k.a. static null move) ----
         // If our static eval is so far above beta that even conceding a healthy
         // margin per remaining ply keeps us above it, the opponent will avoid
         // this line — return without searching. Only at shallow depth and away
         // from mate scores, where the static eval is a trustworthy proxy.
+        // An improving eval is trending up and can be trusted one depth-step
+        // sooner (reference: margin × (depth - improving)).
         if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
-            && excluded == Move.None && staticEval - 85 * depth >= beta)
+            && excluded == Move.None
+            && staticEval - 85 * (depth - (improving ? 1 : 0)) >= beta)
             return staticEval;
 
         // ---- Null Move Pruning ----
@@ -765,7 +790,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 // Late move pruning: once enough quiet moves have been tried at
                 // low depth, the remaining ones are very unlikely to be best.
-                if (depth <= 3 && quietsSearched >= 3 + depth * depth)
+                // In a worsening position quiet moves rarely save the node —
+                // halve the count before the cut (reference LMP shape).
+                int lmpThreshold = 3 + depth * depth;
+                if (!improving) lmpThreshold /= 2;
+                if (depth <= 3 && quietsSearched >= lmpThreshold)
                     continue;
 
                 // Futility pruning: if even a generous per-ply margin over the
@@ -836,6 +865,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     reduction -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2);
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
                         reduction--;
+
+                    // Position is worsening: the remaining moves are even less
+                    // likely to be good — reduce them one extra ply.
+                    if (!improving) reduction++;
 
                     if (reduction < 0) reduction = 0;
                     if (reduction > newDepth - 1) reduction = newDepth - 1;
@@ -1055,7 +1088,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private void CheckStop()
     {
         if (_cancellation.IsCancellationRequested
-            || _timer.ElapsedMilliseconds >= _hardTimeMs
+            || ElapsedMs >= _hardTimeMs
             || _nodes >= _maxNodes)
         {
             _stopped = true;
