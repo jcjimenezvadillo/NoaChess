@@ -1,4 +1,4 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 
 namespace NoaChess.Engine.Evaluation.Classical;
 
