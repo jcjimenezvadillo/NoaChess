@@ -17,10 +17,14 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // Performance: the piece loop makes ONE pass per side. The attack bitboard of
 // each piece is computed once and feeds BOTH the mobility term and the enemy
 // king-safety term, instead of scanning the pieces several times.
-public sealed class ClassicalEvaluator : IPositionEvaluator
+public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluator
 {
     private readonly PawnStructureEvaluator _pawnStructure = new();
     private readonly MaterialImbalance _imbalance = new();
+
+    // Complexity (initiative magnitude, cp) of the last evaluated position,
+    // reported by the winnable pass. Consumed by the search's NMP margin.
+    public int LastComplexity { get; private set; }
 
     // Per-color king square and king ring (the king attacks of the king square
     // clamped to files b-g / ranks 2-7, plus the square itself, minus squares
@@ -535,7 +539,9 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // endgame scale factor folded into the phase interpolation (drawish
         // structures — OCB, lone-flank rook endings, no-pawn material edges —
         // keep the raw score from overstating the win).
-        int tapered = Winnable.Apply(board, score, phase, whitePassers, blackPassers);
+        int tapered = Winnable.Apply(board, score, phase, whitePassers, blackPassers,
+                                     out int complexityCp);
+        LastComplexity = complexityCp;
 
         // Mop-up: nudge a won bare-king endgame towards the mate (see below).
         tapered += MopUp(board, Color.White) - MopUp(board, Color.Black);

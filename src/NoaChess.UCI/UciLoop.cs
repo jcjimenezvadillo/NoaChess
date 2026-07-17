@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.7.0";
+    public const string EngineVersion = "2.7.1";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -355,6 +355,18 @@ public sealed class UciLoop
         _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop));
     }
 
+    // Mate scores carry distance-to-mate in plies from the root; UCI wants
+    // "mate N" in MOVES (negative when the engine is being mated).
+    private static string FormatUciScore(int score)
+    {
+        const int mateBound = AlphaBetaSearch.MateScore - 1_000;
+        if (score > mateBound)
+            return $"mate {(AlphaBetaSearch.MateScore - score + 1) / 2}";
+        if (score < -mateBound)
+            return $"mate {-(AlphaBetaSearch.MateScore + score + 1) / 2}";
+        return $"cp {score}";
+    }
+
     private void RunSearch(SearchLimits limits, CancellationToken token, bool waitForStop)
     {
         // Never let an exception escape: a faulted task would poison the next
@@ -390,8 +402,12 @@ public sealed class UciLoop
             lastPv = p.Pv;
             long ms = Math.Max(1, stopwatch.ElapsedMilliseconds);
             long nps = p.NodesSearched * 1000 / ms;
+            // Mate scores go out as "score mate N" (moves, signed) per UCI;
+            // reporting them as huge cp values confuses GUI eval displays
+            // and adjudication.
+            string score = FormatUciScore(p.Score);
             _output.WriteLine(
-                $"info depth {p.Depth} score cp {p.Score} nodes {p.NodesSearched} time {ms} nps {nps} pv {string.Join(' ', p.Pv)}");
+                $"info depth {p.Depth} score {score} nodes {p.NodesSearched} time {ms} nps {nps} pv {string.Join(' ', p.Pv)}");
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);

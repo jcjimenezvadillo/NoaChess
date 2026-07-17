@@ -42,6 +42,14 @@ public static class Winnable
     // both components, then interpolation with the endgame part scaled sf/64.
     public static int Apply(Board board, Score score, int phase,
                             ulong whitePassers, ulong blackPassers)
+        => Apply(board, score, phase, whitePassers, blackPassers, out _);
+
+    // Overload that also reports the position's complexity (the initiative
+    // magnitude, centipawns, never negative). The search's null-move-pruning
+    // entry margin consumes it: complex positions are harder to null-prune.
+    public static int Apply(Board board, Score score, int phase,
+                            ulong whitePassers, ulong blackPassers,
+                            out int complexityCp)
     {
         int wk = board.KingSquare(Color.White);
         int bk = board.KingSquare(Color.Black);
@@ -70,6 +78,7 @@ public static class Winnable
                        + 51 * (npmWhite + npmBlack == 0 ? 1 : 0)
                        - 43 * (almostUnwinnable ? 1 : 0)
                        - 110;
+        complexityCp = Math.Max(0, complexity * 48 / 100);
 
         int mg = score.Mg, eg = score.Eg;
 
