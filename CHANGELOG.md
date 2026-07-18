@@ -1,4 +1,38 @@
-﻿# CHANGELOG
+# CHANGELOG
+
+## 2026-07-18 (v2.7.2) — block 5D (formerly 5F, renumbered to execution order): transposition table redesign (clustering + aging + cached eval + ttPv)
+
+**SPRT vs v2.7.1 (tc 10+0.1, bounds elo0=0 elo1=10), two independent runs POOLED: +37.9 ± 15.0 Elo at 1103 games [0.554]** (own run +38.3 ± 20.9 H1 at 546g; user confirmation +37.6 ± 20.7 H1 at 557g — near-identical, both LOS 100%) — the largest search gain since the v2.3.0 overhaul. **Strength: ~2975 ± 25 CCRL** — LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3200): **+48 ± 23 relative to the field, 56.8%** (vs v2.7.1's +44 — the field-relative LTC measure saturates between adjacent versions; the pooled SPRT carries the increment). Field audit: the Dumb 2856→2810 and Marvin 3000→2960 renames are VALIDATED (deviations −16/−56 vs the previous systematic −45/−35); **BitGenie-3010 on watch** (implied −130 this run after a clean previous cycle — single-run volatility, no rename); no further renames. **Bench profile: −19% nodes to depth (4.70M vs 5.81M), +24% NPS (768K vs 620K — the cached eval), WAC 265/300 (best ever; 262 baseline), Fine 70 zugzwang correct, KRK longest defense preserved, 184 tests green (7 new TT tests).**
+
+After 5B and 5C proved that reference HEURISTIC constants do not transfer without their ecosystem (see the 5C post-mortem below), the TT block was pulled forward precisely because it is pure INFRASTRUCTURE — and it delivered (block letters renumbered to execution order: TT = 5D; double extensions and ProbCut/IIR shift to 5E/5F):
+
+- tt: 4-entry clustering — the entry is packed to exactly 16 bytes (key32 verification half, int32 score, int32 cached static eval, move16, depth8, genBound8), so a 64-byte cache line holds a full 4-entry cluster: one memory access serves four candidate slots, and index collisions stop destroying useful entries. (The reference packs 3×10B in 32B by shrinking scores to int16; our ±100000 mate scale keeps int32 scores and gets a 4-wide cluster instead — no risky mate-score rescale.)
+- tt: generation aging — every "go" bumps a 5-bit generation (32-cycle); replacement worth is `depth − 8×relative_age` (the reference formula), so stale entries from previous searches yield their slots gracefully instead of squatting. A probe hit refreshes the entry's generation.
+- tt: cached static eval — a TT hit serves the stored eval without calling the evaluator, and a miss stores an eval-only entry (bound None, never cuts, never evicts real results, backfills the eval of in-check-stored twins) so the next visit — IIR revisits, re-searches — skips the evaluator too. This is where the +24% NPS comes from.
+- tt: sticky ttPv flag — every node records "is or was on the PV" (PvNode || entry.IsPv), preserved across re-stores. **Deliberately consumer-less this release**: the reference's LMR ttPv −2 was measured in the 5C campaign at +220% PV-subtree explosion via a proxy; with the real flag now stored, that adjuster can be A/B-tested BY PLAY in a later block.
+- tt: reference overwrite rule — a fresh Exact always replaces; a bound more than 4 plies shallower than the incumbent does not; a known best move survives moveless re-stores; the PV mark is sticky.
+- verification: the 5C lesson applied — validated by GAMES at the real TC before handover (own SPRT above), not by benches; benches only corroborate.
+
+## 2026-07-18 (block 5C: reference LMR adjuster suite + 4-component statScore) — MEASURED AND CUT, NO RELEASE
+
+**Every 5C component measures NEGATIVE at the real time control. Cut per the project decision rule (like king-safety Fase B), search reverted to v2.7.1 exactly. The numbers, so this is never re-tried without its ecosystem:**
+
+| Candidate | Content | vs v2.7.1 |
+|---|---|---|
+| Full reference bundle | 20.26·ln 1D base + delta/rootDelta + 8 adjusters + unclamped statScore/13628 | **−9.7 ± 13.8** (SPRT 10+0.1, H0 at 1252g) |
+| Conservative rebuild | validated 2D base + 6 adjusters + clamped statScore, NPS-equal | **−25.7 ± 20.0** (SPRT 10+0.1, H0 at 597g) |
+| V-a: adjusters alone | cutNode +1, ttCapture +1, moveCount>7 −1, cutoffCnt>3 +1, singularQuietLMR −1, threat escape −1 | **−11.5 ± 16.0** (1000g @ 5+0.05) |
+| V-b: statScore machinery alone | 4-component statScore (contHist ply-2/ply-4 write fix) for RFP + futility reprieve | +17.4 ± 16.1 @ 5+0.05 **but −10.8 ± 14.3 at 10+0.1 (SPRT, H0 at 1218g)** — the hyperfast result did not survive the real TC |
+| V-c: V-b + LMR statScore term | the reference's flagship `r −= statScore` consumer | **−6.9 ± 16.3** (1000g @ 5+0.05) |
+
+**Lessons (added to the golden rules):**
+
+- Depth benches and WAC CANNOT green-light a search change: the conservative rebuild had −23% nodes, WAC 263/300 (best profile ever measured) and equal NPS — and lost 25 Elo in play. Only games at the REAL time control validate search heuristics; hyperfast (5+0.05) matches can invert sign vs 10+0.1.
+- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle. → revisit only after the TT block (ttPv/static-eval — DONE as 5D/v2.7.2 hours later) and 5G (history rework), if at all.
+- The ply−2/ply−4 continuation-history contexts genuinely never existed (single-parity keys — found by a probe reading exact zeros) and the fix is implemented and archived, but with our depth² tables feeding pruning margins it measures −10.8 at STC: parked with its measurements until 5G reworks the history update rule (reference-style bonus/gravity), which is what makes those reads trustworthy.
+- ttPv −2 via a PvNode proxy explodes the PV subtree +220% when stacked with the PvNode depth discount — the real thing needs the TT flag (5F).
+
+The search was verified node-identical to v2.7.1 after the revert (5.81M depth bench, 177 tests, Fine 70, KRK defense); the freed v2.7.2 number went to the 5F TT redesign above.
 
 ## 2026-07-17 (v2.7.1) — block 5B: NMP verification + statScore-informed RFP (scope cut by measurement) + mate-search fixes
 
@@ -359,3 +393,5 @@ Time management (reference port, replaces the v2.6.4 scheduler):
 - infra: added CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
+
+

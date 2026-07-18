@@ -5,12 +5,16 @@ namespace NoaChess.Engine.Transposition;
 // Storing which kind of bound we learned lets a later probe reuse it safely.
 public enum BoundType : byte
 {
+    // No usable score: an eval-only entry (static eval cached on a TT miss
+    // so revisits skip the evaluator) or an empty slot.
+    None = 0,
+
     // The score is the exact value of the node (searched with a full window).
-    Exact = 0,
+    Exact = 1,
 
     // The node failed high (score >= beta): its real value is AT LEAST this.
-    LowerBound = 1,
+    LowerBound = 2,
 
     // The node failed low (score <= alpha): its real value is AT MOST this.
-    UpperBound = 2
+    UpperBound = 3
 }
