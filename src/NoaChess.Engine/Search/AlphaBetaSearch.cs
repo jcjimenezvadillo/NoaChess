@@ -245,9 +245,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         }
 
         // Killers are per-search (ply meanings change); history persists
-        // between searches but decays so fresh information dominates.
+        // between searches but decays so fresh information dominates. The TT
+        // ages one generation: previous-search entries yield their cluster
+        // slots gracefully as this search fills the table.
         _killers.Clear();
         _history.Decay();
+        _tt.NewSearch();
 
         // Per-search NMP verification state and statScore stack (stale scores
         // from the previous search describe other positions).
@@ -534,8 +537,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // A partial (soft-stopped) iteration must not be recorded in the TT
         // as if the position had been fully searched at this depth.
         if (!_stopped && !_softStopped)
-            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, 0),
-                      bestScore >= beta ? BoundType.LowerBound : BoundType.Exact, bestMove);
+            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, 0), TTEntry.NoStaticEval,
+                      bestScore >= beta ? BoundType.LowerBound : BoundType.Exact, bestMove,
+                      isPv: true);
 
         return bestScore;
     }
@@ -582,10 +586,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             // The stored score is only reusable if it comes from a search at
             // least as deep as the one we are about to do, and its bound type
-            // allows a conclusion within the current window. Never in singular
-            // verification mode: the entry describes the search WITH the
-            // excluded move available.
-            if (entry.Depth >= depth && excluded == Move.None)
+            // allows a conclusion within the current window (None = eval-only
+            // entry, no score). Never in singular verification mode: the
+            // entry describes the search WITH the excluded move available.
+            if (entry.Depth >= depth && excluded == Move.None
+                && entry.Bound != BoundType.None)
             {
                 int score = FromTT(entry.Score, ply);
                 switch (entry.Bound)
@@ -618,9 +623,33 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // variation where a wrong cut would corrupt the reported line.
         bool nonPv = beta - alpha == 1;
 
+        // "Is or has been on the PV": every PV node, plus any node whose TT
+        // entry carries the flag from an earlier visit through the PV.
+        // Stored back on every write so the mark survives re-searches.
+        bool ttPv = !nonPv || (ttHit && entry.IsPv);
+
         // Static evaluation, reused by the forward-pruning heuristics. Skipped
         // in check (the position is not "quiet" and the eval is meaningless).
-        int staticEval = inCheck ? 0 : _evaluator.Evaluate(board);
+        // A TT hit serves the cached eval instead of running the evaluator
+        // (the big 5F speedup: revisits pay one cluster read, not a full
+        // evaluation); a miss caches what we compute in an eval-only entry so
+        // the NEXT visit — often via IIR or a re-search — skips it too.
+        int staticEval;
+        if (inCheck)
+        {
+            staticEval = 0;
+        }
+        else if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
+        {
+            staticEval = entry.StaticEval;
+        }
+        else
+        {
+            staticEval = _evaluator.Evaluate(board);
+            if (excluded == Move.None)
+                _tt.Store(board.ZobristKey, 0, 0, staticEval,
+                          BoundType.None, Move.None, ttPv);
+        }
 
         // ---- Improvement / improving ----
         // How much our static eval gained over our previous position — two
@@ -1094,7 +1123,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
                             : bestScore >= beta ? BoundType.LowerBound
                             : BoundType.Exact;
-            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply), bound, bestMove);
+            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply),
+                      inCheck ? TTEntry.NoStaticEval : staticEval, bound, bestMove, ttPv);
         }
 
         return bestScore;
