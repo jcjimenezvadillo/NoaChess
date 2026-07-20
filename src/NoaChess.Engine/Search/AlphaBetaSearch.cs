@@ -62,7 +62,18 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
+    private readonly CaptureHistory _captureHistory = new();
     private readonly Stopwatch _timer = new();
+
+    // ---- Quiescence pruning constants (reference Step 6) ----
+    // The reference's values live in ITS units, where a pawn is 208; ours is
+    // 100, so both are converted by that ratio (the project's x0.48 rule,
+    // which is exactly 100/208). Margin 306 -> 147, SEE floor -74 -> -36.
+    private const int QsFutilityMargin = 147;
+    private const int QsSeeThreshold = 36; // LosesAtLeast takes it positive.
+
+    // Victim values for the quiescence futility margin, in our own units.
+    private static readonly int[] PieceValueQs = [100, 320, 330, 500, 900, 0, 0];
 
     // Counter move: the quiet refutation of the opponent's last move, indexed
     // by (mover piece 0-11, destination). Cheaper and more specific than a
@@ -206,6 +217,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _killers.Clear();
         _history.Clear();
         _contHist.Clear();
+        _captureHistory.Clear();
         Array.Clear(_counterMoves);
         _bestPreviousScore = ScoreNone;
         _bestPreviousAverageScore = ScoreNone;
@@ -234,15 +246,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // equal and the budget must then be used in full, not predictively.
         bool clockMode = limits.SoftTimeMs < limits.HardTimeMs;
 
+        // Terminal root: checkmate or stalemate on the board. There is nothing
+        // to search and, crucially, nothing to return — the iterative-deepening
+        // loop below would spin through every depth without ever producing a
+        // best move, and the caller would wait forever for a "bestmove" that
+        // never comes. Answer at once with the game-theoretic score and a null
+        // move; the UCI layer turns that into "bestmove 0000".
+        // (Measured 2026-07-19: v2.7.2 and every earlier release hang outright
+        // on a stalemated position — a GUI sending one froze the engine.)
+        MoveGenerator.GenerateLegalMoves(board, _rootMoves);
+        if (_rootMoves.Count == 0)
+            return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
+
         // Forced move: with a single legal reply no amount of searching can
         // change the choice — answer instantly and bank the whole budget.
         // Only under a clock (analysis/movetime callers still want the eval).
-        if (clockMode)
-        {
-            MoveGenerator.GenerateLegalMoves(board, _rootMoves);
-            if (_rootMoves.Count == 1)
-                return new SearchResult(_rootMoves[0], 0, 0);
-        }
+        if (clockMode && _rootMoves.Count == 1)
+            return new SearchResult(_rootMoves[0], 0, 0);
 
         // Killers are per-search (ply meanings change); history persists
         // between searches but decays so fresh information dominates. The TT
@@ -866,6 +886,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
         // before the cutoff move and did not refute.
+        Span<Move> triedCaptures = stackalloc Move[48];
+        int triedCaptureCount = 0;
         Span<Move> triedQuiets = stackalloc Move[64];
         int triedQuietCount = 0;
 
@@ -1053,6 +1075,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 if (triedQuietCount < triedQuiets.Length)
                     triedQuiets[triedQuietCount++] = move;
             }
+            else if (move.IsCapture && triedCaptureCount < triedCaptures.Length)
+            {
+                triedCaptures[triedCaptureCount++] = move;
+            }
 
             if (_stopped)
                 return 0;
@@ -1097,6 +1123,29 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                                         tried.To, depth);
                             }
                         }
+                        else if (move.IsCapture)
+                        {
+                            // A capture produced the cutoff: it earns capture
+                            // history, which is what the quiescence capture
+                            // ordering reads. The board is restored here, so
+                            // the victim is back on its square.
+                            _captureHistory.AddBonus(
+                                ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From)),
+                                move.To, CaptureHistory.VictimIndex(board, move), depth * depth);
+                        }
+
+                        // Captures tried before the cutoff move failed to
+                        // produce it and sink in the ordering next time, no
+                        // matter what kind of move actually cut (reference).
+                        for (int c = 0; c < triedCaptureCount; c++)
+                        {
+                            Move tried = triedCaptures[c];
+                            if (tried == move)
+                                continue;
+                            _captureHistory.AddMalus(
+                                ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
+                                tried.To, CaptureHistory.VictimIndex(board, tried), depth * depth);
+                        }
                         break;
                     }
                 }
@@ -1130,11 +1179,43 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return bestScore;
     }
 
-    // Quiescence search: at the horizon, keep searching CAPTURES (and queen
-    // promotions) until the position is quiet, then evaluate. This removes the
-    // horizon effect: a depth-limited search would otherwise happily evaluate
-    // a position right after QxP, never seeing the recapture ...RxQ one ply
-    // beyond its horizon.
+    // Quiescence search: at the horizon, keep searching forcing moves until the
+    // position is quiet, then evaluate. This removes the horizon effect: a
+    // depth-limited search would otherwise happily evaluate a position right
+    // after QxP, never seeing the recapture ...RxQ one ply beyond its horizon.
+    //
+    // IN CHECK the node follows a completely different path, matching the
+    // reference. This is CORRECTNESS, not a strength tweak: the previous
+    // captures-only version got all four parts wrong, and every capture that
+    // gives check lands the opponent in exactly this node — so the hole sat on
+    // the main line of every tactical sequence, and every caller that verifies
+    // a capture through quiescence (ProbCut, null-move probes, multi-cut) was
+    // reading those wrong scores as proof.
+    //
+    //   * No stand-pat. The static eval of a position whose king is attacked
+    //     is meaningless, and the side to move is NOT free to "do nothing", so
+    //     the premise of the stand-pat floor fails outright. The old code
+    //     stood pat anyway and could return a beta cutoff while being mated.
+    //   * ALL moves, not just captures. The only escape from a check is often
+    //     a quiet king step or an interposition; searching captures alone made
+    //     those escapes literally invisible.
+    //   * No pruning at all. The reference expresses this by starting bestValue
+    //     at -infinity, which makes its whole pruning block unreachable while
+    //     in check; here the guards are explicit for clarity.
+    //   * Mate detection. In check with no legal reply it is checkmate; the old
+    //     code returned the stand-pat score as if nothing had happened.
+    //
+    // Scores are fail-soft (the real bestScore, never the alpha/beta rail), so
+    // callers receive the tightest bound this node actually established.
+    //
+    // NOT ported here, deliberately: the reference's tuned quiescence constants
+    // — stand-pat beta softening (441/583 and 462/562 in 1024ths), futilityBase
+    // = staticEval + 306, the moveCount > 2 cut, and its SEE >= -74 threshold
+    // (ours prunes at SEE >= 0). Those are heuristic constants and the project
+    // rule is that they do not transfer without their ecosystem; they get their
+    // own measured block. The TT probe/store at quiescence depth is also left
+    // out: measured in the 5E campaign, depth-0 entries flooded the clusters
+    // and evicted main-search entries (d15 nodes ROSE 1.35M -> 1.75M, nps -11%).
     private int Quiescence(Board board, int alpha, int beta, int ply)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
@@ -1142,41 +1223,111 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (_stopped)
             return 0;
 
-        // "Stand pat": the side to move is never forced to capture, so the
-        // static evaluation is a floor for its score. If even doing nothing
-        // beats beta, the opponent will avoid this line — cut immediately.
-        int standPat = _evaluator.Evaluate(board);
-        if (standPat >= beta)
-            return beta;
-        if (standPat > alpha)
-            alpha = standPat;
-        if (ply >= MaxPly)
-            return standPat;
+        bool inCheck = board.IsInCheck();
 
-        // Captures-only pseudo-legal generation + per-move legality check:
-        // much cheaper than the full legal generator, and quiescence nodes
-        // are the majority of all search nodes.
+        // Draws by rule, checked ONLY at in-check nodes. Quiescence reaches a
+        // repetition solely through quiet check evasions: everywhere else it
+        // plays captures, which reset the halfmove clock. Guarding every
+        // quiescence node instead — and they are the bulk of the tree — spends
+        // a history scan on positions that cannot repeat.
+        if (inCheck && (board.HalfmoveClock >= 100
+            || (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)))
+            return 0;
+
+        // Ply ceiling, checked before the per-ply move list is indexed.
+        if (ply >= MaxPly)
+            return inCheck ? 0 : _evaluator.Evaluate(board);
+
+        int bestScore;
+        int futilityBase;
+
+        if (inCheck)
+        {
+            // No stand-pat floor: every evasion must be searched, and this
+            // sentinel is also what makes "no move improved it" mean mate.
+            // The reference relies on exactly this value to make its whole
+            // pruning block unreachable while in check; here the pruning is
+            // additionally guarded explicitly.
+            bestScore = -Infinity;
+            futilityBase = -Infinity;
+        }
+        else
+        {
+            // "Stand pat": the side to move is never forced to capture, so the
+            // static evaluation is a floor for its score. If even doing nothing
+            // beats beta, the opponent will avoid this line — cut immediately.
+            bestScore = _evaluator.Evaluate(board);
+            if (bestScore >= beta)
+                return bestScore;
+            if (bestScore > alpha)
+                alpha = bestScore;
+            futilityBase = bestScore + QsFutilityMargin;
+        }
+
+        // In check: every legal reply is a candidate escape. Otherwise captures
+        // and promotions only, which is what keeps quiescence finite.
         MoveList moves = _moveLists[ply];
-        MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: true);
-        MovePicker.OrderCaptures(moves, board);
+        MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: !inCheck);
+        if (inCheck)
+            MovePicker.Order(moves, board, Move.None, _killers, _history, ply);
+        else
+            MovePicker.ScoreAndSortCapturesQs(moves, board, _captureHistory);
 
         Color us = board.SideToMove;
+        int moveCount = 0;
 
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
 
-            // The captures-only generator also emits under-promotions; in
-            // quiescence only the queen promotion is worth searching.
-            if (move.IsPromotion && !move.IsCapture && move.Flag != MoveFlag.PromoQueen)
-                continue;
-
-            // SEE pruning: a losing capture cannot raise the stand-pat floor —
-            // in quiescence there is no compensation coming later.
-            if (move.IsCapture && !move.IsPromotion
-                && StaticExchangeEvaluator.LosesAtLeast(board, move))
+            // Nothing is pruned while in check: any of these may be the only
+            // legal move, and pruning it could turn a save or a draw into a
+            // reported mate.
+            // Pruning, reference Step 6. Entirely skipped while in check: any
+            // of these may be the only legal move, and pruning it could turn a
+            // save or a draw into a reported mate. Promotions are exempt too —
+            // the piece changes mid-sequence, which the swap algorithm cannot
+            // model, and an underpromotion is sometimes the only move that
+            // avoids stalemate, delivers mate or dodges a fork. All four
+            // promotion pieces are searched (the reference does not drop the
+            // minors either); the ordering ranks the queen first, so the
+            // others only cost the tail of the list.
+            if (!inCheck && !move.IsPromotion)
             {
-                continue;
+                // Futility: even winning the piece standing on the destination
+                // square, plus a generous margin, cannot reach alpha — the
+                // capture is pointless. bestScore is raised to the futility
+                // value so the fail-soft bound stays honest (reference).
+                int futilityValue = futilityBase + PieceValueQs[(int)(move.Flag == MoveFlag.EnPassant
+                    ? PieceType.Pawn : board.PieceTypeAt(move.To))];
+                if (futilityValue <= alpha)
+                {
+                    if (futilityValue > bestScore)
+                        bestScore = futilityValue;
+                    continue;
+                }
+
+                // Even the margin itself cannot reach alpha and the exchange
+                // does not bridge the gap on material: skip, again keeping the
+                // bound honest (reference: min(alpha, futilityBase)).
+                if (futilityBase <= alpha
+                    && StaticExchangeEvaluator.Evaluate(board, move) <= 0)
+                {
+                    int bound = Math.Min(alpha, futilityBase);
+                    if (bound > bestScore)
+                        bestScore = bound;
+                    continue;
+                }
+
+                // Deep-losing captures never pay off at the horizon. The
+                // reference allows down to -74 in ITS units, where a pawn is
+                // 208; ours is 100, so the same threshold is -36. This is
+                // looser than the old SEE >= 0 rule on purpose: a slightly
+                // losing capture can still be the move that resolves a
+                // tactic, and ProbCut/NMP verify their captures through here.
+                if (move.IsCapture
+                    && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: QsSeeThreshold))
+                    continue;
             }
 
             _incremental?.PushMove(board, move);
@@ -1190,6 +1341,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 continue;
             }
 
+            moveCount++;
             int score = -Quiescence(board, -beta, -alpha, ply + 1);
             board.UnmakeMove();
             _incremental?.Pop();
@@ -1197,13 +1349,49 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             if (_stopped)
                 return 0;
 
-            if (score >= beta)
-                return beta;
-            if (score > alpha)
-                alpha = score;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                if (score > alpha)
+                {
+                    if (score >= beta)
+                        break; // Fail high; fail-soft returns bestScore below.
+                    alpha = score;
+                }
+            }
         }
 
-        return alpha;
+        if (moveCount == 0)
+        {
+            // In check with no legal reply: checkmate. The ply is added so the
+            // engine prefers the SHORTEST mate and, when mated, drags out the
+            // longest defense — the same convention the main search uses.
+            if (inCheck)
+                return -MateScore + ply;
+
+            // Stalemate. Standing pat here would report a normal evaluation
+            // for a position that is actually a draw — the classic way an
+            // engine "wins" a stalemate on its scoresheet and then plays into
+            // it. Full legal generation at every quiescence node would be far
+            // too expensive, so this follows the reference's guard: only look
+            // when the side to move has nothing but king and pawns AND not one
+            // of those pawns can even step forward. Anything else practically
+            // guarantees a legal move exists. (The reference adds "the move
+            // just played captured at least a knight"; that needs the captured
+            // piece on the search stack, which arrives with the capture-history
+            // block — without it this guard is merely a little broader.)
+            ulong pawns = board.Pieces(us, PieceType.Pawn);
+            ulong pushes = us == Color.White ? pawns << 8 : pawns >> 8;
+            if (!board.HasNonPawnMaterial(us) && (pushes & ~board.AllOccupancy) == 0)
+            {
+                MoveList legal = _moveLists[ply];
+                MoveGenerator.GenerateLegalMoves(board, legal);
+                if (legal.Count == 0)
+                    return 0;
+            }
+        }
+
+        return bestScore;
     }
 
     // Reconstructs the principal variation (the expected best play for both
