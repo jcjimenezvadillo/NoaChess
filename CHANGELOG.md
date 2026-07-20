@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-07-20 (5F ProbCut · multi-cut · NMP dynamic R) — ALL THREE MEASURED AND CUT, NO RELEASE
+
+**Search block 5 closes here.** These three were the archived items whose stated blocker was the broken quiescence, so they were retried on top of v2.7.4 to close the debt with measurement instead of inference. All three failed, and the premise itself turned out to be wrong: the quiescence was not the blocker for any of them.
+
+| Candidate | Result vs v2.7.4 |
+|---|---|
+| 5F ProbCut rework | four variants, best still **+5.0% nodes**, WAC flat |
+| Multi-cut | **−4.2% nodes but WAC 248 vs 266** |
+| NMP dynamic R | **−14.3 ± 15.7 Elo, LOS 3.8%, H0 at 925 games** |
+
+- **5F ProbCut** — reference shape (entry at depth 3, any node type) +16.3% nodes; with our validated conservative entry (non-PV, depth ≥ 5) +7.3%; with a flat depth−4 verification +11.2%, so the reference's improving-aware verification depth is genuinely better than ours; with the SEE threshold floored at 0, +5.0%. That last one is a real finding: the reference's threshold `probCutBeta − staticEval` goes NEGATIVE once the static eval already clears the bar, so every losing capture passes the filter and each one costs a quiescence plus a verification search. Even so, no variant beat the baseline, and WAC 269 vs 266 is inside the ±5 noise band, so there is no nodes-for-accuracy trade. The `probCutDepth` floor at 1 (no cutoff may rest on quiescence alone) is applied throughout and is the fix for the earlier −90 Elo.
+- **Multi-cut** — returning the verification score when it reaches beta with the TT move excluded. WAC 248 vs 266, eighteen points down. In 5E the same test measured 265 → 245; after the quiescence fix it is 266 → 248, essentially unchanged. Unsound on our search in its own right.
+- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated Stockfish**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
+- The bench signature was the usual trap: −11.9% nodes and −17% wall time meant **more pruning, not better search**, and WAC cannot see unsound prunes. Node counts falling is not by itself evidence of improvement.
+- Branches `exp-probcut`, `exp-multicut` and `exp-nmpr` keep the code and the numbers in their commit messages. Not merged.
+
+**Block 5 tally.** Shipped: 5A improving flag (v2.7.0), 5B scope-cut NMP/RFP (v2.7.1), 5D transposition-table redesign (v2.7.2) and the v2.7.4 quiescence rework. Cut: 5C, 5E, 5G, 5F, multi-cut, NMP dynamic R. **Over seven blocks the pattern never moved: infrastructure and exact knowledge transfer** (staged movegen +101, TT redesign +37.9, timeman +14.3); **tuned reference heuristics do not**, because each one depends on entry filters that measure worse on this engine. Next is block 9, Syzygy (v2.8.0) — infrastructure, and it also supplies perfect labels for the NNUE datagen.
+
+
 ## 2026-07-20 (v2.7.4) — quiescence rework: correctness first, plus a terminal-root hang fix
 
 **Correctness release: no measurable strength change.** SPRT vs v2.7.2 (tc 10+0.1, elo0=0 elo1=10): **−2.1 ± 9.9 Elo over 2347 games [0.498], H0**. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors): **+52 ± 23 relative to the field** vs v2.7.2's +48 on the identical field — **+4 ± 32, statistically zero**. Strength stays **~2975 ± 25 CCRL**. Both instruments agree, so the equity is real and is reported as such.
