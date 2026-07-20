@@ -113,6 +113,34 @@ public static class MovePicker
         SortRange(moves, sortFrom);
     }
 
+    // Quiescence capture ordering (reference movepick QCAPTURE stage): learned
+    // exchange outcomes plus 7x the victim's value. Where plain MVV-LVA calls
+    // two captures of the same piece equal, capture history knows which of
+    // them has actually been working. Promotions keep their own band so the
+    // queen promotion still leads and the minors trail the captures.
+    public static void ScoreAndSortCapturesQs(MoveList moves, Board board,
+                                              CaptureHistory captureHistory)
+    {
+        int[] scores = moves.Scores;
+        Color us = board.SideToMove;
+        for (int i = 0; i < moves.Count; i++)
+        {
+            Move move = moves[i];
+            if (move.IsPromotion && !move.IsCapture)
+            {
+                scores[i] = PromotionBase + PieceValue[(int)move.PromotionPiece];
+                continue;
+            }
+            PieceType victim = move.Flag == MoveFlag.EnPassant
+                ? PieceType.Pawn
+                : board.PieceTypeAt(move.To);
+            int piece = ContinuationHistory.PieceIndex(us, board.PieceTypeAt(move.From));
+            scores[i] = captureHistory.Get(piece, move.To, CaptureHistory.VictimIndex(board, move))
+                      + 7 * PieceValue[(int)victim];
+        }
+        SortRange(moves, 0);
+    }
+
     // In-place insertion sort of moves[from..Count) by descending score.
     private static void SortRange(MoveList moves, int from)
     {
