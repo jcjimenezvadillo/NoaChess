@@ -1,21 +1,36 @@
 # CHANGELOG
 
-## 2026-07-19 (v2.7.4) — block 5F: ProbCut rework + capture history
+## 2026-07-20 (v2.7.4) — quiescence rework: correctness first, plus a terminal-root hang fix
 
-**SPRT vs v2.7.2 (tc 10+0.1, bounds elo0=0 elo1=10): PENDING.** Baseline is v2.7.2 because the v2.7.3 slot closed with no release (5E and 5G both cut — see below).
+**Correctness release: no measurable strength change.** SPRT vs v2.7.2 (tc 10+0.1, elo0=0 elo1=10): **−2.1 ± 9.9 Elo over 2347 games [0.498], H0**. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors): **+52 ± 23 relative to the field** vs v2.7.2's +48 on the identical field — **+4 ± 32, statistically zero**. Strength stays **~2975 ± 25 CCRL**. Both instruments agree, so the equity is real and is reported as such.
 
-**Measured before handover** (60 positions sampled from real games at the test time control, depth 13; wall time over 30 of them): nodes geo-mean **0.942 (−5.8%)**, median 0.951, 31 better / 29 worse; **wall time to depth −9.7% / −4.9%** on two runs; **NPS neutral** (+2.2% / −2.9% — no memory-traffic penalty, the failure mode that sank 5G); **WAC-300 at 400ms: 269/300** (v2.7.2 measured 263 the same day; 265 was the previous record); 184 tests green.
+It ships anyway because what it fixes are BUGS, not heuristics — including one that freezes the engine outright.
 
-- search: **ProbCut entry widened to the reference's shape** — from depth 3 at ANY node type (was: non-PV only, from depth 5). A TT score already known to be below the ProbCut bar now skips the attempt outright (reference guard).
-- search: **improving-aware ProbCut margin** — `beta + 150 − 40×improving`. The base stays at OUR play-validated 150: the reference's 241 measured worse here on nodes, because its margin assumes its eval/qsearch precision (the same value-scale lesson as 4B/4C/5B). The improving subtractor is the reference's 64 rescaled to our base (64 × 150/241 ≈ 40).
-- search: **verification depth now reacts to improving too** — `depth−5` when improving, `depth−3` otherwise (was a flat `depth−4`). A trustworthier static eval buys a CHEAPER margin and pays for a DEEPER proof; the two knobs move in opposite directions on purpose.
-- search: **reference SEE filter in ProbCut** — the exchange must bridge the gap between the static eval and the ProbCut bar on material alone (`SEE(move) >= probCutBeta − staticEval`), replacing the old "not clearly losing" test.
-- search: **fail-soft ProbCut return** — returns `value − (probCutBeta − beta)` instead of the flat bar, and stores the verified fail-high in the TT at `probCutDepth + 1` as a lower bound (reference). Mate-range values are not trusted from a reduced search and keep the capture scan going.
-- search: **small ProbCut** — a TT lower bound at most 4 plies shallower that already clears `beta + 428` returns immediately, with no search at all. **Gated to `!inCheck`, deliberately diverging from the reference**, which runs it in check too: ungated it cost **16 WAC points** here (255 vs 271), because our quiescence is captures-only and its in-check lower bounds are not trustworthy enough to cut on unseen.
-- heuristics: **new `CaptureHistory` table** `[piece][to][victimType]` with the reference's gravity update (`entry += bonus − entry×|bonus|/4096`, so entries approach the bound asymptotically instead of parking on a rail — the lesson learned the hard way in the 5G campaign). Fed by cutoff bonuses, sibling-capture maluses and a fail-low bonus credited to the parent's capture. **Read only by ProbCut ordering for now**; the reference also uses it in capture futility and main capture ordering, which is a later block.
-- ordering: ProbCut captures are ranked by `captureHistory + 7×victimValue` (reference movepick PROBCUT stage) instead of raw MVV-LVA, with the TT move served first when it is itself a capture.
-- search: **`cutNode` (expected node type) plumbed through the whole search**, propagating exactly as the reference does — LMR probes are cutNodes, their re-searches and plain null-window searches flip the parent's flag, full-window PV searches and null-move probes never are, and a singular verification inherits its node's flag. **ProbCut's verification is its only consumer today**; the reference IIR and the 5C LMR adjusters both need it, so those revisits can now be A/B-tested with no infrastructure work (same deliberate pattern as 5D's consumer-less ttPv).
-- **NOT shipped: the reference IIR shape.** `depth−1` for PV/cut nodes only from depth 6 measured **+22% nodes to equal depth** in isolation, and a middle variant (same node filter, from depth 4) still cost +4.8%. Our long-validated shape (depth ≥ 4, every node type) is kept: with our weaker ordering, reducing un-informed nodes *everywhere* is load-bearing. Same ecosystem lesson as the 5C reduction suite — archived for the pre-NNUE checkpoint, where the `cutNode` flag now waiting in the search makes the retest cheap.
+**The quiescence search handled in-check nodes wrongly in four separate ways:**
+
+- It stood pat on the static evaluation of a position whose king is attacked — a meaningless number — and could therefore return a beta cutoff *while being mated*.
+- It generated captures only, so the quiet king step or the interposition that is usually the ONLY escape from a check did not exist as far as the search was concerned.
+- It applied SEE pruning in check, discarding the single legal defence whenever that defence loses material.
+- It never detected mate: in check with no legal reply it returned the stand-pat score as if nothing had happened.
+
+Every capture that gives check lands the opponent in exactly that node, so the hole sat on the main line of every tactical sequence — and ProbCut, null-move probes and multi-cut all verify captures THROUGH quiescence, so they were reading those wrong scores as proof. That is why five separate reference features have needed gates or been cut since 5B.
+
+- search: in check — no stand-pat (`bestScore` starts at −infinity, the reference's own device for making its pruning block unreachable), ALL moves generated, no pruning of any kind, mate returned as `−MateScore + ply`.
+- search: **stalemate guard** at the horizon, in the reference's shape — only reached when the side to move has nothing but king and pawns AND no pawn can even step forward, so full legal generation stays rare.
+- search: **fail-soft** scores throughout (the real bestScore, never the alpha/beta rail).
+- search: **all four promotion pieces** are searched; only the queen was before. An underpromotion can be the move that avoids stalemate, mates, or dodges a fork.
+- search: the reference's **Step 6 pruning block**, ported whole rather than as isolated constants — `futilityBase = staticEval + 147`, a second gate on `min(alpha, futilityBase)`, and the SEE floor relaxed from `>= 0` to `>= −36`. Constants converted by the pawn ratio (the reference's pawn is 208, ours 100 — exactly the project's ×0.48 rule): 306 → 147, −74 → −36.
+- heuristics: new **`CaptureHistory`** table `[piece][to][victimType]` with gravity updates (`entry += bonus − entry×|bonus|/4096`), feeding quiescence capture ordering as `captureHistory + 7×victimValue` in place of MVV-LVA.
+- **uci/search: a terminal root hung the engine forever.** With no legal move on the board (checkmate or stalemate) iterative deepening looped through every depth without ever producing a best move, and no `bestmove` was ever sent — any GUI handing the engine such a position froze it permanently. Present in v2.7.2 and every earlier release. Now answered instantly with `bestmove 0000`.
+- tests: 192/192, including **8 new quiescence correctness cases** (quiet-only escape, sole interposition, mate and stalemate at the horizon, a sole defence with negative SEE, perpetual-check termination, checking captures).
+
+**Bench vs v2.7.2** (60 positions sampled from real games at the test time control, depth 13; wall time over 30): nodes geo-mean **0.943 (−5.7%)**, median 0.928, 33 better / 27 worse; **wall time to depth −9.0% / −12.6%**; NPS neutral; **WAC-300 at 400ms: 269/300 — new record** (v2.7.2 measured 263 the same day; 265 was the old record).
+
+**The two halves only work together.** Correctness ALONE cost +8.3% nodes and +4.0% time — searching quiet evasions and promotions is real work. Adding the reference's own pruning block turned that into −5.7% nodes and −9…−12% time. The reference prunes harder BECAUSE it searches correctly; taking either half without the other is what made every earlier attempt look bad.
+
+**A false premise was corrected in the documentation.** Our notes since 5B claimed the reference qsearch "generates checks at the first ply", and that claim had propagated into five separate design decisions. It does not: its own comment reads *"captures, or evasions only when in check"*. The real difference was the −infinity start in check, which is what is ported here.
+
+**Field audit** (624-game LTC gauntlet): **Marvin-2960 measured 62 low for the second cycle running** (−56 in the v2.7.2 gauntlet, −62 here) → renamed to 2900. **BitGenie-3010 cleared**: +43 here after −130 last cycle, i.e. noise, off the watch list. **Rubichess-3150 (−120) and Meltdown-2817 (+73) to watch** — single-run deviations, and 48 games per opponent carries ±80–120, so neither is actionable yet.
 
 ## 2026-07-19 (blocks 5E + 5G, the v2.7.3 campaign) — MEASURED AND CUT, NO RELEASE
 
