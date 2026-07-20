@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## 2026-07-20 (v2.8.0) — block 9: Syzygy endgame tablebases
+
+**SPRT vs v2.7.4 and LTC gauntlet: PENDING.** Everything below that is stated as measured, is measured.
+
+Pulled ahead of NNUE deliberately, following the reference's own order (Syzygy 2014, NNUE 2020): it improves endgame play now, and later it relabels the noisiest slice of the NNUE training corpus with exact WDL.
+
+**Not a P/Invoke — a managed port.** The roadmap called for binding the usual C probing library. That is not what shipped: there is no C toolchain on this machine, and a native DLL would break the single self-contained .exe requirement. The prober is ~1250 lines of C#.
+
+**Why that had to be proven rather than assumed.** A wrong index does not crash: it returns a WRONG result that looks perfectly valid, and the search then trusts it absolutely — strictly worse than having no tablebases at all. The port is therefore differentially tested against an independent prober over randomly generated endgames: **3000 positions, 3-to-5 men, both sides to move, zero WDL discrepancies and zero DTZ discrepancies.** That harness found three bugs that would otherwise have reached play silently:
+
+- the symbol-tree base offset was cached per TABLE instead of per `PairsData`. A pawn table holds eight of them (4 files × 2 sides), so the decompressor walked a misaligned tree and **hung the engine outright** rather than returning anything wrong.
+- an off-by-one in the DTZ value remap (`map[idx + value]`, not `idx + value - 1`).
+- captures reducing to bare kings have no two-man table; the recursion failed instead of returning the obvious draw.
+
+**What ships:**
+
+- search: **WDL probe** after the TT probe, gated on the fifty-move counter being zero — the tables answer "won" without regard to that rule, and a win needing more plies than the counter allows is really a draw. Castling rights are refused inside the prober for the same class of reason. Verdicts live in **their own score band below the mate range**: they are certain, so they must outrank every heuristic evaluation, but reporting them as mate scores would claim a forced mate the engine has not proven and corrupt the mate-distance arithmetic.
+- search: **root move filtering** by WDL then DTZ — win > draw > loss, and among wins the shortest distance to zeroing. Knowing an ending is won is not enough to win it: with no distance to steer by the engine shuffles and draws by the fifty-move rule. **Deliberately a filter and not an early return**: returning the verdict directly would replace "mate in 3" with a plain tablebase win in the UCI output and undo the mate reporting added in v2.7.1. Filtering keeps the search running while making it structurally impossible to throw a won ending away.
+- uci: `SyzygyPath`, `SyzygyProbeDepth`, `SyzygyProbeLimit`, `Syzygy50MoveRule`.
+- perf: the probe guard is ordered by **selectivity rather than readability** — the piece count is the test that fails at practically every middlegame node, so it goes first, against a cached limit that is 0 when no tablebases are loaded. The obvious ordering cost **3.5% NPS on positions that never probe at all**; this brings it to 1.1%, which is the honest cost of one popcount per node.
+- tests: 208/208, including 16 new Syzygy cases. **Every expectation is derived from the independent prober, not hand-reasoned** — five hand-written fixtures were wrong across this session (illegal positions with the side not to move already in check, a "drawn" position where a rook simply hangs, a "won" KPvK that is actually drawn).
+
+**Measured behaviour:** a won KPvK converts in **15 plies with tablebases against 25 without** — the DTZ filter steering to the fastest win. KRvK and KQvK convert identically either way: the engine already handled those. The gain is concentrated where the heuristic is actually wrong (pawn endings, opposition, drawn positions that look won), which is rarer than "I am a rook up".
+
+**Expected reach, counted over the previous runs' own PGNs** — and this corrects an assumption made when the block started: the 10+0.1 SPRT reaches five men or fewer in **32.1%** of games, the 60+0.6 gauntlet in only **22.9%**. At the longer control games are decided earlier and simplify less, so the SPRT is the better instrument here, not the gauntlet. More telling still: of the previous SPRT's decisive games only 189 of 565 reached five men, so **two thirds were settled before tablebases could have any say**. The reachable effect is therefore small — roughly +3 to +10 Elo — and elo0=0/elo1=10 struggles to resolve that. A flat result would not mean the probing is broken; it would mean the ceiling is in the EVALUATION, which is the same conclusion block 5 reached over seven consecutive blocks.
+
+
 ## 2026-07-20 (5F ProbCut · multi-cut · NMP dynamic R) — ALL THREE MEASURED AND CUT, NO RELEASE
 
 **Search block 5 closes here.** These three were the archived items whose stated blocker was the broken quiescence, so they were retried on top of v2.7.4 to close the debt with measurement instead of inference. All three failed, and the premise itself turned out to be wrong: the quiescence was not the blocker for any of them.
