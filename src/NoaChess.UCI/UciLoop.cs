@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.7.4";
+    public const string EngineVersion = "2.8.0";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -153,6 +153,19 @@ public sealed class UciLoop
                     HandleSetOption(tokens);
                     break;
 
+                case "tbprobe":
+                {
+                    // Not UCI: prints the tablebase verdict for the current
+                    // position. Drives the differential test harness.
+                    bool okW = NoaChess.Engine.Tablebases.Syzygy.ProbeWdl(
+                        _board, out var wdlScore);
+                    bool okD = NoaChess.Engine.Tablebases.Syzygy.ProbeDtz(
+                        _board, out int dtzScore);
+                    _output.WriteLine($"tbresult wdl {(okW ? ((int)wdlScore).ToString() : "none")}"
+                                    + $" dtz {(okD ? dtzScore.ToString() : "none")}");
+                    break;
+                }
+
                 case "ucinewgame":
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
@@ -246,6 +259,20 @@ public sealed class UciLoop
             _engine.ResizeHash(_options.Hash);
         if (changed == "Profile")
             _engine.Profile = EngineProfile.ByName(_options.Profile);
+        if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
+        {
+            _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
+            _engine.SyzygyProbeDepth = _options.SyzygyProbeDepth;
+            _engine.Syzygy50MoveRule = _options.Syzygy50MoveRule;
+        }
+        if (changed == "SyzygyPath")
+        {
+            NoaChess.Engine.Tablebases.Syzygy.Init(_options.SyzygyPath);
+            _engine.RefreshTablebaseLimit();
+            _output.WriteLine(NoaChess.Engine.Tablebases.Syzygy.Available
+                ? $"info string Syzygy: {NoaChess.Engine.Tablebases.Syzygy.Cardinality}-man tablebases loaded"
+                : "info string Syzygy: no tablebases found");
+        }
         if (changed == "Debug Log File" && _options.DebugLogFile.Length > 0)
             OpenLog(_options.DebugLogFile);
 
