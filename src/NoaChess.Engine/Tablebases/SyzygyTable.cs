@@ -1,30 +1,30 @@
 using NoaChess.Core;
+using System.IO.MemoryMappedFiles;
 
 namespace NoaChess.Engine.Tablebases;
 
 // One tablebase file (a .rtbw or .rtbz) and the indexing metadata needed to
 // read it. See SyzygyTables.cs for why this is a managed port.
 //
-// The reference memory-maps these files and walks them with raw pointers.
-// Here the file is read into a byte[] on first access and every "pointer" is
-// an integer offset into it. Files top out around 31 MB for 5-man and only the
-// handful matching the material on the board are ever touched, so the memory
-// cost is modest and the port stays in safe code.
+// The file is memory-mapped lazily and every "pointer" is a 64-bit offset into
+// its read-only view. This is essential for 6/7-man DTZ files, many of which
+// exceed the 2 GB limit of a managed byte[]; the OS pages in only the blocks a
+// probe actually touches, while the port itself stays in safe managed code.
 internal sealed class PairsData
 {
     public byte Flags;
     public byte MaxSymLen;
     public byte MinSymLen;
     public uint BlocksNum;
-    public int SizeofBlock;
+    public long SizeofBlock;
     public int Span;
-    public int LowestSymOffset;      // -> ushort[] in the file
-    public int BtreeOffset;          // -> 3-byte LR records in the file
-    public int BlockLengthOffset;    // -> ushort[]
+    public long LowestSymOffset;      // -> ushort[] in the file
+    public long BtreeOffset;          // -> 3-byte LR records in the file
+    public long BlockLengthOffset;    // -> ushort[]
     public uint BlockLengthSize;
-    public int SparseIndexOffset;    // -> 6-byte SparseEntry records
-    public int SparseIndexSize;
-    public int DataOffset;           // Start of the Huffman-compressed blocks
+    public long SparseIndexOffset;    // -> 6-byte SparseEntry records
+    public ulong SparseIndexSize;
+    public long DataOffset;           // Start of the Huffman-compressed blocks
     public ulong[] Base64 = [];
     public byte[] SymLen = [];
     public readonly int[] Pieces = new int[SyzygyTables.TbPieces];
@@ -33,7 +33,7 @@ internal sealed class PairsData
     public readonly ushort[] MapIdx = new ushort[4];
 }
 
-internal sealed class SyzygyTable
+internal sealed class SyzygyTable : IDisposable
 {
     public readonly bool IsWdl;
     public readonly string Path;
@@ -47,10 +47,11 @@ internal sealed class SyzygyTable
     // [white-to-move / black-to-move][file A..D, or 0 when there are no pawns]
     private readonly PairsData[,] _items = new PairsData[2, 4];
 
-    private byte[]? _data;
-    private int _mapOffset;                 // DTZ value-remap table
-    private bool _ready;
-    private bool _failed;
+    private MemoryMappedFile? _mapping;
+    private MemoryMappedViewAccessor? _view;
+    private long _mapOffset;                 // DTZ value-remap table
+    private volatile bool _ready;
+    private volatile bool _failed;
     private readonly object _lock = new();
 
     public SyzygyTable(string path, bool isWdl)
@@ -66,9 +67,6 @@ internal sealed class SyzygyTable
 
     public PairsData Get(int stm, int file)
         => _items[IsWdl ? stm : 0, HasPawns ? file : 0];
-
-    public byte[]? Data => _data;
-    public int MapOffset => _mapOffset;
 
     // Copies the material description worked out for the WDL table; the DTZ
     // file for the same material shares all of it.
@@ -122,18 +120,18 @@ internal sealed class SyzygyTable
     }
 
     // ---- little/big-endian readers over the mapped file ----
-    private byte U8(int o) => _data![o];
-    private ushort U16LE(int o) => (ushort)(_data![o] | (_data[o + 1] << 8));
-    private uint U32LE(int o) => (uint)(_data![o] | (_data[o + 1] << 8)
-                                      | (_data[o + 2] << 16) | (_data[o + 3] << 24));
-    private ulong U64BE(int o)
+    private byte U8(long o) => _view!.ReadByte(o);
+    private ushort U16LE(long o) => (ushort)(U8(o) | (U8(o + 1) << 8));
+    private uint U32LE(long o) => (uint)(U8(o) | (U8(o + 1) << 8)
+                                      | (U8(o + 2) << 16) | (U8(o + 3) << 24));
+    private ulong U64BE(long o)
     {
         ulong v = 0;
-        for (int i = 0; i < 8; i++) v = (v << 8) | _data![o + i];
+        for (int i = 0; i < 8; i++) v = (v << 8) | U8(o + i);
         return v;
     }
-    private uint U32BE(int o) => ((uint)_data![o] << 24) | ((uint)_data[o + 1] << 16)
-                               | ((uint)_data[o + 2] << 8) | _data[o + 3];
+    private uint U32BE(long o) => ((uint)U8(o) << 24) | ((uint)U8(o + 1) << 16)
+                                | ((uint)U8(o + 2) << 8) | U8(o + 3);
 
     // The symbol tree is stored as 3-byte records: 12 bits for the left child,
     // 12 for the right. The base offset is PER PairsData — a pawn table holds
@@ -141,13 +139,13 @@ internal sealed class SyzygyTable
     // never be cached on the table itself.
     private ushort BtreeLeft(PairsData d, int sym)
     {
-        int o = d.BtreeOffset + sym * 3;
-        return (ushort)(((_data![o + 1] & 0xF) << 8) | _data[o]);
+        long o = d.BtreeOffset + sym * 3L;
+        return (ushort)(((U8(o + 1) & 0xF) << 8) | U8(o));
     }
     private ushort BtreeRight(PairsData d, int sym)
     {
-        int o = d.BtreeOffset + sym * 3;
-        return (ushort)((_data![o + 2] << 4) | (_data[o + 1] >> 4));
+        long o = d.BtreeOffset + sym * 3L;
+        return (ushort)((U8(o + 2) << 4) | (U8(o + 1) >> 4));
     }
 
     // ---- lazy load ----
@@ -161,32 +159,59 @@ internal sealed class SyzygyTable
             if (_failed) return false;
             try
             {
-                byte[] bytes = File.ReadAllBytes(Path);
-                uint magic = (uint)(bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24));
+                if (new FileInfo(Path).Length < 4)
+                    throw new InvalidDataException($"Truncated Syzygy file: {Path}");
+
+                _mapping = MemoryMappedFile.CreateFromFile(
+                    Path, FileMode.Open, mapName: null, capacity: 0,
+                    MemoryMappedFileAccess.Read);
+                _view = _mapping.CreateViewAccessor(
+                    0, 0, MemoryMappedFileAccess.Read);
+
+                uint magic = U32LE(0);
                 uint expected = IsWdl ? SyzygyTables.WdlMagic : SyzygyTables.DtzMagic;
                 if (magic != expected)
                 {
                     // A truncated download, or an HTTP error page saved under a
                     // tablebase name, would land here. Refusing is essential:
                     // the search trusts these answers completely.
+                    CloseMapping();
                     _failed = true;
                     return false;
                 }
-                _data = bytes;
                 Setup(4);            // Skip the magic
                 _ready = true;
                 return true;
             }
             catch
             {
+                CloseMapping();
                 _failed = true;
                 return false;
             }
         }
     }
 
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            CloseMapping();
+            _ready = false;
+            _failed = true;
+        }
+    }
+
+    private void CloseMapping()
+    {
+        _view?.Dispose();
+        _mapping?.Dispose();
+        _view = null;
+        _mapping = null;
+    }
+
     // Reference set(): lays out every PairsData from the file header.
-    private void Setup(int data)
+    private void Setup(long data)
     {
         const int Split = 1;
         const int HasPawnsFlag = 2;
@@ -233,7 +258,7 @@ internal sealed class SyzygyTable
             {
                 var d = Get(i, f);
                 d.SparseIndexOffset = data;
-                data += d.SparseIndexSize * 6;
+                data = checked(data + checked((long)d.SparseIndexSize) * 6);
             }
 
         for (int f = 0; f <= maxFile; f++)
@@ -241,16 +266,16 @@ internal sealed class SyzygyTable
             {
                 var d = Get(i, f);
                 d.BlockLengthOffset = data;
-                data += (int)d.BlockLengthSize * 2;
+                data = checked(data + (long)d.BlockLengthSize * 2);
             }
 
         for (int f = 0; f <= maxFile; f++)
             for (int i = 0; i < sides; i++)
             {
                 var d = Get(i, f);
-                data = (data + 0x3F) & ~0x3F;   // 64-byte alignment
+                data = checked((data + 0x3F) & ~0x3FL); // 64-byte alignment
                 d.DataOffset = data;
-                data += (int)d.BlocksNum * d.SizeofBlock;
+                data = checked(data + (long)d.BlocksNum * d.SizeofBlock);
             }
     }
 
@@ -329,7 +354,7 @@ internal sealed class SyzygyTable
     }
 
     // Reference set_sizes(): block geometry and the canonical Huffman bases.
-    private int SetSizes(PairsData d, int data)
+    private long SetSizes(PairsData d, long data)
     {
         d.Flags = U8(data++);
 
@@ -348,9 +373,14 @@ internal sealed class SyzygyTable
         while (zero < 7 && d.GroupLen[zero] != 0) zero++;
         ulong tbSize = d.GroupIdx[zero];
 
-        d.SizeofBlock = 1 << U8(data++);
-        d.Span = 1 << U8(data++);
-        d.SparseIndexSize = (int)((tbSize + (ulong)d.Span - 1) / (ulong)d.Span);
+        int blockShift = U8(data++);
+        int spanShift = U8(data++);
+        if (blockShift >= 63 || spanShift >= 31)
+            throw new InvalidDataException($"Invalid Syzygy block geometry in {Path}");
+
+        d.SizeofBlock = 1L << blockShift;
+        d.Span = 1 << spanShift;
+        d.SparseIndexSize = (tbSize + (ulong)d.Span - 1) / (ulong)d.Span;
         int padding = U8(data++);
         d.BlocksNum = U32LE(data);
         data += 4;
@@ -384,11 +414,11 @@ internal sealed class SyzygyTable
             if (!visited[sym])
                 SetSymLen(d, sym, visited);
 
-        return data + symLenCount * 3 + (symLenCount & 1);
+        return checked(data + symLenCount * 3L + (symLenCount & 1));
     }
 
     // Reference set_dtz_map(): DTZ values are stored re-mapped by frequency.
-    private int SetDtzMap(int data, int maxFile)
+    private long SetDtzMap(long data, int maxFile)
     {
         _mapOffset = data;
 
@@ -403,7 +433,7 @@ internal sealed class SyzygyTable
                 data += data & 1;               // Word alignment
                 for (int i = 0; i < 4; i++)
                 {
-                    d.MapIdx[i] = (ushort)((data - _mapOffset) / 2 + 1);
+                    d.MapIdx[i] = checked((ushort)((data - _mapOffset) / 2 + 1));
                     data += 2 * U16LE(data) + 2;
                 }
             }
@@ -411,7 +441,7 @@ internal sealed class SyzygyTable
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    d.MapIdx[i] = (ushort)(data - _mapOffset + 1);
+                    d.MapIdx[i] = checked((ushort)(data - _mapOffset + 1));
                     data += U8(data) + 1;
                 }
             }
@@ -426,21 +456,22 @@ internal sealed class SyzygyTable
         if ((d.Flags & (int)TbFlag.SingleValue) != 0)
             return d.MinSymLen;
 
-        uint k = (uint)(idx / (ulong)d.Span);
+        ulong k = idx / (ulong)d.Span;
 
-        uint block = U32LE(d.SparseIndexOffset + (int)k * 6);
-        int offset = U16LE(d.SparseIndexOffset + (int)k * 6 + 4);
+        long sparseEntry = checked(d.SparseIndexOffset + checked((long)k) * 6);
+        uint block = U32LE(sparseEntry);
+        int offset = U16LE(sparseEntry + 4);
 
         int diff = (int)(idx % (ulong)d.Span) - d.Span / 2;
         offset += diff;
 
         while (offset < 0)
-            offset += U16LE(d.BlockLengthOffset + (int)(--block) * 2) + 1;
+            offset += U16LE(d.BlockLengthOffset + (long)(--block) * 2) + 1;
 
-        while (offset > U16LE(d.BlockLengthOffset + (int)block * 2))
-            offset -= U16LE(d.BlockLengthOffset + (int)block++ * 2) + 1;
+        while (offset > U16LE(d.BlockLengthOffset + (long)block * 2))
+            offset -= U16LE(d.BlockLengthOffset + (long)block++ * 2) + 1;
 
-        int ptr = d.DataOffset + (int)block * d.SizeofBlock;
+        long ptr = checked(d.DataOffset + (long)block * d.SizeofBlock);
         ulong buf64 = U64BE(ptr);
         ptr += 8;
         int buf64Size = 64;
@@ -487,8 +518,8 @@ internal sealed class SyzygyTable
         return BtreeLeft(d, sym);
     }
 
-    public byte MapValue(int offset) => _data![_mapOffset + offset];
-    public ushort MapValueWide(int offset) => U16LE(_mapOffset + offset * 2);
+    public byte MapValue(int offset) => U8(_mapOffset + offset);
+    public ushort MapValueWide(int offset) => U16LE(_mapOffset + offset * 2L);
 }
 
 [Flags]

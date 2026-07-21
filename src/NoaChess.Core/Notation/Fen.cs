@@ -22,37 +22,71 @@ public static class Fen
     public static void Load(Board board, string fen)
     {
         string[] parts = fen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 4)
-            throw new ArgumentException($"Invalid FEN (at least 4 fields expected): '{fen}'");
+        if (parts.Length is < 4 or > 6)
+            throw new ArgumentException($"Invalid FEN (4 to 6 fields expected): '{fen}'");
 
-        board.Clear();
+        // Parse and validate everything before touching the target board. FEN
+        // loading is therefore strongly exception-safe: a rejected GUI/UCI
+        // position cannot leave the live game half-cleared.
+        var placements = new List<(Color Color, PieceType Type, int Square)>(32);
+        var pieceAt = new PieceType[64];
+        var colorAt = new Color[64];
+        Array.Fill(pieceAt, PieceType.None);
 
-        // Field 1: pieces. FEN starts at rank 8 and file 'a'.
-        int rank = 7, file = 0;
-        foreach (char c in parts[0])
+        // Field 1: exactly eight ranks of exactly eight squares each.
+        string[] ranks = parts[0].Split('/');
+        if (ranks.Length != 8)
+            throw new ArgumentException($"Invalid piece placement in FEN: '{fen}'");
+
+        int whiteKings = 0, blackKings = 0;
+        for (int fenRank = 0; fenRank < 8; fenRank++)
         {
-            if (c == '/')
+            int rank = 7 - fenRank;
+            int file = 0;
+            foreach (char c in ranks[fenRank])
             {
-                rank--;
-                file = 0;
-            }
-            else if (char.IsDigit(c))
-            {
-                file += c - '0'; // N empty squares.
-            }
-            else
-            {
+                if (c is >= '1' and <= '8')
+                {
+                    file += c - '0';
+                    if (file > 8)
+                        throw new ArgumentException($"Invalid rank width in FEN: '{fen}'");
+                    continue;
+                }
+
                 int pieceIndex = PieceChars.IndexOf(char.ToUpperInvariant(c));
-                if (pieceIndex < 0 || rank < 0 || file > 7)
-                    throw new ArgumentException($"Invalid FEN: '{fen}'");
+                if (pieceIndex < 0 || file >= 8)
+                    throw new ArgumentException($"Invalid piece placement in FEN: '{fen}'");
+
+                var type = (PieceType)pieceIndex;
+                if (type == PieceType.Pawn && rank is 0 or 7)
+                    throw new ArgumentException($"Pawn on promotion rank in FEN: '{fen}'");
+
                 Color color = char.IsUpper(c) ? Color.White : Color.Black;
-                board.PlacePiece(color, (PieceType)pieceIndex, Squares.FromFileRank(file, rank));
-                file++;
+                int square = Squares.FromFileRank(file++, rank);
+                placements.Add((color, type, square));
+                pieceAt[square] = type;
+                colorAt[square] = color;
+                if (type == PieceType.King)
+                {
+                    if (color == Color.White) whiteKings++;
+                    else blackKings++;
+                }
             }
+
+            if (file != 8)
+                throw new ArgumentException($"Invalid rank width in FEN: '{fen}'");
         }
 
+        if (whiteKings != 1 || blackKings != 1)
+            throw new ArgumentException($"FEN must contain exactly one king per side: '{fen}'");
+
         // Field 2: side to move.
-        Color sideToMove = parts[1] == "w" ? Color.White : Color.Black;
+        Color sideToMove = parts[1] switch
+        {
+            "w" => Color.White,
+            "b" => Color.Black,
+            _ => throw new ArgumentException($"Invalid side to move in FEN: '{fen}'")
+        };
 
         // Field 3: castling.
         CastlingRights castling = CastlingRights.None;
@@ -60,7 +94,7 @@ public static class Fen
         {
             foreach (char c in parts[2])
             {
-                castling |= c switch
+                CastlingRights right = c switch
                 {
                     'K' => CastlingRights.WhiteKingSide,
                     'Q' => CastlingRights.WhiteQueenSide,
@@ -68,15 +102,40 @@ public static class Fen
                     'q' => CastlingRights.BlackQueenSide,
                     _ => throw new ArgumentException($"Invalid castling in FEN: '{fen}'")
                 };
+                if ((castling & right) != 0)
+                    throw new ArgumentException($"Duplicate castling right in FEN: '{fen}'");
+                castling |= right;
             }
         }
 
         // Field 4: en passant.
         int enPassant = parts[3] == "-" ? Squares.None : Squares.Parse(parts[3]);
 
+        // An EP target must describe the square crossed by the opponent's pawn.
+        // FEN is allowed to publish it even when no pawn can capture, but the
+        // target must be empty, on the right rank and backed by that pawn.
+        if (enPassant != Squares.None)
+        {
+            int expectedRank = sideToMove == Color.White ? 5 : 2;
+            int capturedPawn = sideToMove == Color.White ? enPassant - 8 : enPassant + 8;
+            if (Squares.RankOf(enPassant) != expectedRank
+                || pieceAt[enPassant] != PieceType.None
+                || pieceAt[capturedPawn] != PieceType.Pawn
+                || colorAt[capturedPawn] != Board.OppositeColor(sideToMove))
+                throw new ArgumentException($"Invalid en passant target in FEN: '{fen}'");
+        }
+
         // Fields 5 and 6 are optional in many informal FEN strings.
-        int halfmove = parts.Length > 4 ? int.Parse(parts[4]) : 0;
-        int fullmove = parts.Length > 5 ? int.Parse(parts[5]) : 1;
+        int halfmove = 0;
+        int fullmove = 1;
+        if (parts.Length > 4 && (!int.TryParse(parts[4], out halfmove) || halfmove < 0))
+            throw new ArgumentException($"Invalid halfmove clock in FEN: '{fen}'");
+        if (parts.Length > 5 && (!int.TryParse(parts[5], out fullmove) || fullmove < 1))
+            throw new ArgumentException($"Invalid fullmove number in FEN: '{fen}'");
+
+        board.Clear();
+        foreach (var piece in placements)
+            board.PlacePiece(piece.Color, piece.Type, piece.Square);
 
         board.SetState(sideToMove, castling, enPassant, halfmove, fullmove);
     }

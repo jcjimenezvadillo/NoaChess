@@ -66,11 +66,29 @@ public sealed class Board
         public readonly ulong ZobristKey = zobrist;
     }
 
+    // Cuckoo-hash entry for a reversible non-pawn move. The key is the exact
+    // Zobrist delta produced by moving one coloured piece between the two
+    // squares and changing the side to move. The strict-between mask rejects
+    // a slider whose return path is blocked in the current position.
+    private readonly struct RepetitionMove(ulong key, Move move, ulong between)
+    {
+        public readonly ulong Key = key;
+        public readonly Move Move = move;
+        public readonly ulong Between = between;
+    }
+
+    private const int RepetitionCuckooSize = 8192;
+
     // Masks used to update castling rights after each move.
     // Idea: each square has a mask of the rights that SURVIVE if something
     // moves from/to it. E.g.: moving anything from e1 (white king) removes
     // both white castles; moving from / capturing on h1 removes white short castle.
     private static readonly CastlingRights[] CastlingMask = BuildCastlingMasks();
+
+    // Every geometrically possible reversible move (all non-pawns, both
+    // colours) indexed by either of two hashes of its Zobrist delta. Built once
+    // at startup; the 3668 entries and table size are the reference layout.
+    private static readonly RepetitionMove[] RepetitionCuckoo = BuildRepetitionCuckoo();
 
     private static CastlingRights[] BuildCastlingMasks()
     {
@@ -83,6 +101,101 @@ public sealed class Board
         masks[Squares.Parse("h8")] &= ~CastlingRights.BlackKingSide;
         masks[Squares.Parse("e8")] &= ~(CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide);
         return masks;
+    }
+
+    private static RepetitionMove[] BuildRepetitionCuckoo()
+    {
+        var table = new RepetitionMove[RepetitionCuckooSize];
+        int count = 0;
+
+        for (int c = 0; c < 2; c++)
+        {
+            for (int p = (int)PieceType.Knight; p <= (int)PieceType.King; p++)
+            {
+                PieceType type = (PieceType)p;
+                for (int from = 0; from < 64; from++)
+                {
+                    ulong attacks = type switch
+                    {
+                        PieceType.Knight => Attacks.Knight(from),
+                        PieceType.Bishop => Attacks.Bishop(from, 0),
+                        PieceType.Rook => Attacks.Rook(from, 0),
+                        PieceType.Queen => Attacks.Queen(from, 0),
+                        _ => Attacks.King(from)
+                    };
+
+                    // Store one direction only. The Zobrist delta is identical
+                    // in reverse and the between-squares mask is symmetric.
+                    for (int to = from + 1; to < 64; to++)
+                    {
+                        if (!Bitboard.IsSet(attacks, to))
+                            continue;
+
+                        ulong key = Zobrist.PieceKeys[c, p, from]
+                                  ^ Zobrist.PieceKeys[c, p, to]
+                                  ^ Zobrist.SideToMoveKey;
+                        var displaced = new RepetitionMove(
+                            key, new Move(from, to, MoveFlag.Quiet),
+                            StrictBetweenMask(from, to));
+                        int slot = RepetitionHash1(key);
+
+                        while (true)
+                        {
+                            RepetitionMove victim = table[slot];
+                            table[slot] = displaced;
+                            displaced = victim;
+
+                            if (displaced.Move == Move.None)
+                                break;
+
+                            int h1 = RepetitionHash1(displaced.Key);
+                            slot = slot == h1 ? RepetitionHash2(displaced.Key) : h1;
+                        }
+
+                        count++;
+                    }
+                }
+            }
+        }
+
+        // A changed attack table or piece enumeration would silently make the
+        // lookup incomplete, so fail at startup instead of missing cycles.
+        if (count != 3668)
+            throw new InvalidOperationException($"Expected 3668 reversible moves, got {count}");
+
+        return table;
+    }
+
+    private static int RepetitionHash1(ulong key) => (int)(key & 0x1FFF);
+    private static int RepetitionHash2(ulong key) => (int)((key >> 16) & 0x1FFF);
+
+    // Squares strictly between two aligned endpoints. Knights return an empty
+    // mask; adjacent kings and adjacent sliders naturally do too.
+    private static ulong StrictBetweenMask(int from, int to)
+    {
+        int fromFile = Squares.FileOf(from);
+        int fromRank = Squares.RankOf(from);
+        int toFile = Squares.FileOf(to);
+        int toRank = Squares.RankOf(to);
+        int fileDelta = toFile - fromFile;
+        int rankDelta = toRank - fromRank;
+
+        if (fileDelta != 0 && rankDelta != 0
+            && Math.Abs(fileDelta) != Math.Abs(rankDelta))
+            return 0;
+
+        int df = Math.Sign(fileDelta);
+        int dr = Math.Sign(rankDelta);
+        ulong mask = 0;
+
+        for (int file = fromFile + df, rank = fromRank + dr;
+             file != toFile || rank != toRank;
+             file += df, rank += dr)
+        {
+            mask |= Bitboard.SquareBB(Squares.FromFileRank(file, rank));
+        }
+
+        return mask;
     }
 
     // Creates a board with the standard starting position.
@@ -113,6 +226,15 @@ public sealed class Board
         IsSquareAttacked(KingSquare(SideToMove), OppositeColor(SideToMove));
 
     public static Color OppositeColor(Color c) => c == Color.White ? Color.Black : Color.White;
+
+    // FEN may publish the square crossed by a double pawn push even when no
+    // opposing pawn can capture there. Such a square changes no legal move and
+    // therefore must not change the position identity used for TT/repetition.
+    // This is the same pseudo-legal capturer test used by the reference engine.
+    private bool HasEnPassantCapturer(Color side, int square)
+        => square != Squares.None
+        && (Attacks.Pawn(OppositeColor(side), square)
+            & _pieces[(int)side, (int)PieceType.Pawn]) != 0;
 
     // Is the square attacked by any piece of the given color?
     // Used to detect checks and to validate castling.
@@ -189,7 +311,7 @@ public sealed class Board
 
         // Remove the current "variable" state (en passant and castling) from
         // the hash; it will be re-added with its new values at the end.
-        if (EnPassantSquare != Squares.None)
+        if (HasEnPassantCapturer(us, EnPassantSquare))
             ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(EnPassantSquare)];
         ZobristKey ^= Zobrist.CastlingKeys[(int)CastlingRights];
 
@@ -256,7 +378,7 @@ public sealed class Board
 
         // Re-insert the new variable state into the hash.
         ZobristKey ^= Zobrist.CastlingKeys[(int)CastlingRights];
-        if (EnPassantSquare != Squares.None)
+        if (HasEnPassantCapturer(them, EnPassantSquare))
             ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(EnPassantSquare)];
 
         if (us == Color.Black)
@@ -343,11 +465,13 @@ public sealed class Board
 
         if (EnPassantSquare != Squares.None)
         {
-            ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(EnPassantSquare)];
+            if (HasEnPassantCapturer(SideToMove, EnPassantSquare))
+                ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(EnPassantSquare)];
             EnPassantSquare = Squares.None;
         }
 
-        HalfmoveClock++;
+        // A null move is not a played half-move: the fifty-move clock stays
+        // unchanged. It still forms a hard boundary for repetition scans.
         SideToMove = OppositeColor(SideToMove);
         ZobristKey ^= Zobrist.SideToMoveKey;
     }
@@ -375,12 +499,128 @@ public sealed class Board
         int distance = 0;
         foreach (UndoInfo undo in _history) // Newest to oldest.
         {
+            // A null move is not part of the legal game history. No repetition
+            // may cross it, even though its piece placement is unchanged.
+            if (undo.Move == Move.None)
+                break;
             if (++distance > HalfmoveClock)
                 break;
             if (undo.ZobristKey == ZobristKey)
                 count++;
         }
         return count;
+    }
+
+    // True if ANY position in the reversible history since the last pawn
+    // move, capture or null move has occurred before. Unlike CountRepetitions,
+    // this also remembers a cycle after play has already moved on to a new
+    // current position. The normal rule-50 window fits on the stack; only an
+    // artificially long game continuing past 128 reversible plies allocates.
+    public bool HasRepeated()
+    {
+        if (HalfmoveClock < 4 || _history.Count < 4)
+            return false;
+
+        int capacity = Math.Min(HalfmoveClock, _history.Count) + 1;
+        Span<ulong> keys = capacity <= 128
+            ? stackalloc ulong[capacity]
+            : new ulong[capacity];
+
+        int count = 0;
+        keys[count++] = ZobristKey;
+        int distance = 0;
+
+        foreach (UndoInfo state in _history)
+        {
+            if (state.Move == Move.None || ++distance > HalfmoveClock)
+                break;
+            keys[count++] = state.ZobristKey;
+        }
+
+        Span<ulong> visited = keys[..count];
+        visited.Sort();
+        for (int i = 1; i < visited.Length; i++)
+            if (visited[i] == visited[i - 1])
+                return true;
+
+        return false;
+    }
+
+    // True when the side to move has a reversible move that reaches a repeated
+    // position. If the earlier occurrence lies strictly after the root
+    // (distance < ply), a second occurrence is enough; at/before the root it
+    // must itself already have occurred, producing a genuine threefold cycle.
+    public bool HasUpcomingRepetition(int ply)
+    {
+        if (ply < 0)
+            throw new ArgumentOutOfRangeException(nameof(ply));
+        if (HalfmoveClock < 3 || _history.Count < 3)
+            return false;
+
+        var states = _history.GetEnumerator();
+        if (!states.MoveNext() || states.Current.Move == Move.None)
+            return false;
+
+        ulong originalKey = ZobristKey;
+        ulong other = originalKey ^ states.Current.ZobristKey ^ Zobrist.SideToMoveKey;
+
+        for (int distance = 3; distance <= HalfmoveClock; distance += 2)
+        {
+            if (!states.MoveNext() || states.Current.Move == Move.None)
+                break;
+            UndoInfo middle = states.Current;
+
+            if (!states.MoveNext() || states.Current.Move == Move.None)
+                break;
+            UndoInfo earlier = states.Current;
+
+            other ^= middle.ZobristKey ^ earlier.ZobristKey ^ Zobrist.SideToMoveKey;
+            if (other != 0)
+                continue;
+
+            ulong moveKey = originalKey ^ earlier.ZobristKey;
+            if (!TryGetRepetitionMove(moveKey, out RepetitionMove move)
+                || (move.Between & AllOccupancy) != 0)
+                continue;
+
+            if (ply > distance
+                || WasRepeatedBefore(earlier.ZobristKey, distance, earlier.HalfmoveClock))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetRepetitionMove(ulong key, out RepetitionMove move)
+    {
+        move = RepetitionCuckoo[RepetitionHash1(key)];
+        if (move.Move != Move.None && move.Key == key)
+            return true;
+
+        move = RepetitionCuckoo[RepetitionHash2(key)];
+        return move.Move != Move.None && move.Key == key;
+    }
+
+    private bool WasRepeatedBefore(ulong key, int targetDistance, int reversiblePlies)
+    {
+        if (reversiblePlies < 4)
+            return false;
+
+        int distance = 0;
+        foreach (UndoInfo state in _history)
+        {
+            distance++;
+            if (distance <= targetDistance)
+                continue;
+
+            int delta = distance - targetDistance;
+            if (delta > reversiblePlies || state.Move == Move.None)
+                break;
+            if (delta >= 4 && (delta & 1) == 0 && state.ZobristKey == key)
+                return true;
+        }
+
+        return false;
     }
 
     // True if the side has any piece besides pawns and the king. Used by the
@@ -427,7 +667,7 @@ public sealed class Board
         if (sideToMove == Color.Black)
             ZobristKey ^= Zobrist.SideToMoveKey;
         ZobristKey ^= Zobrist.CastlingKeys[(int)castling];
-        if (enPassant != Squares.None)
+        if (HasEnPassantCapturer(sideToMove, enPassant))
             ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(enPassant)];
     }
 }

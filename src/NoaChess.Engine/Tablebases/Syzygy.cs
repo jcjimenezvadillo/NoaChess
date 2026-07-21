@@ -43,6 +43,8 @@ public static class Syzygy
     /// Safe to call repeatedly: a failed or empty path simply disables probing.
     public static void Init(string paths)
     {
+        DisposeTables(WdlByKey);
+        DisposeTables(DtzByKey);
         WdlByKey.Clear();
         DtzByKey.Clear();
         Cardinality = 0;
@@ -91,6 +93,16 @@ public static class Syzygy
                         Add(dirs, $"K{C(p1)}{C(p2)}vK{C(p3)}{C(p4)}");
             }
         }
+    }
+
+    // Symmetric material is registered under two keys that can point at the
+    // same table object, so dispose each mapping only once when paths change.
+    private static void DisposeTables(Dictionary<ulong, SyzygyTable> tables)
+    {
+        var seen = new HashSet<SyzygyTable>();
+        foreach (SyzygyTable table in tables.Values)
+            if (seen.Add(table))
+                table.Dispose();
     }
 
     private static char C(int pieceType) => "PNBRQ"[pieceType];
@@ -237,7 +249,7 @@ public static class Syzygy
 
     // DTZ tables store no value for moves that reset the fifty-move counter,
     // but the DTZ of the move BEFORE such a move follows from the WDL score.
-    private static int DtzBeforeZeroing(WdlScore wdl) => wdl switch
+    internal static int DtzBeforeZeroing(WdlScore wdl) => wdl switch
     {
         WdlScore.Win => 1,
         WdlScore.CursedWin => 101,
