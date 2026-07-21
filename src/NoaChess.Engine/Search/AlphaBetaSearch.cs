@@ -49,6 +49,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // the mate range. The ply term makes a win found sooner preferable.
     public const int TbWin = MateBound - MaxPly;
 
+    // Lowest score that still belongs to the decisive tablebase band. Like
+    // mate scores, TB scores carry a root-ply component and must be converted
+    // when they cross the TT boundary.
+    private const int TbScoreBound = TbWin - MaxPly;
+
+    // Scale used by the reference root DTZ ranking. It leaves separate bands
+    // for certain wins/losses and outcomes affected by the fifty-move rule.
+    private const int MaxDtz = 1 << 18;
+
     /// Set from the UCI SyzygyProbeLimit / SyzygyProbeDepth options.
     public int SyzygyProbeLimit
     {
@@ -60,12 +69,33 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // Largest piece count worth probing: the smaller of the option and what is
     // actually loaded, or 0 when there are no tablebases at all.
     private int _tbMaxMen;
+    private int _tbMinProbeDepth = 1;
 
     /// Recomputed after the tablebases are (re)loaded or the limit changes.
     public void RefreshTbLimit()
-        => _tbMaxMen = Tablebases.Syzygy.Available
-            ? Math.Min(_syzygyProbeLimit, Tablebases.Syzygy.Cardinality) : 0;
-    public int SyzygyProbeDepth { get; set; } = 1;
+    {
+        if (!Tablebases.Syzygy.Available)
+        {
+            _tbMaxMen = 0;
+            _tbMinProbeDepth = _syzygyProbeDepth;
+            return;
+        }
+
+        _tbMaxMen = Math.Min(_syzygyProbeLimit, Tablebases.Syzygy.Cardinality);
+
+        // Matching Stockfish: if the requested limit exceeds the largest
+        // installed table, that installed cardinality is effectively a
+        // sub-cardinality table and is therefore probed at every depth.
+        _tbMinProbeDepth = _syzygyProbeLimit > Tablebases.Syzygy.Cardinality
+            ? 0 : _syzygyProbeDepth;
+    }
+
+    public int SyzygyProbeDepth
+    {
+        get => _syzygyProbeDepth;
+        set { _syzygyProbeDepth = value; RefreshTbLimit(); }
+    }
+    private int _syzygyProbeDepth = 1;
     public bool Syzygy50MoveRule { get; set; } = true;
 
     /// Number of positions this search resolved from tablebases.
@@ -262,6 +292,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             throw new ArgumentOutOfRangeException(nameof(limits), "Minimum depth is 1.");
 
         _nodes = 0;
+        TbHits = 0;
         _stopped = false;
         _softStopped = false;
         _cancellation = cancellation;
@@ -287,6 +318,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         MoveGenerator.GenerateLegalMoves(board, _rootMoves);
         if (_rootMoves.Count == 0)
             return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
+        int legalRootMoveCount = _rootMoves.Count;
 
         // ---- Syzygy root filtering ----
         // Knowing the position is won is not enough to WIN it: with no distance
@@ -312,7 +344,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // Forced move: with a single legal reply no amount of searching can
         // change the choice — answer instantly and bank the whole budget.
         // Only under a clock (analysis/movetime callers still want the eval).
-        if (clockMode && _rootMoves.Count == 1)
+        if (clockMode && legalRootMoveCount == 1)
             return new SearchResult(_rootMoves[0], 0, 0);
 
         // Killers are per-search (ply meanings change); history persists
@@ -501,16 +533,18 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // move and guarantees a sane reply even when the real search never ran.
         if (best.BestMove == Move.None)
         {
-            var legal = MoveGenerator.GenerateLegalMoves(board);
+            MoveList legal = _rootMoves;
             if (legal.Count > 0)
             {
                 Move fallbackMove = legal[0];
                 int fallbackVal = int.MinValue;
                 for (int i = 0; i < legal.Count; i++)
                 {
+                    _incremental?.PushMove(board, legal[i]);
                     board.MakeMove(legal[i]);
                     int val = -_evaluator.Evaluate(board); // child is opponent-relative
                     board.UnmakeMove();
+                    _incremental?.Pop();
                     if (val > fallbackVal)
                     {
                         fallbackVal = val;
@@ -532,10 +566,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         bestMove = Move.None;
 
         MoveList moves = _rootMoves;
-        MoveGenerator.GenerateLegalMoves(board, moves);
 
         _tt.Probe(board.ZobristKey, out TTEntry entry);
-        MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0);
+        MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0,
+            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+            captureHistory: _captureHistory);
 
         int bestScore = -Infinity;
         int searched = 0;
@@ -615,52 +650,31 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return bestScore;
     }
 
-    // Restricts _rootMoves to the tablebase-optimal ones. Each child is probed
-    // from the OPPONENT's point of view, so the signs invert: their loss is our
-    // win. Among winning moves the smallest DTZ is best (fastest progress);
-    // among losing ones the largest (longest defence). If any move cannot be
-    // probed the list is left untouched and the search decides on its own.
+    // Restricts _rootMoves to the tablebase-optimal ones. DTZ is expressed from
+    // the ROOT position: a move that zeroes the counter has distance 1, while a
+    // reversible move adds one ply to the child's DTZ. The rank then separates
+    // certain wins/losses from outcomes affected by rule 50, exactly as the
+    // reference does. If DTZ data is incomplete, WDL still prevents the search
+    // from choosing a move with a worse game-theoretic result. If either full
+    // pass succeeds, all equally optimal moves remain available to the search.
     private void FilterRootMovesByTablebase(Board board)
     {
         int n = _rootMoves.Count;
         if (n <= 1)
             return;
 
-        Span<int> wdls = stackalloc int[n];
-        Span<int> dtzs = stackalloc int[n];
-        int bestWdl = int.MinValue, bestDtz = 0;
-
-        for (int i = 0; i < n; i++)
-        {
-            board.MakeMove(_rootMoves[i]);
-            int childDtz = 0;
-            bool ok = Tablebases.Syzygy.ProbeWdl(board, out var childWdl)
-                   && Tablebases.Syzygy.ProbeDtz(board, out childDtz);
-            board.UnmakeMove();
-
-            if (!ok)
-                return;                    // Incomplete data: do not interfere
-
-            int wdl = -(int)childWdl;
-            if (Syzygy50MoveRule)
-                wdl = wdl switch { 1 => 0, -1 => 0, _ => wdl };
-            wdls[i] = wdl;
-            dtzs[i] = -childDtz;
-
-            if (wdl > bestWdl || (wdl == bestWdl && IsBetterDtz(wdl, dtzs[i], bestDtz)))
-            {
-                bestWdl = wdl;
-                bestDtz = dtzs[i];
-            }
-        }
+        Span<int> ranks = stackalloc int[n];
+        if (!TryRankRootMovesByDtz(board, ranks, out int bestRank)
+            && !TryRankRootMovesByWdl(board, ranks, out bestRank))
+            return;
 
         TbHits++;
 
-        // Keep every move that matches the best verdict AND its distance, so
-        // the search still gets a choice among equally optimal continuations.
+        // Keep every move with the best TB rank, so the search still gets a
+        // choice among equally optimal continuations.
         var keep = new MoveList();
         for (int i = 0; i < n; i++)
-            if (wdls[i] == bestWdl && dtzs[i] == bestDtz)
+            if (ranks[i] == bestRank)
                 keep.Add(_rootMoves[i]);
 
         if (keep.Count == 0 || keep.Count == n)
@@ -671,10 +685,130 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             _rootMoves.Add(keep[i]);
     }
 
-    private static bool IsBetterDtz(int wdl, int dtz, int bestDtz)
-        => wdl > 0 ? dtz < bestDtz          // Win: closer to zeroing
-         : wdl < 0 ? dtz > bestDtz          // Loss: drag it out
-         : false;                           // Draw: nothing to choose between
+    private bool TryRankRootMovesByDtz(Board board, Span<int> ranks,
+                                       out int bestRank)
+    {
+        bestRank = int.MinValue;
+        int rule50Count = board.HalfmoveClock;
+        bool repeated = board.HasRepeated();
+        var replies = new MoveList();
+
+        for (int i = 0; i < _rootMoves.Count; i++)
+        {
+            board.MakeMove(_rootMoves[i]);
+            int dtz;
+            bool ok;
+
+            if (board.HalfmoveClock == 0)
+            {
+                // The root move itself captured, pushed a pawn or promoted: it
+                // already is the next zeroing move, whatever the child's DTZ.
+                ok = Tablebases.Syzygy.ProbeWdl(board, out var childWdl);
+                var rootWdl = (Tablebases.WdlScore)(-(int)childWdl);
+                dtz = ok ? Tablebases.Syzygy.DtzBeforeZeroing(rootWdl) : 0;
+            }
+            else if ((Syzygy50MoveRule && board.HalfmoveClock >= 100)
+                     || board.CountRepetitions() >= 1)
+            {
+                // A reversible root move that immediately reaches a draw must
+                // rank as a draw, regardless of the counter-free TB verdict.
+                ok = true;
+                dtz = 0;
+            }
+            else
+            {
+                ok = Tablebases.Syzygy.ProbeDtz(board, out int childDtz);
+                dtz = -childDtz;
+                dtz += Math.Sign(dtz);            // Include the root ply
+
+                // probe_dtz reports the child mate as -1; after adding the
+                // root ply that becomes 2, but the mating move itself is DTZ 1.
+                if (ok && dtz == 2 && board.IsInCheck())
+                {
+                    MoveGenerator.GenerateLegalMoves(board, replies);
+                    if (replies.Count == 0)
+                        dtz = 1;
+                }
+            }
+
+            board.UnmakeMove();
+
+            if (!ok)
+                return false;
+
+            int rank = RootDtzRank(dtz, rule50Count, repeated);
+            ranks[i] = rank;
+            if (rank > bestRank)
+                bestRank = rank;
+        }
+
+        return true;
+    }
+
+    // Stockfish's root_probe_wdl fallback. It deliberately keeps cursed wins
+    // and blessed losses in distinct bands, so missing .rtbz files cost only
+    // DTZ precision rather than the game-theoretic safety of the root choice.
+    private bool TryRankRootMovesByWdl(Board board, Span<int> ranks,
+                                       out int bestRank)
+    {
+        bestRank = int.MinValue;
+
+        for (int i = 0; i < _rootMoves.Count; i++)
+        {
+            board.MakeMove(_rootMoves[i]);
+            bool draw = (Syzygy50MoveRule && board.HalfmoveClock >= 100)
+                     || board.CountRepetitions() >= 1;
+            bool ok;
+            Tablebases.WdlScore rootWdl;
+
+            if (draw)
+            {
+                ok = true;
+                rootWdl = Tablebases.WdlScore.Draw;
+            }
+            else
+            {
+                ok = Tablebases.Syzygy.ProbeWdl(board, out var childWdl);
+                rootWdl = (Tablebases.WdlScore)(-(int)childWdl);
+            }
+
+            board.UnmakeMove();
+
+            if (!ok)
+                return false;
+
+            // Do not collapse cursed wins or blessed losses to draws here.
+            // Stockfish deliberately gives them the bands immediately above
+            // and below a draw, retaining their practical preference while
+            // still distinguishing them from unconditional wins and losses.
+            int rank = rootWdl switch
+            {
+                Tablebases.WdlScore.Loss => -MaxDtz,
+                Tablebases.WdlScore.BlessedLoss => -MaxDtz + 101,
+                Tablebases.WdlScore.Draw => 0,
+                Tablebases.WdlScore.CursedWin => MaxDtz - 101,
+                Tablebases.WdlScore.Win => MaxDtz,
+                _ => throw new InvalidOperationException("Invalid WDL result")
+            };
+
+            ranks[i] = rank;
+            if (rank > bestRank)
+                bestRank = rank;
+        }
+
+        return true;
+    }
+
+    private static int RootDtzRank(int dtz, int rule50Count, bool repeated)
+        => dtz > 0
+            ? dtz + rule50Count <= 99 && !repeated
+                ? MaxDtz - dtz
+                : MaxDtz / 2 - (dtz + rule50Count)
+         : dtz < 0
+            ? -dtz * 2 + rule50Count < 100
+                ? -MaxDtz - dtz              // Longer loss (more negative DTZ) ranks higher
+                : -MaxDtz / 2 + (-dtz + rule50Count)
+         : 0;
 
     // 'excluded' is the singular-extension verification mode: that one move is
     // skipped and the node must NOT use its own TT entry (which describes the
@@ -693,21 +827,33 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (ply >= MaxPly)
             return _evaluator.Evaluate(board);
 
-        // ---- Draws by rule. Checked before the TT: a cached score cannot
-        //      know how many times THIS game path repeated the position.
-        //      The history scan costs O(halfmove clock) — worst exactly in
-        //      long endgames — so it is skipped when a repetition is
-        //      impossible (fewer than 4 reversible half-moves played). ----
-        if (board.HalfmoveClock >= 100
-            || (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1))
-            return 0;
-
         bool inCheck = board.IsInCheck();
 
-        // Check extension: forced positions are cheap to search (few legal
-        // replies) and hide most tactics — give them one extra ply.
-        if (inCheck)
-            depth++;
+        // ---- Draws by rule. Checked before the TT: a cached score cannot
+        // know the path's repetition count or fifty-move clock. Checkmate has
+        // precedence at clock 100, so an in-check node first proves that an
+        // escape exists; this path is exceptionally rare and can afford the
+        // allocation-free legal-move probe.
+        if (board.HalfmoveClock >= 100)
+        {
+            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+                return 0;
+            return -MateScore + ply;
+        }
+        if (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
+            return 0;
+        if (GameState.IsDeadPosition(board))
+            return 0;
+
+        // A reversible move may be about to enter a repeated position even
+        // though the current key itself is new. Raising alpha to draw avoids
+        // searching for a loss below a cycle the side can force immediately.
+        if (alpha < 0 && board.HasUpcomingRepetition(ply))
+        {
+            alpha = 0;
+            if (alpha >= beta)
+                return alpha;
+        }
 
         // ---- Transposition table probe ----
         Move ttMove = Move.None;
@@ -722,6 +868,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // entry, no score). Never in singular verification mode: the
             // entry describes the search WITH the excluded move available.
             if (entry.Depth >= depth && excluded == Move.None
+                && CanReuseTtScore(entry.Score, board.HalfmoveClock)
                 && entry.Bound != BoundType.None)
             {
                 int score = FromTT(entry.Score, ply);
@@ -749,12 +896,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // are loaded, which disables the whole block with a single compare.
         // Measured: the previous ordering cost 3.5% NPS on positions that never
         // probe at all, which is pure loss.
-        if (System.Numerics.BitOperations.PopCount(board.AllOccupancy) <= _tbMaxMen
-            && board.HalfmoveClock == 0 && ply > 0 && depth >= SyzygyProbeDepth
+        int pieceCount = System.Numerics.BitOperations.PopCount(board.AllOccupancy);
+        if (pieceCount <= _tbMaxMen
+            && (pieceCount < _tbMaxMen || depth >= _tbMinProbeDepth)
+            && board.HalfmoveClock == 0 && ply > 0
             && excluded == Move.None)
         {
-            {
-                if (Tablebases.Syzygy.ProbeWdl(board, out var wdlScore))
+            if (Tablebases.Syzygy.ProbeWdl(board, out var wdlScore))
             {
                 TbHits++;
 
@@ -782,7 +930,6 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                               TTEntry.NoStaticEval, tbBound, Move.None,
                               isPv: beta - alpha != 1 || (ttHit && entry.IsPv));
                     return tbScore;
-                }
                 }
             }
         }
@@ -949,7 +1096,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             int probBeta = beta + 150;
             MoveList captures = _moveLists[ply];
             MoveGenerator.GeneratePseudoLegalMoves(board, captures, capturesOnly: true);
-            MovePicker.OrderCaptures(captures, board);
+            MovePicker.OrderCaptures(captures, board, _captureHistory);
             Color mover = board.SideToMove;
 
             for (int i = 0; i < captures.Count; i++)
@@ -1001,7 +1148,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // getting forced lines right is what wins/saves games.
         int singularExtension = 0;
         if (depth >= 8 && excluded == Move.None && ttMove != Move.None
-            && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound)
+            && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
+            && CanReuseTtScore(entry.Score, board.HalfmoveClock))
         {
             int ttScore = FromTT(entry.Score, ply);
             if (Math.Abs(ttScore) < MateBound)
@@ -1066,7 +1214,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 {
                     stage = 1;
                     MoveGenerator.AppendCaptureMoves(board, moves);
-                    MovePicker.ScoreAndSortCaptures(moves, i, board);
+                    MovePicker.ScoreAndSortCaptures(moves, i, board, _captureHistory);
                 }
                 else if (stage == 1)
                 {
@@ -1074,7 +1222,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     int quietsFrom = moves.Count;
                     MoveGenerator.AppendQuietMoves(board, moves);
                     MovePicker.ScoreAndSortQuiets(moves, quietsFrom, sortFrom: i, board,
-                        _killers, _history, ply, _contHist, prevPiece, prevTo, counterMove);
+                        _killers, _history, ply, _contHist, prevPiece, prevTo, counterMove,
+                        depth);
                 }
                 else
                 {
@@ -1387,18 +1536,31 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         bool inCheck = board.IsInCheck();
 
-        // Draws by rule, checked ONLY at in-check nodes. Quiescence reaches a
-        // repetition solely through quiet check evasions: everywhere else it
-        // plays captures, which reset the halfmove clock. Guarding every
-        // quiescence node instead — and they are the bulk of the tree — spends
-        // a history scan on positions that cannot repeat.
-        if (inCheck && (board.HalfmoveClock >= 100
-            || (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)))
-            return 0;
-
         // Ply ceiling, checked before the per-ply move list is indexed.
         if (ply >= MaxPly)
             return inCheck ? 0 : _evaluator.Evaluate(board);
+
+        // Quiet check evasions can reach clock 100 or complete a repetition,
+        // so every qsearch node must enforce the rules, not only checked ones.
+        // As in the main search, a mate on the 100th halfmove wins before the
+        // draw claim and is verified by the rare legal-move probe.
+        if (board.HalfmoveClock >= 100)
+        {
+            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+                return 0;
+            return -MateScore + ply;
+        }
+        if (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
+            return 0;
+        if (GameState.IsDeadPosition(board))
+            return 0;
+
+        if (alpha < 0 && board.HasUpcomingRepetition(ply))
+        {
+            alpha = 0;
+            if (alpha >= beta)
+                return alpha;
+        }
 
         int bestScore;
         int futilityBase;
@@ -1431,7 +1593,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         MoveList moves = _moveLists[ply];
         MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: !inCheck);
         if (inCheck)
-            MovePicker.Order(moves, board, Move.None, _killers, _history, ply);
+            MovePicker.Order(moves, board, Move.None, _killers, _history, ply,
+                contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+                captureHistory: _captureHistory);
         else
             MovePicker.ScoreAndSortCapturesQs(moves, board, _captureHistory);
 
@@ -1531,26 +1695,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             if (inCheck)
                 return -MateScore + ply;
 
-            // Stalemate. Standing pat here would report a normal evaluation
-            // for a position that is actually a draw — the classic way an
-            // engine "wins" a stalemate on its scoresheet and then plays into
-            // it. Full legal generation at every quiescence node would be far
-            // too expensive, so this follows the reference's guard: only look
-            // when the side to move has nothing but king and pawns AND not one
-            // of those pawns can even step forward. Anything else practically
-            // guarantees a legal move exists. (The reference adds "the move
-            // just played captured at least a knight"; that needs the captured
-            // piece on the search stack, which arrives with the capture-history
-            // block — without it this guard is merely a little broader.)
-            ulong pawns = board.Pieces(us, PieceType.Pawn);
-            ulong pushes = us == Color.White ? pawns << 8 : pawns >> 8;
-            if (!board.HasNonPawnMaterial(us) && (pushes & ~board.AllOccupancy) == 0)
-            {
-                MoveList legal = _moveLists[ply];
-                MoveGenerator.GenerateLegalMoves(board, legal);
-                if (legal.Count == 0)
-                    return 0;
-            }
+            // Exact stalemate. The old king-and-pawns shortcut missed legal
+            // stalemates with a pinned minor. HasLegalMove generates into the
+            // already-owned ply buffer and stops at the first legal quiet, so
+            // correctness does not require allocating or filtering a full list.
+            if (!MoveGenerator.HasLegalMove(board, moves))
+                return 0;
         }
 
         return bestScore;
@@ -1600,22 +1750,27 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         }
     }
 
-    // Mate scores encode the distance to mate from the ROOT ("mate in 5 plies
-    // from where the search started"). Stored in the TT they must be relative
-    // to the NODE instead, because the same position can be reached at
-    // different plies from different roots. These two helpers convert between
-    // both conventions when storing/probing.
+    // Mate and TB scores encode distance from the ROOT. Stored in the TT they
+    // must be relative to the NODE, because the same position can be reached
+    // at a different ply from another root.
     private static int ToTT(int score, int ply)
     {
-        if (score > MateBound) return score + ply;
-        if (score < -MateBound) return score - ply;
+        if (score >= TbScoreBound) return score + ply;
+        if (score <= -TbScoreBound) return score - ply;
         return score;
     }
 
     private static int FromTT(int score, int ply)
     {
-        if (score > MateBound) return score - ply;
-        if (score < -MateBound) return score + ply;
+        if (score >= TbScoreBound) return score - ply;
+        if (score <= -TbScoreBound) return score + ply;
         return score;
     }
+
+    // Noa's Zobrist key deliberately omits the halfmove clock. A decisive TT
+    // score learned immediately after a zeroing move is therefore unsafe in
+    // the same placement with a live rule-50 counter. Keep its move for
+    // ordering, but conservatively refuse its bound until the counter resets.
+    private static bool CanReuseTtScore(int score, int halfmoveClock)
+        => halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound);
 }

@@ -37,4 +37,32 @@ public class FenTests
     {
         Assert.ThrowsAny<Exception>(() => new Board("not a fen"));
     }
+
+    [Theory]
+    [InlineData("8/8/8/8/8/8/8/4K3 w - - 0 1")]             // Missing black king.
+    [InlineData("4k3/8/8/8/8/8/8/3K3 w - - 0 1")]           // Short first rank.
+    [InlineData("4k3/8/8/8/8/8/8/4K3 x - - 0 1")]           // Invalid side.
+    [InlineData("4k3/8/8/8/8/8/8/4K3 w KK - 0 1")]          // Duplicate right.
+    [InlineData("4k3/8/8/8/8/8/8/4K3 w - e3 0 1")]          // Wrong EP rank/pawn.
+    [InlineData("4k3/8/8/8/8/8/8/P3K3 w - - 0 1")]          // Pawn on rank one.
+    [InlineData("4k3/8/8/8/8/8/8/4K3 w - - -1 1")]         // Negative clock.
+    [InlineData("4k3/8/8/8/8/8/8/4K3 w - - 0 0")]          // Fullmove starts at one.
+    public void StructurallyInvalidFen_Throws(string fen)
+    {
+        Assert.Throws<ArgumentException>(() => new Board(fen));
+    }
+
+    [Fact]
+    public void RejectedFen_DoesNotMutateExistingBoard()
+    {
+        var board = new Board();
+        string before = Fen.Save(board);
+        ulong keyBefore = board.ZobristKey;
+
+        Assert.Throws<ArgumentException>(
+            () => Fen.Load(board, "4k3/8/8/8/8/8/8/4K3 nope - - 0 1"));
+
+        Assert.Equal(before, Fen.Save(board));
+        Assert.Equal(keyBefore, board.ZobristKey);
+    }
 }

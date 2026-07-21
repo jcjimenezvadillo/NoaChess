@@ -1,5 +1,8 @@
 using NoaChess.Core;
 using NoaChess.Engine;
+using NoaChess.Engine.Evaluation;
+using NoaChess.Engine.Search;
+using System.Reflection;
 
 namespace NoaChess.Engine.Tests;
 
@@ -20,6 +23,20 @@ public class QuiescenceTests
 
     private static bool IsLegal(Board board, Move move) =>
         MoveGenerator.GenerateLegalMoves(board).Contains(move);
+
+    private static int QuiescenceScore(string fen, int ply = 1)
+    {
+        var search = new AlphaBetaSearch(new ConstantEvaluator(777));
+        MethodInfo? method = typeof(AlphaBetaSearch).GetMethod(
+            "Quiescence", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply])!;
+    }
+
+    private sealed class ConstantEvaluator(int value) : IPositionEvaluator
+    {
+        public int Evaluate(Board board) => value;
+    }
 
     [Fact]
     public void QuietKingMove_IsFoundWhenItIsTheOnlyEscape()
@@ -107,6 +124,31 @@ public class QuiescenceTests
         var result = _engine.FindBestMove(board, depth: 2);
 
         Assert.Equal(0, result.Score);
+    }
+
+    [Fact]
+    public void Rule50_IsCheckedAtEveryQuiescenceNode()
+    {
+        // A quiet evasion can reach a non-check node at clock 100. Captures-only
+        // assumptions must not let stand-pat overwrite the rule draw there.
+        Assert.Equal(0, QuiescenceScore("4k3/8/8/8/8/8/8/4K2R w - - 100 1"));
+    }
+
+    [Fact]
+    public void Rule50_DoesNotHideCheckmateInQuiescence()
+    {
+        int score = QuiescenceScore(
+            "R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 100 1", ply: 3);
+        Assert.True(score <= -AlphaBetaSearch.MateScore + 3,
+            $"expected checkmate at the rule-50 boundary, got {score}");
+    }
+
+    [Fact]
+    public void StalemateWithNonPawnMaterialAtTheHorizonScoresAsDraw()
+    {
+        // The pinned knight on h7 has pseudo-moves but no legal move; the old
+        // king-and-pawns-only shortcut missed this genuine stalemate.
+        Assert.Equal(0, QuiescenceScore("7k/5K1n/7Q/8/8/8/8/8 b - - 0 1"));
     }
 
     [Fact]

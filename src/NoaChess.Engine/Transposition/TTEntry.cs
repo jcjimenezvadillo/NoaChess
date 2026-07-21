@@ -34,7 +34,10 @@ public struct TTEntry
     public byte Depth;
 
     // Packed bookkeeping: bits 0-1 bound, bit 2 ttPv ("this position is or
-    // was on the principal variation"), bits 3-7 generation (32-cycle).
+    // was on the principal variation"), bits 3-7 generation. Generation zero
+    // is reserved for an empty slot, leaving a 31-step ageing cycle. This is
+    // what makes even a non-PV eval-only entry (bound None) unambiguously
+    // occupied without spending another byte in the 16-byte entry.
     public byte GenBound;
 
     public const int NoStaticEval = int.MinValue / 2;

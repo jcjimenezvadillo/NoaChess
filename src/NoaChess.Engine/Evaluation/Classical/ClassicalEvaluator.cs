@@ -270,12 +270,12 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
             ulong occ = board.AllOccupancy;
             ulong mobilityArea = _mobilityArea[c];
 
-            // X-ray occupancies: bishops see through
-            // queens of both colors; rooks see through queens and own rooks.
-            ulong allQueens = board.Pieces(Color.White, PieceType.Queen)
-                            | board.Pieces(Color.Black, PieceType.Queen);
-            ulong bishopOcc = occ ^ allQueens;
-            ulong rookOcc = occ ^ allQueens ^ board.Pieces(color, PieceType.Rook);
+            // X-ray occupancies: bishops see through their own queen; rooks
+            // see through their own queen and rooks. Enemy queens remain real
+            // blockers: looking through one would invent attacks and mobility.
+            ulong ownQueens = board.Pieces(color, PieceType.Queen);
+            ulong bishopOcc = occ ^ ownQueens;
+            ulong rookOcc = occ ^ ownQueens ^ board.Pieces(color, PieceType.Rook);
             int ownKingSq = _kingSquare[c];
 
             Score side = default;
