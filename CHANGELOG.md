@@ -1,4 +1,4 @@
-# CHANGELOG
+﻿# CHANGELOG
 
 ## 2026-07-20 (v2.8.1) — Syzygy correctness fixes, capture-history main ordering, partial quiet sort, threat-aware quiet scoring, NNUE/tuner tools infrastructure
 
