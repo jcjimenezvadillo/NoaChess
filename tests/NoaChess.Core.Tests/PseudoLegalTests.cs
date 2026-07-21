@@ -66,4 +66,23 @@ public class PseudoLegalTests
             }
         }
     }
+
+    [Theory]
+    [InlineData("4k3/8/8/8/8/8/8/4K3 w KQ - 0 1")]
+    [InlineData("4k3/8/8/8/8/8/8/3K3R w K - 0 1")]
+    public void StaleCastlingRights_DoNotCreatePiecesOrMoves(string fen)
+    {
+        var board = new Board(fen);
+        int piecesBefore = Bitboard.PopCount(board.AllOccupancy);
+        var kingSide = new Move(Squares.Parse("e1"), Squares.Parse("g1"), MoveFlag.KingCastle);
+        var queenSide = new Move(Squares.Parse("e1"), Squares.Parse("c1"), MoveFlag.QueenCastle);
+
+        var pseudo = MoveGenerator.GeneratePseudoLegalMoves(board);
+
+        Assert.DoesNotContain(kingSide, pseudo);
+        Assert.DoesNotContain(queenSide, pseudo);
+        Assert.False(MoveGenerator.IsPseudoLegal(board, kingSide));
+        Assert.False(MoveGenerator.IsPseudoLegal(board, queenSide));
+        Assert.Equal(piecesBefore, Bitboard.PopCount(board.AllOccupancy));
+    }
 }

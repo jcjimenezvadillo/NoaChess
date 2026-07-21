@@ -1,5 +1,71 @@
 # CHANGELOG
 
+## 2026-07-20 (v2.8.1) — Syzygy correctness fixes, capture-history main ordering, partial quiet sort, threat-aware quiet scoring, NNUE/tuner tools infrastructure
+
+**SPRT vs v2.8.0 pending.**
+
+Expert contributor review of the v2.8.0 Syzygy integration found two critical bugs that corrupted every tablebase-assisted game, plus several move-ordering improvements from block 5G that were left pending.
+
+### Critical Syzygy fixes (two bugs that cancelled the v2.8.0 work in practice)
+
+**Bug 1 — Root filter was silently nullified.** `FilterRootMovesByTablebase()` correctly computed the filtered move list and wrote it to `_rootMoves`, but `SearchRoot` then regenerated all moves from scratch, discarding the filtered list entirely. The prober output was correct; the move played was not. Fixed: `SearchRoot` now reads `_rootMoves` directly instead of regenerating.
+
+**Bug 2 — DTZ ranking scored irreversible moves incorrectly.** Root moves that capture, push a pawn or promote zero the fifty-move counter immediately; their DTZ must be derived from the position's WDL BEFORE the move, not from the child's DTZ. Previously the code was reading the child's DTZ and accidentally giving zeroing moves an arbitrary distance instead of ±1/±101. Additionally, lost positions chose the fastest loss (smallest negative DTZ) instead of the longest defense — the comparison was inverted. Both corrected in `TryRankRootMovesByDtz` and `RootDtzRank`.
+
+### TT safety for tablebase scores
+
+`CanReuseTtScore` now blocks reuse of TB-band scores when `halfmoveClock > 0`. The Zobrist key deliberately omits the clock, so a decisive TB score learned immediately after a zeroing move could propagate to the same position with a live counter and cause an incorrect early cutoff.
+
+`ToTT`/`FromTT` now handle the full `TbScoreBound` range (both mate and TB scores) consistently.
+
+### Memory-mapped file reader (future-proofing for 6/7-man)
+
+`SyzygyTable` migrated from `byte[]` + `int` offsets to `MemoryMappedFile`/`MemoryMappedViewAccessor` with `long` offsets throughout. The OS pages in only the blocks a probe actually touches; the 2 GB `byte[]` ceiling is eliminated, making 6- and 7-man files (many exceed 2 GB) usable without code changes. All `PairsData` offset fields are now `long`. `SyzygyTable` implements `IDisposable`; `Syzygy.Init` disposes all open mappings before re-initialising, so no file handles are leaked between path reloads.
+
+### Capture history — main search integration (5G)
+
+`_captureHistory` is now passed to `ScoreAndSortCaptures` and `OrderCaptures` (ProbCut) throughout `AlphaBetaSearch`. Capture cutoffs earn a bonus (`depth²`); captures tried before the cutoff earn a malus. The ordering formula is `captureHistory + 7 × victimValue`, matching the reference.
+
+`CaptureHistory.AddBonus`/`AddMalus` now use a `Magnitude()` helper (`Math.Abs((long)value)`) to prevent overflow before the gravity clamp.
+
+### Partial insertion sort for quiet moves (5G)
+
+`MovePicker.ScoreAndSortQuiets` now accepts `int? depth`. When provided:
+- the quiet block is moved in front of any unserved losing captures (`MoveRangeToFront`), matching the reference stage order QUIET → BAD_CAPTURE;
+- `PartialSortRange` sorts only moves scoring above `−3000 × depth` into a descending prefix; the low-scored tail is left unsorted (paying O(n²) to order moves the node will never reach has no value).
+
+### Threat-aware and check-aware quiet scoring (5G)
+
+`Score()` now awards `CheckBonus = +16 384` to direct checks that do not clearly lose material (`SEE >= −75`). It also applies a `ThreatEscapeWeight × PieceValue` term: moves that escape a lesser-piece threat score higher; moves that enter one score lower. Threat maps (pawn, minor, rook attacks) are built once per quiet batch in `BuildQuietOrderingContext`.
+
+### X-ray mobility correctness fix
+
+Sliders now see through the own queen only (bishops and rooks through the own queen; rooks additionally through own rooks), matching the reference exactly. The v2.8.0 code was computing x-ray attacks through all queens.
+
+### UCI — Ponder option
+
+`option name Ponder type check default false` is now declared in the UCI handshake. `setoption name Ponder value true/false` is accepted. This silences the `Warning: NoaChess-2.8.1 doesn't have option Ponder` message from cutechess-cli and SPRT harnesses.
+
+### Portable Syzygy test infrastructure
+
+`SyzygyTests.cs` completely rewritten. All integration tests now gate on the `NOACHESS_SYZYGY_PATH` environment variable via `SyzygyFactAttribute`/`SyzygyTheoryAttribute` — they skip gracefully in CI where the large external files are absent. New integration cases cover: root-filter-not-regenerated, DTZ-at-rule-50-boundary, lost-position-longest-defense, WDL-only fallback when DTZ files are missing, ProbeDepth ignored below the loaded cardinality, `TbHits` counting. `SyzygyScoreTests` (always-on, no files needed) verifies `ToTT`/`FromTT`/`CanReuseTtScore` arithmetic via reflection.
+
+### New test files
+
+- `CaptureHistoryTests.cs` — gravity overflow guard, main ordering (7×victim + history), capture-promotion ordering, safe-check bonus, threat-escape/enter bonuses, partial sort prefix, quiet-before-bad-capture invariant.
+- `UciSearchLimitsTests.cs` — regression tests for the `go` parser combining clock + depth + nodes; movetime takes the tighter bound; `infinite` has no artificial depth cap.
+
+### New development tools (not shipped in the UCI binary)
+
+- `tools/NoaChess.DataGen/` — self-play data generation for NNUE training corpus: random-opening games with fixed-depth search, FEN + result output in a format suitable for the Python training pipeline.
+- `tools/NoaChess.Tuner/` — Texel tuning infrastructure: `ParameterRegistry`, coordinate-descent loop, `tuned_values.txt` output. Re-usable for any classical evaluation parameter.
+- `tools/training/nnue/` — Python NNUE training pipeline: dataset loader, HalfKP model definition, training loop, validation, weight export. Configs in `tools/training/nnue/configs/`.
+
+### Tests
+
+193/193 always-running tests pass. The 5 regressions present in the early branch state (rule-50/stalemate/dead-position/quiet-mate in `QuiescenceTests`) are resolved by the Syzygy TT-safety and draw-detection fixes above.
+
+
 ## 2026-07-20 (v2.8.0) — block 9: Syzygy endgame tablebases
 
 **SPRT vs v2.7.4 and LTC gauntlet: PENDING.** Everything below that is stated as measured, is measured.
