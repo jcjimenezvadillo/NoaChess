@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine;
+using NoaChess.Engine.Profiles;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
 using NoaChess.UCI.Options;

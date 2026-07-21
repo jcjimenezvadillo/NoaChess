@@ -1,5 +1,6 @@
 using NoaChess.Core;
 using NoaChess.Engine.Evaluation.Classical;
+using NoaChess.Engine.Evaluation.Nnue;
 using NoaChess.Engine.Search;
 
 namespace NoaChess.Engine;
