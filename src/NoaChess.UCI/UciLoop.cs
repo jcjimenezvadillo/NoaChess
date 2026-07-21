@@ -50,7 +50,7 @@ public sealed class UciLoop
             {
                 case "uci":
                     // Identification + option declarations + end of handshake.
-                    _output.WriteLine("id name NoaChess 2.0.0-dev");
+                    _output.WriteLine("id name NoaChess 1.0.0");
                     _output.WriteLine("id author NoaChess Team");
                     _options.Print(_output);
                     _output.WriteLine("uciok");
@@ -125,31 +125,6 @@ public sealed class UciLoop
         // Options that require engine-side action.
         if (changed == "Hash")
             _engine.ResizeHash(_options.Hash);
-        if (changed == "Profile")
-            _engine.Profile = EngineProfile.ByName(_options.Profile);
-
-        // NNUE wiring: EvalFile loads/validates the model; UseNNUE switches
-        // the evaluator. Failures are reported as "info string" (per UCI, a
-        // bad option must not kill the engine) and the classical evaluator
-        // stays in charge.
-        if (changed == "EvalFile" && _options.EvalFile.Length > 0)
-        {
-            if (_engine.TryLoadNnueModel(_options.EvalFile, out string loadError))
-            {
-                _output.WriteLine($"info string NNUE model loaded ({_engine.NnueModelSha256})");
-                if (_options.UseNnue)
-                    _engine.SetUseNnue(true);
-            }
-            else
-            {
-                _output.WriteLine($"info string NNUE model rejected: {loadError}");
-            }
-        }
-        if (changed == "UseNNUE")
-        {
-            if (!_engine.SetUseNnue(_options.UseNnue) && _options.UseNnue)
-                _output.WriteLine("info string UseNNUE ignored: no valid model loaded (set EvalFile first)");
-        }
     }
 
     // "position startpos [moves e2e4 e7e5 ...]" or "position fen <fen> [moves ...]".
@@ -251,8 +226,7 @@ public sealed class UciLoop
         {
             long inc = (_board.SideToMove == Color.White ? Value("winc") : Value("binc")) ?? 0;
             int? movesToGo = Value("movestogo") is long mtg ? (int)mtg : null;
-            return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo,
-                                         _engine.Profile.AssumedMovesToGo);
+            return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo);
         }
 
         return SearchLimits.Depth(_engine.DefaultDepth);
