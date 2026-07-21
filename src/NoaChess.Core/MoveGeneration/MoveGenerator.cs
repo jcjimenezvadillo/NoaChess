@@ -41,6 +41,11 @@ public static class MoveGenerator
         return result;
     }
 
+    // Cold-path convenience for game-state checks. Unlike generating the
+    // complete legal list it stops as soon as one legal move is found.
+    public static bool HasLegalMove(Board board)
+        => HasLegalMove(board, new MoveList());
+
     // ---------- Hot-path API ----------
 
     // Fills 'list' with every legal move for the side to move.
@@ -61,6 +66,25 @@ public static class MoveGenerator
             board.UnmakeMove();
         }
         list.Truncate(legalCount);
+    }
+
+    // Allocation-free early-exit probe for hot paths such as quiescence
+    // stalemate detection. 'scratch' is overwritten and owned by the caller.
+    public static bool HasLegalMove(Board board, MoveList scratch)
+    {
+        GeneratePseudoLegalMoves(board, scratch);
+        Color us = board.SideToMove;
+
+        for (int i = 0; i < scratch.Count; i++)
+        {
+            board.MakeMove(scratch[i]);
+            bool legal = !board.IsSquareAttacked(board.KingSquare(us), board.SideToMove);
+            board.UnmakeMove();
+            if (legal)
+                return true;
+        }
+
+        return false;
     }
 
     // Fills 'list' with pseudo-legal moves (castling excepted: fully legal).
@@ -193,6 +217,7 @@ public static class MoveGenerator
                     ? CastlingRights.WhiteKingSide : CastlingRights.BlackKingSide;
                 return to == kingSq + 2
                     && board.CastlingRights.HasFlag(right)
+                    && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq + 3)
                     && !Bitboard.IsSet(occupied, kingSq + 1) && !Bitboard.IsSet(occupied, kingSq + 2)
                     && !board.IsSquareAttacked(kingSq + 1, them)
                     && !board.IsSquareAttacked(kingSq + 2, them);
@@ -202,6 +227,7 @@ public static class MoveGenerator
                 ? CastlingRights.WhiteQueenSide : CastlingRights.BlackQueenSide;
             return to == kingSq - 2
                 && board.CastlingRights.HasFlag(qRight)
+                && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq - 4)
                 && !Bitboard.IsSet(occupied, kingSq - 1) && !Bitboard.IsSet(occupied, kingSq - 2)
                 && !Bitboard.IsSet(occupied, kingSq - 3)
                 && !board.IsSquareAttacked(kingSq - 1, them)
@@ -218,9 +244,17 @@ public static class MoveGenerator
                 return false;
 
             if (flag == MoveFlag.EnPassant)
+            {
+                int capturedPawnSq = us == Color.White ? to - 8 : to + 8;
+                int expectedRank = us == Color.White ? 5 : 2;
                 return board.EnPassantSquare != Squares.None
                     && to == board.EnPassantSquare
-                    && (Attacks.Pawn(us, from) & toBB) != 0;
+                    && Squares.RankOf(to) == expectedRank
+                    && board.IsEmpty(to)
+                    && (Attacks.Pawn(us, from) & toBB) != 0
+                    && board.PieceTypeAt(capturedPawnSq) == PieceType.Pawn
+                    && Bitboard.IsSet(board.Occupancy(them), capturedPawnSq);
+            }
 
             if (move.IsCapture)
             {
@@ -359,7 +393,14 @@ public static class MoveGenerator
             if (board.EnPassantSquare != Squares.None &&
                 Bitboard.IsSet(Attacks.Pawn(us, from), board.EnPassantSquare))
             {
-                list.Add(new Move(from, board.EnPassantSquare, MoveFlag.EnPassant));
+                int ep = board.EnPassantSquare;
+                int capturedPawnSq = us == Color.White ? ep - 8 : ep + 8;
+                int expectedRank = us == Color.White ? 5 : 2;
+                if (Squares.RankOf(ep) == expectedRank
+                    && board.IsEmpty(ep)
+                    && board.PieceTypeAt(capturedPawnSq) == PieceType.Pawn
+                    && Bitboard.IsSet(board.Occupancy(Board.OppositeColor(us)), capturedPawnSq))
+                    list.Add(new Move(from, ep, MoveFlag.EnPassant));
             }
         }
     }
@@ -384,14 +425,17 @@ public static class MoveGenerator
         ulong occupied = board.AllOccupancy;
         int kingSq = us == Color.White ? 4 : 60; // e1 / e8
 
-        if (board.CastlingRights == CastlingRights.None || board.IsSquareAttacked(kingSq, them))
+        if (board.CastlingRights == CastlingRights.None
+            || !Bitboard.IsSet(board.Pieces(us, PieceType.King), kingSq)
+            || board.IsSquareAttacked(kingSq, them))
             return;
 
         CastlingRights kingSide = us == Color.White ? CastlingRights.WhiteKingSide : CastlingRights.BlackKingSide;
         CastlingRights queenSide = us == Color.White ? CastlingRights.WhiteQueenSide : CastlingRights.BlackQueenSide;
 
         // Short castle: f1/g1 (or f8/g8) free and not attacked.
-        if (board.CastlingRights.HasFlag(kingSide) &&
+        if (board.CastlingRights.HasFlag(kingSide)
+            && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq + 3) &&
             !Bitboard.IsSet(occupied, kingSq + 1) && !Bitboard.IsSet(occupied, kingSq + 2) &&
             !board.IsSquareAttacked(kingSq + 1, them) && !board.IsSquareAttacked(kingSq + 2, them))
         {
@@ -400,7 +444,8 @@ public static class MoveGenerator
 
         // Long castle: b1/c1/d1 free; c1 and d1 not attacked (b1 may be
         // attacked: the king does not pass through it, only the rook does).
-        if (board.CastlingRights.HasFlag(queenSide) &&
+        if (board.CastlingRights.HasFlag(queenSide)
+            && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq - 4) &&
             !Bitboard.IsSet(occupied, kingSq - 1) && !Bitboard.IsSet(occupied, kingSq - 2) &&
             !Bitboard.IsSet(occupied, kingSq - 3) &&
             !board.IsSquareAttacked(kingSq - 1, them) && !board.IsSquareAttacked(kingSq - 2, them))

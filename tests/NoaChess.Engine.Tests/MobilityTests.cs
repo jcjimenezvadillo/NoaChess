@@ -66,6 +66,20 @@ public class MobilityTests
     }
 
     [Fact]
+    public void Sliders_DoNotXrayThroughEnemyQueen()
+    {
+        // An enemy queen is the target at the end of the ray, not a transparent
+        // friendly blocker. The bishop/rook attack it but nothing behind it.
+        var bishop = Evaluated("4k3/8/8/8/8/8/3q4/2B4K w - - 0 1", out _);
+        Assert.NotEqual(0UL, bishop.AttackedBy(Color.White, PieceType.Bishop) & Bb("d2"));
+        Assert.Equal(0UL, bishop.AttackedBy(Color.White, PieceType.Bishop) & Bb("e3"));
+
+        var rook = Evaluated("7k/8/8/8/8/3q4/8/3R3K w - - 0 1", out _);
+        Assert.NotEqual(0UL, rook.AttackedBy(Color.White, PieceType.Rook) & Bb("d3"));
+        Assert.Equal(0UL, rook.AttackedBy(Color.White, PieceType.Rook) & Bb("d4"));
+    }
+
+    [Fact]
     public void MobilityArea_ExcludesKingQueenAndLowBlockedPawns()
     {
         // Starting position: all white pawns sit on the low ranks (excluded),

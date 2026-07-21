@@ -16,8 +16,14 @@ namespace NoaChess.Engine.Search;
 public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long SoftTimeMs, long MaxNodes,
                                            long ElapsedOffsetMs = 0)
 {
-    // Depth cap used when the search is limited by something other than depth.
-    public const int DepthUnlimited = 64;
+    // Sentinel used when depth is not itself a limit. The old value (64)
+    // made "go infinite", pondering, clock and node searches stop on their
+    // own at depth 64 instead of running until their actual limit or "stop".
+    public const int DepthUnlimited = int.MaxValue;
+
+    // Search controlled exclusively by the caller's cancellation token.
+    public static SearchLimits Unlimited() =>
+        new(DepthUnlimited, long.MaxValue, long.MaxValue, long.MaxValue);
 
     // Fixed-depth search with no other limit ("go depth N").
     public static SearchLimits Depth(int depth) =>
