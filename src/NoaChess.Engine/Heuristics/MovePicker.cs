@@ -63,7 +63,7 @@ public static class MovePicker
 
     // Capture-only variant used by quiescence search (no killers/history: only
     // captures are searched there).
-    public static void OrderCaptures(MoveList moves, Board board) =>
+    public static void OrderCaptures(List<Move> moves, Board board) =>
         Order(moves, board, Move.None, NoKillers, NoHistory, 0);
 
     // Empty shared instances so OrderCaptures can reuse the same scorer.
