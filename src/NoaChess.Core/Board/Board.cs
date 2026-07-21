@@ -48,6 +48,12 @@ public sealed class Board
     // Zobrist hash of the position, maintained incrementally.
     public ulong ZobristKey { get; private set; }
 
+    // Zobrist hash of the PAWNS only (both colors), maintained incrementally.
+    // Pawn structure changes rarely compared to piece placement, so an
+    // evaluation term that depends only on pawns can be cached under this key
+    // and hit almost always (see the engine's pawn hash table).
+    public ulong PawnZobristKey { get; private set; }
+
     // Data that MakeMove stores so UnmakeMove can restore the exact state.
     private readonly struct UndoInfo(Move move, PieceType captured, CastlingRights castling,
                                      int enPassant, int halfmove, ulong zobrist)
@@ -146,6 +152,8 @@ public sealed class Board
         _occupancy[(int)color] |= bb;
         _mailbox[square] = type;
         ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        if (type == PieceType.Pawn)
+            PawnZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
     }
 
     private void RemovePiece(Color color, PieceType type, int square)
@@ -155,6 +163,8 @@ public sealed class Board
         _occupancy[(int)color] &= ~bb;
         _mailbox[square] = PieceType.None;
         ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        if (type == PieceType.Pawn)
+            PawnZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
     }
 
     // ---------- Make / Unmake ----------
@@ -320,6 +330,70 @@ public sealed class Board
             FullmoveNumber--;
     }
 
+    // ---------- Null move (for the engine's null-move pruning) ----------
+
+    // "Passes the turn" without moving: only the side to move (and the en
+    // passant square, which is no longer capturable) change. This is not a
+    // legal chess move — the engine uses it as a search heuristic: "if I do
+    // NOTHING and my position is still winning, this branch can be pruned".
+    public void MakeNullMove()
+    {
+        _history.Push(new UndoInfo(Move.None, PieceType.None, CastlingRights,
+                                   EnPassantSquare, HalfmoveClock, ZobristKey));
+
+        if (EnPassantSquare != Squares.None)
+        {
+            ZobristKey ^= Zobrist.EnPassantFileKeys[Squares.FileOf(EnPassantSquare)];
+            EnPassantSquare = Squares.None;
+        }
+
+        HalfmoveClock++;
+        SideToMove = OppositeColor(SideToMove);
+        ZobristKey ^= Zobrist.SideToMoveKey;
+    }
+
+    // Undoes a MakeNullMove (and nothing else — the two calls must pair up).
+    public void UnmakeNullMove()
+    {
+        UndoInfo undo = _history.Pop();
+        SideToMove = OppositeColor(SideToMove);
+        EnPassantSquare = undo.EnPassantSquare;
+        HalfmoveClock = undo.HalfmoveClock;
+        ZobristKey = undo.ZobristKey;
+    }
+
+    // ---------- Repetition detection ----------
+
+    // How many times the CURRENT position already occurred earlier in the
+    // game (0 = first time). Only positions since the last irreversible move
+    // (capture or pawn move) can repeat, so the scan is bounded by the
+    // halfmove clock. Used for the threefold-repetition rule and by the
+    // engine, which treats even a single repetition as a draw score.
+    public int CountRepetitions()
+    {
+        int count = 0;
+        int distance = 0;
+        foreach (UndoInfo undo in _history) // Newest to oldest.
+        {
+            if (++distance > HalfmoveClock)
+                break;
+            if (undo.ZobristKey == ZobristKey)
+                count++;
+        }
+        return count;
+    }
+
+    // True if the side has any piece besides pawns and the king. Used by the
+    // engine to avoid null-move pruning in king-and-pawn endgames, where
+    // "zugzwang" (every move worsens the position) breaks its assumption.
+    public bool HasNonPawnMaterial(Color color)
+    {
+        int c = (int)color;
+        return (_occupancy[c]
+                ^ _pieces[c, (int)PieceType.Pawn]
+                ^ _pieces[c, (int)PieceType.King]) != 0;
+    }
+
     // ---------- FEN support (internal use by the Fen class) ----------
 
     // Completely empties the board. Only the FEN parser uses it.
@@ -335,6 +409,7 @@ public sealed class Board
         HalfmoveClock = 0;
         FullmoveNumber = 1;
         ZobristKey = 0;
+        PawnZobristKey = 0;
     }
 
     internal void PlacePiece(Color color, PieceType type, int square) => AddPiece(color, type, square);
