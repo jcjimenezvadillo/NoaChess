@@ -20,6 +20,11 @@ public partial class MainWindow : Window
         // does not depend on WPF windows.
         _viewModel = new BoardViewModel(new PromotionDialog.Service());
         DataContext = _viewModel;
+
+        // Show the changelog modal once the window is up (it needs a live
+        // Owner to center on). Being modal, the board is only reachable
+        // after closing it — the user always sees what version this is.
+        Loaded += (_, _) => new ChangelogDialog { Owner = this }.ShowDialog();
     }
 
     private void OnNewGameClicked(object sender, RoutedEventArgs e) => _viewModel.NewGame();

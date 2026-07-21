@@ -16,9 +16,13 @@
   <ItemGroup>
     <!-- Piece vector images embedded as WPF resources, addressable via pack:// URIs. -->
     <Resource Include="Resources\Pieces\*.svg" />
+    <!-- The repository CHANGELOG, linked (not copied) so the startup dialog
+         always shows the current version notes without duplicating the file. -->
+    <None Include="..\..\CHANGELOG.md" Link="CHANGELOG.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="MdXaml" Version="1.27.0" />
     <PackageReference Include="SharpVectors.Wpf" Version="1.8.5" />
   </ItemGroup>
 

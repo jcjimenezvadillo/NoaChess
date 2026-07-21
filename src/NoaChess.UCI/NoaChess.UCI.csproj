@@ -12,4 +12,15 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- dotnet publish produces one single self-contained .exe (chess-GUI
+       friendly: no DLLs to carry around and no .NET runtime required on the
+       target machine, like native C/C++ engines). Regular dotnet build/run
+       and the test/GUI projects are unaffected. -->
+  <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
 </Project>
