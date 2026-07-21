@@ -19,6 +19,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     public int Evaluate(Board board)
     {
         int score = 0; // Positive = white advantage (converted at the end).
+        Span<int> material = stackalloc int[2]; // Total material per side (no king).
 
         for (int c = 0; c < 2; c++)
         {

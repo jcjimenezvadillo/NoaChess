@@ -36,19 +36,18 @@ Follows Clean Architecture and DDD for maintainability and scalability.
 - **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions**
-Development follows an incremental roadmap:
+- **v0.1** — Playable MVP: core rules, alpha-beta, WPF board. ✅
+- **v0.2** — Measurable engine: TT, quiescence, move ordering, LMR. ✅
+- **v1.0** — Competitive search & stable UCI: PVS, null move, SEE, pawn hash, time management. ✅
+- **v1.1** — NPS optimization (magic bitboards, zero-alloc paths), Bullet profile, benchmarks. ✅ (~2070 Elo)
+- **v2.0** — NNUE evaluation (in progress next).
+- **v2.3** — Polyglot opening books · **v3.0** — Lazy SMP + Syzygy · see the full roadmap.
 
-- **v0.1:** Basic console, shows legal moves.
-- **v0.2:** Adds basic search engine and simple evaluation.
-- **v0.3:** Modular architecture, clear separation of concerns.
-- **v1.0:** Full engine, API integration and first E2E tests.
-- **Future:** UCI/XBoard protocol, open for contributions, external GUI integration.
-
-This README will be updated regularly as development progresses.
+Full change history in [CHANGELOG.md](CHANGELOG.md).
 
 ### **Contributing**
-Contributions, suggestions, and feedback are welcome.  
-Please check the [Contribution Guide](CONTRIBUTING.md) (to be added) and open issues or pull requests.
+Contributions, suggestions, and feedback are welcome.
+Please check the [Contribution Guide](CONTRIBUTING.md) and open issues or pull requests.
 
 ### License
 This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
@@ -92,19 +91,18 @@ Se siguen patrones Clean Architecture y DDD para garantizar mantenibilidad y esc
 - **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones**
-El desarrollo sigue una hoja de ruta incremental:
+- **v0.1** — MVP jugable: reglas, alpha-beta, tablero WPF. ✅
+- **v0.2** — Motor medible: TT, quiescence, move ordering, LMR. ✅
+- **v1.0** — Search competitivo y UCI estable: PVS, null move, SEE, pawn hash, gestión de tiempo. ✅
+- **v1.1** — Optimización NPS (magic bitboards, cero allocations), perfil Bullet, benchmarks. ✅ (~2070 Elo)
+- **v2.0** — Evaluación NNUE (siguiente, en preparación).
+- **v2.3** — Libros de apertura Polyglot · **v3.0** — Lazy SMP + Syzygy · ver roadmap completo.
 
-- **v0.1:** Consola básica, muestra jugadas legales.
-- **v0.2:** Añade motor de búsqueda básico y evaluación simple.
-- **v0.3:** Arquitectura modular, separación de responsabilidades.
-- **v1.0:** Motor completo, integración API y primeras pruebas E2E.
-- **Futuro:** Soporte UCI/XBoard, apertura a contribuciones, integración con GUIs externas.
-
-El desarrollo es iterativo y se documentan todos los cambios relevantes en este README.
+Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 
 ### **Contribuir**
-Se aceptan contribuciones, sugerencias y feedback.  
-Por favor, revisa la [Guía de Contribución](CONTRIBUTING.md) (pendiente) y abre issues o pull requests para colaborar.
+Se aceptan contribuciones, sugerencias y feedback.
+Por favor, revisa la [Guía de Contribución](CONTRIBUTING.md) y abre issues o pull requests para colaborar.
 
 ### **Licencia**
 Este proyecto está publicado bajo la licencia **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**.

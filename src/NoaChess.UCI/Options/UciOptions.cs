@@ -14,7 +14,6 @@ public sealed class UciOptions
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 30;
     public bool UseNnue { get; private set; }
-    public string Profile { get; private set; } = "Default";
 
     // Prints the option declarations the GUI expects right after "id".
     public void Print(TextWriter output)
@@ -23,7 +22,6 @@ public sealed class UciOptions
         output.WriteLine("option name Threads type spin default 1 min 1 max 1");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name UseNNUE type check default false");
-        output.WriteLine("option name Profile type combo default Default var Default var Bullet");
     }
 
     // Applies "setoption name <name> value <value>". Returns the canonical
@@ -48,10 +46,6 @@ public sealed class UciOptions
             case "usennue" when bool.TryParse(value, out bool useNnue):
                 UseNnue = false && useNnue; // No NNUE until v2.0.
                 return "UseNNUE";
-
-            case "profile":
-                Profile = value.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? "Bullet" : "Default";
-                return "Profile";
 
             default:
                 return null;
