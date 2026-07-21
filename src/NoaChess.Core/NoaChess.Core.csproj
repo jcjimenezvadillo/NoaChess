@@ -6,4 +6,13 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+
+  <!-- Release builds carry no debug symbols: published engine folders stay
+       clean (one exe) and distributed stack traces just lose line numbers.
+       Debug builds keep full symbols for development. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
 </Project>
