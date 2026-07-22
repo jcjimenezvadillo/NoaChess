@@ -1,4 +1,36 @@
-﻿# CHANGELOG
+# CHANGELOG
+
+## 2026-07-22 (v2.8.2) — validated search audit, correction history, ProbCut verification, UCI log hardening
+
+**SPRT vs v2.8.1 (tc=10+0.1, elo0=0, elo1=10): H1 accepted at 834 games, 256-189-389 [54.0%], +28.0 ±17.2 Elo, LOS 99.9%, LLR 2.99. Calibrated LTC gauntlet: 296-131-197 [63.2%] over 624 games, +94 ±23 relative to the field, ~3013 ±30 CCRL.** Repeated 8-ply openings and reversed colors. The absolute estimate is 3010 from the literal engine labels and 3013 after applying the existing 2548-game field calibration. Component tests below are diagnostic and must not be added as if independent Elo gains.
+
+### Search and evaluation
+
+- **Pawn correction history:** a side-to-move × pawn-Zobrist table learns the residual between searched scores and the classical static evaluation. The corrected value feeds improving, forward pruning and quiescence stand-pat; the raw evaluator value remains in the TT so a learned local bias is never persisted as position truth. Updates are bounded, depth-weighted and restricted to quiet, bound-consistent, non-tablebase conclusions. It was introduced in two isolated steps: main-search correction **49-33-118, +27.9 ±30.8 Elo**, then quiescence correction **59-49-92, +17.4 ±35.5 Elo**. An isolation build with correction completely disabled trended worse (**96-119-181 [47.1%], approximately -20 ±25 Elo at 396 games**) and was stopped; correction therefore remains in the H1-winning final build.
+- **ProbCut rework:** entry from depth 3, improving-aware margin and verification depth, SEE threshold tied to the gap between static eval and `probBeta`, mandatory regular-search verification of at least one ply, lower-bound TT storage, fail-soft return outside mate/TB bands, and small ProbCut from a sufficiently deep TT lower bound. Isolated A/B: **59-51-90, 52.0%, +13.9 ±35.8 Elo, LOS 77.7%**. Queen promotions are explicitly exempt from the gap-based SEE gate because the simplified SEE does not model the promoted piece; a regression found in review is covered by quiet- and capture-promotion tests.
+- **Aspiration final form:** the SPRT winner retains the fixed profile half-window. The experimental adaptive initial window was removed after it increased re-search cost at 10+0.1. The fail-low beta recentering remains.
+- **Continuation-history gravity with proven refutation bands:** continuation entries use bounded gravity updates instead of saturating at ±2²⁰. The experiment that demoted killer and counter moves to small continuous bonuses was removed; the final H1 build retains the proven 3.0M/2.9M bands.
+- **No unconditional check extension:** the speculative `inCheck => depth+1` experiment was removed. It was absent from the measured v2.8.1 artifact, cost depth at short time controls and had no significant isolated evidence.
+
+### UCI reliability and logging
+
+- `NOACHESS_DEBUG_LOG` no longer activates logging. This prevents an inherited user/machine variable from silently creating the same unbounded file in Arena, lichess-bot and test processes.
+- `Debug Log File` remains available explicitly. Opening is transactional; an invalid replacement path leaves the current writer intact. Setting it to `<empty>` closes and unlocks the file immediately. Quit/EOF close it in `finally`; write/dispose failures disable diagnostics instead of terminating the UCI loop.
+- Clean `quit` and unexpected stdin EOF are logged as distinct termination causes.
+
+### Rejected during the audit
+
+- The complete historical 5H package (adaptive aspiration plus razoring) scored **41-56-103, -26.1 ±33.6 Elo, LOS 6.4%**. Bisection showed aspiration positive, therefore razoring was removed.
+- The first all-features candidate (correction + adaptive initial aspiration + unconditional check extension + continuous killer/counter bonuses) failed the formal SPRT: **291-333-491 [48.12%], -13.1 ±15.2 Elo, H0 at 1115 games**. Short component A/B figures had all included zero and did not predict their interaction.
+- Removing correction alone did not rescue it (**47.1% at 396 games**). The successful RC2 kept correction while removing adaptive initial aspiration, unconditional check extension and continuous killer/counter ordering; it passed H1 as reported above.
+- Dynamic null-move R and multi-cut were not merged: their archived failures are structural, not missing syntax. The former needs the reference `cutNode`/eval-gate ecosystem; the latter repeatedly loses tactical accuracy. No NNUE, SMP or other future-roadmap work was introduced.
+
+### Verification
+
+- **276/276 tests green** (71 Core + 205 Engine), including 8 new cases: pawn-correction residual/clear and side-to-move separation, continuation-gravity bound-and-recover, three debug-log lifecycle regressions (`<empty>` closes and unlocks, invalid switch preserves the active log, clean `quit` differs from EOF), and quiet/capture queen promotions bypassing the ProbCut SEE gate. Counting basis: 276 is the full discovered suite with the local tablebase set present. Earlier entries are not on the same basis — v2.8.1's "193/193" counted only the tests that executed while the Syzygy files were absent and the gated cases skipped; the discovered suite at v2.8.1 was 268.
+- **Final RC2-corr SPRT vs frozen v2.8.1:** **256-189-389, 54.0%, +28.0 ±17.2 Elo, H1 accepted at 834 games**.
+- **Final LTC gauntlet (tc=60+0.6):** **296-131-197, 63.2%, +94 ±23 relative to the field, ~3013 ±30 CCRL**. The 13 fixed-label anchors give 3010 ±30; replacing their labels with the ratings inferred by the prior 2548-game all-play-all calibration gives 3013 ±30. The existing calibration confirms `Winter-3120`; all other field labels remain within normal uncertainty, with `Rubichess-3150` still only on watch (calibrated near 3108).
+- Syzygy and ponder remain operational and independently verified in lichess-bot logs; this release does not alter their probe protocol.
 
 ## 2026-07-20 (v2.8.1) — Syzygy correctness fixes, capture-history main ordering, partial quiet sort, threat-aware quiet scoring, NNUE/tuner tools infrastructure
 
@@ -105,7 +137,7 @@ Pulled ahead of NNUE deliberately, following the reference's own order (Syzygy 2
 
 - **5F ProbCut** — reference shape (entry at depth 3, any node type) +16.3% nodes; with our validated conservative entry (non-PV, depth ≥ 5) +7.3%; with a flat depth−4 verification +11.2%, so the reference's improving-aware verification depth is genuinely better than ours; with the SEE threshold floored at 0, +5.0%. That last one is a real finding: the reference's threshold `probCutBeta − staticEval` goes NEGATIVE once the static eval already clears the bar, so every losing capture passes the filter and each one costs a quiescence plus a verification search. Even so, no variant beat the baseline, and WAC 269 vs 266 is inside the ±5 noise band, so there is no nodes-for-accuracy trade. The `probCutDepth` floor at 1 (no cutoff may rest on quiescence alone) is applied throughout and is the fix for the earlier −90 Elo.
 - **Multi-cut** — returning the verification score when it reaches beta with the TT move excluded. WAC 248 vs 266, eighteen points down. In 5E the same test measured 265 → 245; after the quiescence fix it is 266 → 248, essentially unchanged. Unsound on our search in its own right.
-- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated Stockfish**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
+- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated revision of the reference engine**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
 - The bench signature was the usual trap: −11.9% nodes and −17% wall time meant **more pruning, not better search**, and WAC cannot see unsound prunes. Node counts falling is not by itself evidence of improvement.
 - Branches `exp-probcut`, `exp-multicut` and `exp-nmpr` keep the code and the numbers in their commit messages. Not merged.
 
@@ -572,5 +604,3 @@ Time management (reference port, replaces the v2.6.4 scheduler):
 - infra: added CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
-
-
