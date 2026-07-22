@@ -202,12 +202,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // re-searched at full depth if it surprisingly beats alpha.
     private static readonly int[,] LmrReductions = BuildLmrTable();
 
+    // Reductions are accumulated in 1024ths of a ply and truncated once, at the
+    // point of use. The reference keeps its whole reduction pipeline in fixed
+    // point for a reason: every one of its adjusters is a FRACTION of a ply.
+    // Truncating per term — which an integer table forces — makes each adjuster
+    // three to ten times too coarse, and eight of them stack into swings the
+    // reference never applies. That granularity is the unnamed "ecosystem" the
+    // 5C adjuster suite kept measuring against.
+    private const int LmrScale = 1024;
+
+
     private static int[,] BuildLmrTable()
     {
         var table = new int[64, 64];
         for (int depth = 1; depth < 64; depth++)
             for (int move = 1; move < 64; move++)
-                table[depth, move] = (int)(0.75 + Math.Log(depth) * Math.Log(move) / 2.25);
+                table[depth, move] =
+                    (int)((0.75 + Math.Log(depth) * Math.Log(move) / 2.25) * LmrScale);
         return table;
     }
 
@@ -1295,10 +1306,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             int lmrDepth = depth - 1;
             if (searched > 0)
             {
+                // In 1024ths like the reduction proper, truncated once here.
                 int rEst = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
-                if (nonPv) rEst++;
-                if (!improving) rEst++;
-                lmrDepth = Math.Max(depth - 1 - rEst, 0);
+                if (nonPv) rEst += LmrScale;
+                if (!improving) rEst += LmrScale;
+                lmrDepth = Math.Max(depth - 1 - rEst / LmrScale, 0);
             }
 
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
@@ -1385,21 +1397,26 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 if (isQuiet && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
-                    reduction = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
-                    if (nonPv) reduction++;              // Reduce harder off the PV.
+                    // Everything below is in 1024ths. Every adjuster here is a
+                    // whole number of plies, so the single truncation at the
+                    // end reproduces the previous per-term integer arithmetic
+                    // exactly: floor(a) + k == floor(a + k) for integer k.
+                    int r = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
+                    if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
                     // History-informed adjustment: a quiet move the history
                     // tables like is reduced less (it keeps refuting things
                     // elsewhere); a disliked one is reduced more. Killers and
                     // the counter move also earn a shallower reduction.
-                    reduction -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2);
+                    r -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2) * LmrScale;
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
-                        reduction--;
+                        r -= LmrScale;
 
                     // Position is worsening: the remaining moves are even less
                     // likely to be good — reduce them one extra ply.
-                    if (!improving) reduction++;
+                    if (!improving) r += LmrScale;
 
+                    reduction = r / LmrScale;
                     if (reduction < 0) reduction = 0;
                     if (reduction > newDepth - 1) reduction = newDepth - 1;
                 }
