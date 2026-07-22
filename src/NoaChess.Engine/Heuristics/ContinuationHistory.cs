@@ -14,8 +14,8 @@ namespace NoaChess.Engine.Heuristics;
 // small enough to keep hot in cache for the entries that actually occur.
 public sealed class ContinuationHistory
 {
-    // Scores are clamped to a fixed band instead of rescaled: with bonuses AND
-    // maluses flowing in, values orbit zero and rarely hit the rails.
+    // Gravity updates keep entries bounded without sweeping this multi-megabyte
+    // table or pinning frequent continuations permanently to its rails.
     private const int MaxScore = 1 << 20;
 
     private readonly int[] _scores = new int[12 * 64 * 12 * 64];
@@ -32,20 +32,17 @@ public sealed class ContinuationHistory
 
     // Rewards the quiet reply that caused a beta cutoff after 'prev' was played.
     public void AddBonus(int prevPiece, int prevTo, int piece, int to, int depth)
-    {
-        ref int score = ref _scores[Index(prevPiece, prevTo, piece, to)];
-        score += depth * depth;
-        if (score > MaxScore)
-            score = MaxScore;
-    }
+        => Update(prevPiece, prevTo, piece, to, depth * depth);
 
     // Punishes quiet replies that were searched before the cutoff move and
     // failed to produce it — they sink in the ordering next time.
     public void AddMalus(int prevPiece, int prevTo, int piece, int to, int depth)
+        => Update(prevPiece, prevTo, piece, to, -depth * depth);
+
+    private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
+        bonus = Math.Clamp(bonus, -MaxScore, MaxScore);
         ref int score = ref _scores[Index(prevPiece, prevTo, piece, to)];
-        score -= depth * depth;
-        if (score < -MaxScore)
-            score = -MaxScore;
+        score += bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
     }
 }

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine.Evaluation;
 using NoaChess.Engine.Heuristics;
@@ -21,8 +21,6 @@ namespace NoaChess.Engine.Search;
 //   so good that the branch can be pruned. Disabled in check (passing is
 //   illegal), in pawn endgames (zugzwang breaks the assumption) and twice in
 //   a row (the position must be re-anchored to reality between passes).
-// - Check extension: positions in check are searched one ply deeper — forced
-//   sequences are cheap (few legal moves) and hide most tactics.
 // - SEE pruning: losing captures (per static exchange evaluation) are skipped
 //   near the horizon and ordered last elsewhere.
 // - Repetition detection: a single repetition already scores as a draw inside
@@ -83,7 +81,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         _tbMaxMen = Math.Min(_syzygyProbeLimit, Tablebases.Syzygy.Cardinality);
 
-        // Matching Stockfish: if the requested limit exceeds the largest
+        // Matching reference: if the requested limit exceeds the largest
         // installed table, that installed cardinality is effectively a
         // sub-cardinality table and is therefore probed at every depth.
         _tbMinProbeDepth = _syzygyProbeLimit > Tablebases.Syzygy.Cardinality
@@ -123,6 +121,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
     private readonly CaptureHistory _captureHistory = new();
+    private readonly PawnCorrectionHistory _pawnCorrectionHistory = new();
     private readonly Stopwatch _timer = new();
 
     // ---- Quiescence pruning constants (reference Step 6) ----
@@ -167,6 +166,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private const int StatScoreOffset = 1250; // reference  4433 x 0.28
     private const int StatScoreRfpDiv = 180;  // reference 303 / 0.48 x 0.28
 
+    // ProbCut safety margins. As in the reference search, an improving node
+    // gets both a cheaper bar and a shallower verification: the static trend
+    // is treated as extra confidence, reducing ProbCut's cost.
+    private const int ProbCutMargin = 150;
+    private const int ProbCutImprovingMargin = 40;
+    private const int SmallProbCutMargin = 428;
     // NMP verification-search state (reference nmpMinPly/nmpColor): while the
     // verification search runs, null moves stay disabled for the verifying
     // side below this ply, so a false null-move cutoff cannot verify itself.
@@ -278,6 +283,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _history.Clear();
         _contHist.Clear();
         _captureHistory.Clear();
+        _pawnCorrectionHistory.Clear();
         Array.Clear(_counterMoves);
         _bestPreviousScore = ScoreNone;
         _bestPreviousAverageScore = ScoreNone;
@@ -408,6 +414,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // DOUBLED, instead of jumping straight to a full-width re-search:
             // most fails land just outside the window, so the progressive
             // widening usually resolves them in one cheap retry.
+            // The fixed profile window won the final v2.8.2 SPRT. Adaptive
+            // narrowing increased re-search cost at short time controls.
             int window = Profile.AspirationWindow;
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
@@ -421,9 +429,16 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     break;
 
                 if (score <= alpha)
+                {
+                    // Keep the upper edge near the failed window instead of
+                    // carrying a needlessly high beta into the re-search.
+                    beta = alpha + (beta - alpha) / 2;
                     alpha = Math.Max(score - window, -Infinity);
+                }
                 else
+                {
                     beta = Math.Min(score + window, Infinity);
+                }
 
                 window *= 2;
                 if (window > 1000) // Give up widening: full window.
@@ -745,7 +760,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return true;
     }
 
-    // Stockfish's root_probe_wdl fallback. It deliberately keeps cursed wins
+    // Reference root_probe_wdl fallback. It deliberately keeps cursed wins
     // and blessed losses in distinct bands, so missing .rtbz files cost only
     // DTZ precision rather than the game-theoretic safety of the root choice.
     private bool TryRankRootMovesByWdl(Board board, Span<int> ranks,
@@ -778,7 +793,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 return false;
 
             // Do not collapse cursed wins or blessed losses to draws here.
-            // Stockfish deliberately gives them the bands immediately above
+            // Reference deliberately gives them the bands immediately above
             // and below a draw, retaining their practical preference while
             // still distinguishing them from unconditional wins and losses.
             int rank = rootWdl switch
@@ -822,8 +837,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (_stopped)
             return 0;
 
-        // Ply overflow guard (check extensions could otherwise push past the
-        // per-ply structures in pathological positions).
+        // Ply overflow guard for recursive and singular-extension searches.
         if (ply >= MaxPly)
             return _evaluator.Evaluate(board);
 
@@ -963,21 +977,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // (the big 5F speedup: revisits pay one cluster read, not a full
         // evaluation); a miss caches what we compute in an eval-only entry so
         // the NEXT visit — often via IIR or a re-search — skips it too.
+        int rawStaticEval;
         int staticEval;
         if (inCheck)
         {
+            rawStaticEval = 0;
             staticEval = 0;
-        }
-        else if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
-        {
-            staticEval = entry.StaticEval;
         }
         else
         {
-            staticEval = _evaluator.Evaluate(board);
-            if (excluded == Move.None)
-                _tt.Store(board.ZobristKey, 0, 0, staticEval,
-                          BoundType.None, Move.None, ttPv);
+            if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
+            {
+                rawStaticEval = entry.StaticEval;
+            }
+            else
+            {
+                rawStaticEval = _evaluator.Evaluate(board);
+                if (excluded == Move.None)
+                    _tt.Store(board.ZobristKey, 0, 0, rawStaticEval,
+                              BoundType.None, Move.None, ttPv);
+            }
+
+            staticEval = _pawnCorrectionHistory.Correct(board, rawStaticEval);
         }
 
         // ---- Improvement / improving ----
@@ -1086,14 +1107,17 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         }
 
         // ---- ProbCut ----
-        // When the position is SO good that a shallow search of a promising
-        // capture already lands well above beta (with a safety margin), the
-        // full-depth search would almost certainly fail high too — cut now.
-        // Non-PV only, never in singular verification, away from mate scores.
-        if (nonPv && !inCheck && depth >= 5 && excluded == Move.None
-            && Math.Abs(beta) < MateBound)
+        // A promising capture may prune this node only after passing both a
+        // qsearch filter and a regular reduced search. The depth floor is the
+        // critical correction: no cutoff may rest on qsearch alone.
+        int probBeta = beta + ProbCutMargin
+                     - ProbCutImprovingMargin * (improving ? 1 : 0);
+        if (!inCheck && depth >= 3 && excluded == Move.None
+            && Math.Abs(beta) < MateBound
+            && !(ttHit && entry.Bound != BoundType.None
+                 && FromTT(entry.Score, ply) < probBeta))
         {
-            int probBeta = beta + 150;
+            int probCutDepth = Math.Max(depth - (improving ? 5 : 3), 1);
             MoveList captures = _moveLists[ply];
             MoveGenerator.GeneratePseudoLegalMoves(board, captures, capturesOnly: true);
             MovePicker.OrderCaptures(captures, board, _captureHistory);
@@ -1103,13 +1127,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 Move move = captures[i];
 
-                // Only captures that do not clearly lose material can beat
-                // beta by a margin; skip the rest (and the odd non-queen
-                // promotion the captures-only generator also emits).
                 if (move.IsPromotion && move.Flag is not (MoveFlag.PromoQueen or MoveFlag.PromoQueenCapture))
                     continue;
-                if (move.IsCapture && !move.IsPromotion
-                    && StaticExchangeEvaluator.LosesAtLeast(board, move))
+
+                // The exchange must be capable of bridging the gap between the
+                // static evaluation and the deliberately higher ProbCut bar.
+                // The simplified SEE intentionally cannot model the material
+                // gain of promotion. Queen promotions are therefore always
+                // admitted, as they were before the gap-based SEE gate.
+                if (!PassesProbCutSeeGate(board, move, probBeta - staticEval))
                     continue;
 
                 _incremental?.PushMove(board, move);
@@ -1118,16 +1144,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 {
                     board.UnmakeMove();
                     _incremental?.Pop();
-                    continue; // Pseudo-legal move left the king in check.
+                    continue;
                 }
                 _stackPiece[ply] = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.To));
                 _stackTo[ply] = move.To;
-                _stackStatScore[ply] = 0; // Captures carry no history signal.
+                _stackStatScore[ply] = 0;
 
-                // Cheap filter first (quiescence), real verification second.
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
                 if (score >= probBeta)
-                    score = -Negamax(board, depth - 4, -probBeta, -probBeta + 1,
+                    score = -Negamax(board, probCutDepth, -probBeta, -probBeta + 1,
                                      ply + 1, allowNull: false);
 
                 board.UnmakeMove();
@@ -1136,10 +1161,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 if (_stopped)
                     return 0;
                 if (score >= probBeta)
-                    return probBeta;
+                {
+                    _tt.Store(board.ZobristKey, probCutDepth + 1, ToTT(score, ply),
+                              rawStaticEval, BoundType.LowerBound, move, ttPv);
+
+                    // Reduced searches do not establish mate/TB scores.
+                    if (Math.Abs(score) < MateBound)
+                        return score - (probBeta - beta);
+                }
             }
         }
 
+        // A sufficiently deep TT lower bound far above beta can provide the
+        // same evidence without repeating the capture probe.
+        int smallProbBeta = beta + SmallProbCutMargin;
+        if (!inCheck && excluded == Move.None && ttHit
+            && entry.Bound == BoundType.LowerBound
+            && entry.Depth >= depth - 4 && Math.Abs(beta) < MateBound)
+        {
+            int ttScore = FromTT(entry.Score, ply);
+            if (ttScore >= smallProbBeta && Math.Abs(ttScore) < MateBound)
+                return smallProbBeta;
+        }
         // ---- Singular extension detection ----
         // A TT move whose stored score is trustworthy gets a verification
         // search: all OTHER moves are searched shallower against a lowered
@@ -1484,11 +1527,27 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                             : bestScore >= beta ? BoundType.LowerBound
                             : BoundType.Exact;
             _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply),
-                      inCheck ? TTEntry.NoStaticEval : staticEval, bound, bestMove, ttPv);
+                      inCheck ? TTEntry.NoStaticEval : rawStaticEval, bound, bestMove, ttPv);
+
+            // Learn only from quiet conclusions whose bound points in the same
+            // direction as the evaluation error. Captures/promotions change the
+            // material picture too abruptly to teach a pawn-structure bias.
+            bool quietBest = bestMove != Move.None && !bestMove.IsCapture && !bestMove.IsPromotion;
+            bool boundAgrees = bestScore >= beta ? bestScore > staticEval
+                              : bestScore <= originalAlpha ? bestScore < staticEval
+                              : true;
+            if (!inCheck && quietBest && boundAgrees && Math.Abs(bestScore) < TbScoreBound)
+                _pawnCorrectionHistory.Update(board, bestScore - staticEval, depth);
         }
 
         return bestScore;
     }
+
+    // Promotions are deliberately exempt: the current SEE does not model the
+    // promoted piece and reports only the captured victim (or one pawn for a
+    // quiet promotion), grossly understating their material gain.
+    private static bool PassesProbCutSeeGate(Board board, Move move, int threshold)
+        => move.IsPromotion || StaticExchangeEvaluator.Evaluate(board, move) >= threshold;
 
     // Quiescence search: at the horizon, keep searching forcing moves until the
     // position is quiet, then evaluate. This removes the horizon effect: a
@@ -1580,7 +1639,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // "Stand pat": the side to move is never forced to capture, so the
             // static evaluation is a floor for its score. If even doing nothing
             // beats beta, the opponent will avoid this line — cut immediately.
-            bestScore = _evaluator.Evaluate(board);
+            int rawEval = _evaluator.Evaluate(board);
+            bestScore = _pawnCorrectionHistory.Correct(board, rawEval);
             if (bestScore >= beta)
                 return bestScore;
             if (bestScore > alpha)
@@ -1773,4 +1833,5 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // ordering, but conservatively refuse its bound until the counter resets.
     private static bool CanReuseTtScore(int score, int halfmoveClock)
         => halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound);
+
 }
