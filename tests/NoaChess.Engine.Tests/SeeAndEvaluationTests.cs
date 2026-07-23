@@ -156,10 +156,11 @@ public class SeeAndEvaluationTests
     [Fact]
     public void Evaluation_StartingPositionIsBalanced()
     {
-        // A symmetric position must evaluate to exactly 0: any non-zero result
+        // The starting position is symmetric, so the evaluation equals exactly
+        // Tempo (the side-to-move initiative bonus). Any value other than Tempo
         // reveals a colour asymmetry in the tapered tables or terms.
         var evaluator = new ClassicalEvaluator();
-        Assert.Equal(0, evaluator.Evaluate(new Board(Board.StartFen)));
+        Assert.Equal(EvaluationParams.Tempo, evaluator.Evaluate(new Board(Board.StartFen)));
     }
 
     [Theory]
@@ -177,8 +178,9 @@ public class SeeAndEvaluationTests
         Assert.Equal(direct, mirrored);
     }
 
-    // Flips a FEN top-to-bottom and swaps piece colours; castling/en passant
-    // are dropped (irrelevant to the evaluation symmetry being checked).
+    // Flips a FEN top-to-bottom and swaps piece colours. Castling rights are
+    // colour-swapped too (the evaluation reads them since v2.6.3: the shelter
+    // takes the post-castling maximum); en passant is dropped (eval-irrelevant).
     private static string MirrorFen(string fen)
     {
         string[] parts = fen.Split(' ');
@@ -187,7 +189,12 @@ public class SeeAndEvaluationTests
         var swapped = ranks.Select(rank => new string(rank.Select(SwapCase).ToArray()));
         string board = string.Join('/', swapped);
         string sideToMove = parts[1] == "w" ? "b" : "w";
-        return $"{board} {sideToMove} - - 0 1";
+        string castling = parts[2] == "-"
+            ? "-"
+            : new string(parts[2].Select(SwapCase).OrderBy(CastlingOrder).ToArray());
+        return $"{board} {sideToMove} {castling} - 0 1";
+
+        static int CastlingOrder(char c) => c switch { 'K' => 0, 'Q' => 1, 'k' => 2, _ => 3 };
 
         static char SwapCase(char c) =>
             char.IsUpper(c) ? char.ToLower(c) : char.IsLower(c) ? char.ToUpper(c) : c;
@@ -225,8 +232,9 @@ public class SeeAndEvaluationTests
 
     // Builds the FEN of the colour-mirrored position: every piece moves to its
     // vertically flipped square with the opposite colour, and the side to move
-    // is swapped. Castling/en passant are dropped (the evaluator does not read
-    // them).
+    // is swapped. Castling rights are colour-swapped (the evaluator reads them
+    // since v2.6.3: the shelter takes the post-castling maximum); en passant
+    // is dropped (eval-irrelevant).
     private static string MirrorBoardFen(Board board)
     {
         var sb = new System.Text.StringBuilder();
@@ -252,7 +260,16 @@ public class SeeAndEvaluationTests
             if (rank > 0) sb.Append('/');
         }
         string stm = board.SideToMove == Color.White ? "b" : "w";
-        return $"{sb} {stm} - - 0 1";
+
+        var rights = board.CastlingRights;
+        var cast = new System.Text.StringBuilder();
+        if ((rights & CastlingRights.BlackKingSide) != 0) cast.Append('K');
+        if ((rights & CastlingRights.BlackQueenSide) != 0) cast.Append('Q');
+        if ((rights & CastlingRights.WhiteKingSide) != 0) cast.Append('k');
+        if ((rights & CastlingRights.WhiteQueenSide) != 0) cast.Append('q');
+        string castling = cast.Length == 0 ? "-" : cast.ToString();
+
+        return $"{sb} {stm} {castling} - 0 1";
     }
 
     [Fact]
@@ -280,5 +297,63 @@ public class SeeAndEvaluationTests
         var withoutPair = new Board("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1");
         Assert.True(evaluator.Evaluate(withPair) > evaluator.Evaluate(withoutPair),
             "Two bishops must score higher than bishop + knight of equal material");
+    }
+
+    [Fact]
+    public void Phalanx_BonusIsApplied()
+    {
+        // White has two pawns side by side on d4/e4 (phalanx) vs the same
+        // pawns on d4/f4 (not touching). Zero out the phalanx array to verify
+        // the term is responsible for the difference.
+        var phalanxBoard = new Board("4k3/8/8/8/3PP3/8/8/4K3 w - - 0 1");
+        var splitBoard   = new Board("4k3/8/8/8/3P1P2/8/8/4K3 w - - 0 1");
+
+        var savedPhalanx = EvaluationParams.Phalanx;
+        EvaluationParams.Phalanx = [new(0,0), new(0,0), new(0,0), new(0,0),
+                                     new(0,0), new(0,0), new(0,0), new(0,0)];
+        var evaluator = new ClassicalEvaluator();
+        int withoutBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
+
+        EvaluationParams.Phalanx = savedPhalanx;
+        evaluator = new ClassicalEvaluator();
+        int withBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
+
+        Assert.True(withBonus > withoutBonus, "Phalanx bonus must make d4/e4 score better than d4/f4");
+    }
+
+    [Fact]
+    public void Backward_PenaltyIsApplied()
+    {
+        // White e3 is a genuine backward pawn: its stop square e4 is attacked
+        // by black d5, its only neighbour (d4) is AHEAD of it so no support
+        // can ever come, and it is not isolated (so the exclusive-of-isolated
+        // rule does not skip it). Every black pawn has level-or-behind support
+        // (b7 backs c6, c6 backs d5), so no black pawn is backward. Only white
+        // is penalized: zeroing BackwardPawn must raise the score.
+        var board = new Board("4k3/1p6/2p5/3p4/3P4/4P3/8/4K3 w - - 0 1");
+
+        var saved = EvaluationParams.BackwardPawn;
+        EvaluationParams.BackwardPawn = new(0, 0);
+        int scoreWithout = new ClassicalEvaluator().Evaluate(board);
+
+        EvaluationParams.BackwardPawn = saved;
+        int scoreWith = new ClassicalEvaluator().Evaluate(board);
+
+        Assert.True(scoreWith < scoreWithout, "Backward pawn penalty must lower the score of the position");
+    }
+
+    [Fact]
+    public void Tempo_SideToMoveScoresHigher()
+    {
+        // In a symmetric position the side to move should always score higher
+        // than the waiting side, purely from the tempo bonus.
+        var evaluator = new ClassicalEvaluator();
+        var whiteToMove = new Board("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        var blackToMove = new Board("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
+        int wtm = evaluator.Evaluate(whiteToMove);
+        int btm = evaluator.Evaluate(blackToMove);
+        Assert.True(wtm > 0 && btm > 0,
+            "Both sides should score positive (tempo) when it is their turn in a symmetric position");
+        Assert.True(wtm == btm, "Symmetric position must give both sides the same absolute tempo score");
     }
 }

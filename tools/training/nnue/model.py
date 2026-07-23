@@ -49,7 +49,7 @@ class NoaNnue(nn.Module):
     def clip_weights(self):
         """
         Keeps weights inside the ranges the integer inference can represent
-        (applied after each optimizer step, like Stockfish trainers do).
+        (applied after each optimizer step, like strong engine trainers do).
           ft rows sum over <=30 active features into int16 accumulators;
           l1/out weights are stored as round(w * QB) in int16.
         """
