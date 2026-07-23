@@ -41,12 +41,17 @@ public static class ParameterRegistry
             () => EvaluationParams.ConnectedPassers, v => EvaluationParams.ConnectedPassers = v);
         AddScore(list, "RookBehindPasser",
             () => EvaluationParams.RookBehindPasser, v => EvaluationParams.RookBehindPasser = v);
+        AddScore(list, "BackwardPawn",
+            () => EvaluationParams.BackwardPawn, v => EvaluationParams.BackwardPawn = v);
 
-        // MobilityStep is deliberately NOT tunable: every texel run converges
-        // to negative endgame mobility for the minors (spurious correlation:
-        // the winning side simplifies), which plays disastrously. The hand
-        // values passed SPRT in v2.2.0 and stay fixed.
+        // MobilityBonus (the non-linear reference tables, v2.6.2) is deliberately
+        // NOT tunable: every texel run converges to negative endgame mobility for
+        // the minors (spurious correlation: the winning side simplifies),
+        // which plays disastrously. Reference values, rescaled x0.48, stay fixed.
+        // The threat terms (also reference x0.48) stay fixed for the same reason:
+        // they are SPRT-validated as a package, not texel-derived.
         AddScoreArray(list, "PassedPawn", EvaluationParams.PassedPawn, 1, 6);
+        AddScoreArray(list, "Phalanx", EvaluationParams.Phalanx, 1, 6);
 
         // Piece-square tables: every square of every piece, both phases.
         // Pawn ranks 1 and 8 (indices 0-7 and 56-63) hold no pawns and stay 0.
@@ -107,7 +112,9 @@ public static class ParameterRegistry
         Append(sb, "IsolatedPawn", EvaluationParams.IsolatedPawn);
         Append(sb, "ConnectedPassers", EvaluationParams.ConnectedPassers);
         Append(sb, "RookBehindPasser", EvaluationParams.RookBehindPasser);
+        Append(sb, "BackwardPawn", EvaluationParams.BackwardPawn);
         AppendArray(sb, "PassedPawn", EvaluationParams.PassedPawn);
+        AppendArray(sb, "Phalanx", EvaluationParams.Phalanx);
 
         sb.AppendLine();
         sb.AppendLine("// Tuned PSTs — paste into PieceSquareTables (white POV, first row = rank 8):");
