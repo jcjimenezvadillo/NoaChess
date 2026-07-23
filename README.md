@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **Next** — 5F ProbCut/IIR (v2.7.4) · capture history · aspiration/draw-detect · Syzygy tablebases (before NNUE — reference order: in-play endgame strength + datagen adjudication/WDL relabeling) · NNUE training · Lazy SMP · competition book last · see [ROADMAP.md](ROADMAP.md).
@@ -125,10 +127,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **Siguiente** — 5F ProbCut/IIR (v2.7.4) · capture history · aspiration/draw-detect · Tablebases Syzygy (antes del NNUE — orden de la referencia: fuerza en finales ya + adjudicación/re-etiquetado WDL del datagen) · Entrenamiento NNUE · Lazy SMP · libro de competición al final · ver [ROADMAP.md](ROADMAP.md).
