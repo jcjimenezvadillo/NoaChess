@@ -43,4 +43,58 @@ public sealed class ChessEngine
 
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
+
+    // Active parameter profile (Default/Bullet, see EngineProfile).
+    public Profiles.EngineProfile Profile
+    {
+        get => _search.Profile;
+        set => _search.Profile = value;
+    }
+
+    // ---- Evaluator selection (Classical / NNUE) ----
+
+    private NnueEvaluator? _nnue;
+
+    // True while the NNUE evaluator is the active one.
+    public bool NnueActive { get; private set; }
+
+    // SHA-256 of the loaded model (reproducibility logging), or null.
+    public string? NnueModelSha256 => _nnue?.ModelSha256;
+
+    // Loads a .noannue model. On success the evaluator can be switched with
+    // SetUseNnue; on failure the classical evaluator stays active and the
+    // error explains why (the UCI host forwards it as "info string").
+    public bool TryLoadNnueModel(string path, out string error)
+    {
+        if (!NnueModelLoader.TryLoad(path, out NnueNetwork? network, out error))
+            return false;
+
+        _nnue = new NnueEvaluator(network!);
+        if (NnueActive)
+            _search.SetEvaluator(_nnue); // Refresh active instance.
+        return true;
+    }
+
+    // Switches between the classical evaluator and the loaded NNUE model.
+    // Returns false when NNUE is requested but no model is loaded.
+    public bool SetUseNnue(bool useNnue)
+    {
+        if (useNnue && _nnue is null)
+            return false;
+
+        NnueActive = useNnue;
+        _search.SetEvaluator(useNnue ? _nnue! : new ClassicalEvaluator());
+
+        // JIT warm-up: the first calls into NNUE's SIMD inference path and
+        // the accumulator update code trigger tiered-compilation recompiles
+        // (Tier0 -> Tier1) the first few dozen times they run. Left alone,
+        // that recompilation happens whenever it happens — possibly deep
+        // into a real timed game, where a stall eats into the clock. Doing a
+        // short, throwaway search right here (setoption time, before any
+        // clock is running) pays that one-time cost up front instead.
+        if (useNnue)
+            _search.FindBestMove(new Board(), SearchLimits.Depth(6));
+
+        return true;
+    }
 }

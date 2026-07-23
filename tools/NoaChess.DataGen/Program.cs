@@ -148,7 +148,7 @@ var manifest = new
     openingPlies = "8-9 random legal",
     filters = "no in-check, no tactical best move, |score| < 20000",
     resignAdjudication = "|score| >= 1500 for 6 plies",
-    engineVersion = "NoaChess 2.0.0-dev",
+    engineVersion = "NoaChess 2.1.0-dev",
     generatedUtc = DateTime.UtcNow.ToString("o"),
     datasetSha256BeforeHeaderPatch = datasetSha
 };
