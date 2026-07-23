@@ -133,9 +133,81 @@ public static class EvaluationParams
     // A rook on the 7th rank cuts the enemy king off and attacks its pawns.
     public static Score RookOnSeventh = new(19, 17);
 
+    // ---- 4E piece terms — scaled ×0.48 from reference ----
+
+    // TrappedRook: rook on the home rank with ≤3 mobility squares is a
+    // positional error. Applied ×1 when castling rights remain, ×2 when not.
+    // ref S(55,13) ×0.48.
+    public static Score TrappedRook = new(26, 6);
+
+    // RookOnClosedFile: penalty (stored positive, subtracted) for a rook on a
+    // file whose own pawn is blocked. ref S(10,5) ×0.48.
+    public static Score RookOnClosedFile = new(5, 2);
+
+    // LongDiagonalBishop: bishop can see ≥2 center squares (d4/d5/e4/e5) through
+    // pawns — it dominates the long diagonal. ref S(45,0) ×0.48.
+    public static Score LongDiagonalBishop = new(22, 0);
+
+    // KingProtector: penalty per Chebyshev distance of a minor piece from its own
+    // king, indexed [knight, bishop]. DISABLED (zeroed): the term is jointly
+    // calibrated in the reference with its own PSTs and king safety; on top of
+    // PeSTO PSTs it double-counts king-distance and its Eg component cancels the
+    // outpost bonuses (KnightOutpost +18 Eg − 4×dist Eg ≈ 0 at dist 4), which
+    // collapsed play at long TC (~-111 Elo in the 2.6.5 gauntlet).
+    // ref {S(9,9), S(7,9)} ×0.48 would be {(4,4),(3,4)} — do not re-enable
+    // without an SPRT that proves it.
+    public static Score[] KingProtector =
+    [
+        new(0, 0), new(0, 0),
+    ];
+
+    // MinorBehindPawn: bonus when a bishop or knight has a pawn (either color)
+    // directly in front of it — it is shielded / blockades. ref S(18,3) ×0.48.
+    public static Score MinorBehindPawn = new(9, 1);
+
+    // BishopPawns: penalty per own pawn on the bishop's color, indexed by the
+    // bishop file's distance to the board edge (0 = a/h .. 3 = d/e), and scaled
+    // up when the bishop is not pawn-protected and when the center is blocked.
+    // ref BishopPawns[4] = {S(3,8),S(3,9),S(2,7),S(3,7)} ×0.48 (penalty).
+    public static Score[] BishopPawns =
+    [
+        new(1, 4), new(1, 4), new(1, 3), new(1, 3),
+    ];
+
+    // BishopXRayPawns: penalty per enemy pawn on the bishop's diagonal (x-ray,
+    // ignoring blockers) — they restrict the bishop's scope. ref S(4,5) ×0.48.
+    public static Score BishopXRayPawns = new(2, 2);
+
+    // BishopOutpost: bishop permanently settled on a pawn-protected outpost
+    // square (ranks 4-6 relative, no enemy pawn can evict it). Scaled by the
+    // same tuned-to-reference ratio as KnightOutpost (51/54 Mg, 18/34 Eg)
+    // instead of the generic ×0.48: the outpost family is one of the few
+    // terms where NoaChess's texel tuning landed near the RAW reference value
+    // (PeSTO PSTs under-reward advanced minors, so the explicit term carries
+    // more of the weight than in the reference). ref S(31,25).
+    public static Score BishopOutpost = new(29, 13);
+
+    // ReachableOutpost: minor piece that can reach an outpost square next move.
+    // ref S(33,19) ×0.48.
+    public static Score ReachableOutpost = new(16, 9);
+
+    // UncontestedOutpost: extra endgame value for a knight already on an outpost,
+    // proportional to the number of our pawns on the knight's wing (a knight on
+    // a wing with no enemy targets is worth little; with our pawns to support it
+    // becomes a durable endgame asset). ref S(0,10) ×0.48, per wing pawn.
+    public static Score UncontestedOutpost = new(0, 5);
+
+    // WeakQueen: penalty when the queen is the single blocker between an enemy
+    // rook/bishop and another target (a relative pin or latent discovered
+    // attack). ref S(57,19) ×0.48.
+    public static Score WeakQueen = new(-27, -9);
+
     // ---- Knight outposts ----
     // A knight on a hole in the enemy camp (relative ranks 4-6, protected by a
     // friendly pawn, no enemy pawn can ever kick it) is a permanent asset.
+    // Texel-tuned value (v2.4.0, jointly with the PeSTO PSTs) — NOT the
+    // generic ×0.48 of ref S(54,34): halving it to (26,16) measurably lost
+    // Elo in the 2.6.5 SPRT runs. Keep the tuned value.
     public static Score KnightOutpost = new(51, 18);
 
     // ---- Space ----

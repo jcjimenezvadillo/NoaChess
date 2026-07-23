@@ -31,6 +31,7 @@ public static class Program
         int maxPositions = 2_000_000;
         int passes = 3;
         string? outFile = null;
+        bool only4E = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -39,6 +40,7 @@ public static class Program
                 case "--max-positions": maxPositions = int.Parse(args[++i]); break;
                 case "--passes": passes = int.Parse(args[++i]); break;
                 case "--out": outFile = args[++i]; break;
+                case "--only-4e": only4E = true; break;
                 default: files.Add(args[i]); break;
             }
         }
@@ -58,11 +60,11 @@ public static class Program
         double k = tuner.OptimizeK();
         Console.WriteLine($"Optimal K = {k:F4}, initial error = {tuner.Error(k):F6}");
 
-        var parameters = ParameterRegistry.Build();
+        var parameters = only4E ? ParameterRegistry.Build4E() : ParameterRegistry.Build();
         Console.WriteLine($"Tuning {parameters.Count} scalar values over {passes} passes...");
         tuner.CoordinateDescent(parameters, k, passes);
 
-        string snippet = ParameterRegistry.ToSnippet();
+        string snippet = only4E ? ParameterRegistry.ToSnippet4E() : ParameterRegistry.ToSnippet();
         Console.WriteLine();
         Console.WriteLine(snippet);
         if (outFile != null)

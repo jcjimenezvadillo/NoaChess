@@ -24,11 +24,13 @@ public sealed class PawnStructureEvaluator
     // distinct pawn formations in one search number in the thousands.
     private const int CacheSize = 1 << 16;
 
-    // Each slot also caches the passer bitboards: the piece-dependent passer
-    // terms in ClassicalEvaluator need them, and recomputing IsPassed for
-    // every pawn on every eval call costs real search speed.
-    private readonly (ulong Key, int Mg, int Eg, ulong WhitePassers, ulong BlackPassers)[] _cache
-        = new (ulong, int, int, ulong, ulong)[CacheSize];
+    // Each slot also caches the passer bitboards (the piece-dependent passer
+    // terms in ClassicalEvaluator need them) and the outpost squares of both
+    // colors (pawn-only inputs: pawn attacks, pawn shields and the enemy
+    // pawn-attacks-span). Recomputing either per eval call costs real speed.
+    private readonly (ulong Key, int Mg, int Eg, ulong WhitePassers, ulong BlackPassers,
+                      ulong WhiteOutposts, ulong BlackOutposts)[] _cache
+        = new (ulong, int, int, ulong, ulong, ulong, ulong)[CacheSize];
 
     // Masks precomputed once: file of a square, adjacent files, and the
     // "passed pawn" cone (squares ahead on own + adjacent files, per color).
@@ -69,25 +71,95 @@ public sealed class PawnStructureEvaluator
     }
 
     // Pawn structure score (White's point of view), cached by pawn key.
-    public Score Evaluate(Board board) => Evaluate(board, out _, out _);
+    public Score Evaluate(Board board) => Evaluate(board, out _, out _, out _, out _);
 
-    // Same, also returning the cached passed-pawn bitboards of both sides so
-    // the caller's passer/piece terms only visit actual passers.
     public Score Evaluate(Board board, out ulong whitePassers, out ulong blackPassers)
+        => Evaluate(board, out whitePassers, out blackPassers, out _, out _);
+
+    // Same, also returning the cached passed-pawn bitboards of both sides (so
+    // the caller's passer/piece terms only visit actual passers) and the
+    // outpost squares of both colors.
+    public Score Evaluate(Board board, out ulong whitePassers, out ulong blackPassers,
+                          out ulong whiteOutposts, out ulong blackOutposts)
     {
         int slot = (int)(board.PawnZobristKey & (CacheSize - 1));
-        (ulong key, int mg, int eg, ulong wp, ulong bp) = _cache[slot];
+        (ulong key, int mg, int eg, ulong wp, ulong bp, ulong wo, ulong bo) = _cache[slot];
         if (key == board.PawnZobristKey)
         {
             whitePassers = wp;
             blackPassers = bp;
+            whiteOutposts = wo;
+            blackOutposts = bo;
             return new Score(mg, eg);
         }
 
         Score score = EvaluateSide(board, Color.White, out whitePassers)
                     - EvaluateSide(board, Color.Black, out blackPassers);
-        _cache[slot] = (board.PawnZobristKey, score.Mg, score.Eg, whitePassers, blackPassers);
+        ComputeOutposts(board, out whiteOutposts, out blackOutposts);
+        _cache[slot] = (board.PawnZobristKey, score.Mg, score.Eg, whitePassers, blackPassers,
+                        whiteOutposts, blackOutposts);
         return score;
+    }
+
+    // Outpost squares per color: relative ranks 4-6, protected by an own pawn
+    // OR with any pawn directly in front (shield), and outside the enemy's
+    // pawn-attacks-span (no enemy pawn can ever kick the piece out).
+    private static void ComputeOutposts(Board board, out ulong whiteOutposts, out ulong blackOutposts)
+    {
+        ulong whitePawns = board.Pieces(Color.White, PieceType.Pawn);
+        ulong blackPawns = board.Pieces(Color.Black, PieceType.Pawn);
+        ulong whiteAttacks = ((whitePawns & ~Bitboard.FileA) << 7) | ((whitePawns & ~Bitboard.FileH) << 9);
+        ulong blackAttacks = ((blackPawns & ~Bitboard.FileA) >> 9) | ((blackPawns & ~Bitboard.FileH) >> 7);
+        ulong allPawns = whitePawns | blackPawns;
+
+        ulong whiteSpan = PawnAttacksSpan(Color.White, whitePawns, blackPawns, whiteAttacks);
+        ulong blackSpan = PawnAttacksSpan(Color.Black, blackPawns, whitePawns, blackAttacks);
+
+        whiteOutposts = ((0xFFUL << 24) | (0xFFUL << 32) | (0xFFUL << 40)) // ranks 4-6
+                      & (whiteAttacks | (allPawns >> 8))
+                      & ~blackSpan;
+        blackOutposts = ((0xFFUL << 16) | (0xFFUL << 24) | (0xFFUL << 32)) // ranks 5-3
+                      & (blackAttacks | (allPawns << 8))
+                      & ~whiteSpan;
+    }
+
+    // pawn-attacks-span: every square this color's pawns attack
+    // now plus, for pawns that are neither blocked nor backward, every square
+    // they could ever attack while advancing. A blocked or backward pawn will
+    // never advance past its blockade, so it cannot evict a piece parked ahead
+    // of its file — those pawns only contribute their current attacks.
+    private static ulong PawnAttacksSpan(Color us, ulong ourPawns, ulong theirPawns, ulong ownAttacks)
+    {
+        bool white = us == Color.White;
+        ulong span = ownAttacks;
+        ulong b = ourPawns;
+
+        while (b != 0)
+        {
+            int s = Bitboard.PopLsb(ref b);
+            int rank = Squares.RankOf(s);
+            int push = white ? s + 8 : s - 8; // A pawn always has a push square.
+            ulong pushBB = Bitboard.SquareBB(push);
+
+            // Blocked: an enemy pawn sits directly in front.
+            bool blocked = (theirPawns & pushBB) != 0;
+
+            // Backward: behind all neighbour pawns on the adjacent files and
+            // unable to advance safely (the push square is blocked or covered
+            // by an enemy pawn).
+            ulong neighbours = ourPawns & AdjacentFilesMask[Squares.FileOf(s)];
+            ulong notAhead = white
+                ? (1UL << ((rank + 1) * 8)) - 1 // Own rank and below (rank <= 6 for a pawn).
+                : ~((1UL << (rank * 8)) - 1);   // Own rank and above (rank >= 1).
+            ulong leverPush = theirPawns & (white
+                ? ((pushBB & ~Bitboard.FileA) << 7) | ((pushBB & ~Bitboard.FileH) << 9)
+                : ((pushBB & ~Bitboard.FileA) >> 9) | ((pushBB & ~Bitboard.FileH) >> 7));
+            bool backward = (neighbours & notAhead) == 0 && (leverPush != 0 || blocked);
+
+            if (!backward && !blocked)
+                span |= PassedPawnMask[(int)us, s] & AdjacentFilesMask[Squares.FileOf(s)];
+        }
+        return span;
     }
 
     private static Score EvaluateSide(Board board, Color color, out ulong passersOut)
