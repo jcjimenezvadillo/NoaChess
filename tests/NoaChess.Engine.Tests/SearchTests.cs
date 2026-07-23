@@ -29,6 +29,28 @@ public class SearchTests
     }
 
     [Fact]
+    public void QuietMate_TakesPrecedenceOverFiftyMoveClock()
+    {
+        // Ra8# is quiet and advances the clock from 99 to 100. Checkmate ends
+        // the game before a fifty-move draw can be claimed.
+        var board = new Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 99 1");
+        var result = _engine.FindBestMove(board, depth: 3);
+
+        Assert.Equal("a1a8", result.BestMove.ToString());
+        Assert.True(result.Score > Engine.Search.AlphaBetaSearch.MateScore - 100);
+    }
+
+    [Fact]
+    public void DeadPosition_IsScoredAsExactDraw()
+    {
+        var board = new Board("7k/8/8/8/8/8/8/KB6 w - - 0 1");
+        var result = _engine.FindBestMove(board, depth: 3);
+
+        Assert.Equal(0, result.Score);
+        Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
+    }
+
+    [Fact]
     public void CapturesHangingQueen()
     {
         // The black queen on d5 is hanging; the white rook on d1 must capture it.

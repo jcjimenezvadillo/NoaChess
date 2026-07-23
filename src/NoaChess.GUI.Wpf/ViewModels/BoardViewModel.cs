@@ -280,6 +280,7 @@ public sealed class BoardViewModel : ViewModelBase
                 ? "Checkmate! Black wins."
                 : "Checkmate! White wins.",
             GameResult.Stalemate => "Draw by stalemate.",
+            GameResult.InsufficientMaterial => "Draw by insufficient material.",
             GameResult.FiftyMoveRule => "Draw by the fifty-move rule.",
             GameResult.ThreefoldRepetition => "Draw by threefold repetition.",
             _ when _board.IsInCheck() => _board.SideToMove == Color.White

@@ -14,6 +14,12 @@ public class TranspositionTableTests
     }
 
     [Fact]
+    public void Entry_RemainsExactlyOneQuarterCacheLine()
+    {
+        Assert.Equal(16, System.Runtime.CompilerServices.Unsafe.SizeOf<TTEntry>());
+    }
+
+    [Fact]
     public void StoreAndProbe_RoundTrips()
     {
         var tt = NewTable();
@@ -96,6 +102,28 @@ public class TranspositionTableTests
         Assert.Equal(123, entry.StaticEval);
         Assert.Equal(BoundType.None, entry.Bound);
         Assert.Equal(Move.None, entry.BestMove);
+    }
+
+    [Fact]
+    public void GenerationWrap_EvalOnlyEntryRemainsOccupiedAndIsNotReplaced()
+    {
+        var tt = new TranspositionTable(sizeMb: 1);
+
+        // The former 32-value generation scheme wrapped to zero here. A
+        // non-PV entry with bound None then had GenBound == 0, so Probe saw it
+        // as empty and the next colliding store silently replaced it.
+        for (int i = 0; i < 32; i++)
+            tt.NewSearch();
+
+        ulong first = 0x1111000000000042UL;
+        ulong second = 0x2222000000000042UL; // Same 1 MB cluster index.
+        tt.Store(first, 0, 0, 123, BoundType.None, Move.None, false);
+        tt.Store(second, 0, 0, 456, BoundType.None, Move.None, false);
+
+        Assert.True(tt.Probe(first, out TTEntry firstEntry));
+        Assert.Equal(123, firstEntry.StaticEval);
+        Assert.True(tt.Probe(second, out TTEntry secondEntry));
+        Assert.Equal(456, secondEntry.StaticEval);
     }
 
     [Fact]

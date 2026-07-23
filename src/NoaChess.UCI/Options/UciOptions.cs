@@ -22,6 +22,20 @@ public sealed class UciOptions
     public string Profile { get; private set; } = "Default";
     public string DebugLogFile { get; private set; } = "";
 
+    // ---- Syzygy endgame tablebases ----
+    // SyzygyPath: semicolon-separated directories holding the .rtbw/.rtbz
+    // files; empty disables probing entirely.
+    // SyzygyProbeDepth: probing costs a file read, so shallow nodes can skip
+    // it. 1 means "probe everywhere the piece count allows".
+    // SyzygyProbeLimit: never probe positions with more men than this, even if
+    // larger tables happen to be installed.
+    // Syzygy50MoveRule: when false, cursed wins and blessed losses are treated
+    // as plain wins and losses (used for analysis where the rule is ignored).
+    public string SyzygyPath { get; private set; } = "";
+    public int SyzygyProbeDepth { get; private set; } = 1;
+    public int SyzygyProbeLimit { get; private set; } = 7;
+    public bool Syzygy50MoveRule { get; private set; } = true;
+
     // Prints the option declarations the GUI expects right after "id".
     public void Print(TextWriter output)
     {
@@ -32,6 +46,10 @@ public sealed class UciOptions
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet");
+        output.WriteLine("option name SyzygyPath type string default <empty>");
+        output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
+        output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
+        output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
     }
 
@@ -69,6 +87,22 @@ public sealed class UciOptions
             case "profile":
                 Profile = value.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? "Bullet" : "Default";
                 return "Profile";
+
+            case "syzygypath":
+                SyzygyPath = value == "<empty>" ? "" : value;
+                return "SyzygyPath";
+
+            case "syzygyprobedepth" when int.TryParse(value, out int probeDepth):
+                SyzygyProbeDepth = Math.Clamp(probeDepth, 1, 100);
+                return "SyzygyProbeDepth";
+
+            case "syzygyprobelimit" when int.TryParse(value, out int probeLimit):
+                SyzygyProbeLimit = Math.Clamp(probeLimit, 0, 7);
+                return "SyzygyProbeLimit";
+
+            case "syzygy50moverule" when bool.TryParse(value, out bool rule50):
+                Syzygy50MoveRule = rule50;
+                return "Syzygy50MoveRule";
 
             case "debug log file":
                 DebugLogFile = value == "<empty>" ? "" : value;

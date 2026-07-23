@@ -1,4 +1,97 @@
-# CHANGELOG
+﻿# CHANGELOG
+
+## 2026-07-20 (v2.8.1) — Syzygy correctness fixes, capture-history main ordering, partial quiet sort, threat-aware quiet scoring, NNUE/tuner tools infrastructure
+
+**SPRT vs v2.7.4 (tc 10+0.1, elo0=0 elo1=10): +14.1 ±10.8 Elo, LOS 99.5%, H1 accepted at 2175 games [0.520], DrawRatio 45.3%. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3120): +75 ±23 relative to the field (+23 over v2.7.4's +52 on the same field). Strength: ~3000 ±25 CCRL.** Field audit (round-robin 2548 games, 14 engines, tc=60+0.6): **Winter-3200 renamed to 3120** (implied 3118, 2.4σ, confirmed in both gauntlet and round-robin equal to Rubichess-3150). **Rubichess-3150 on watch** (implied 3113, 1.1σ — one more run decides). **Meltdown-2817 cleared** (implied 2822, essentially correct). Tcheran-2917, Ethereal-2910, Colossus-2862 verified to within ≤3 Elo of their labels.
+
+Expert contributor review of the v2.8.0 Syzygy integration found two critical bugs that corrupted every tablebase-assisted game, plus several move-ordering improvements from block 5G that were left pending.
+
+### Critical Syzygy fixes (two bugs that cancelled the v2.8.0 work in practice)
+
+**Bug 1 — Root filter was silently nullified.** `FilterRootMovesByTablebase()` correctly computed the filtered move list and wrote it to `_rootMoves`, but `SearchRoot` then regenerated all moves from scratch, discarding the filtered list entirely. The prober output was correct; the move played was not. Fixed: `SearchRoot` now reads `_rootMoves` directly instead of regenerating.
+
+**Bug 2 — DTZ ranking scored irreversible moves incorrectly.** Root moves that capture, push a pawn or promote zero the fifty-move counter immediately; their DTZ must be derived from the position's WDL BEFORE the move, not from the child's DTZ. Previously the code was reading the child's DTZ and accidentally giving zeroing moves an arbitrary distance instead of ±1/±101. Additionally, lost positions chose the fastest loss (smallest negative DTZ) instead of the longest defense — the comparison was inverted. Both corrected in `TryRankRootMovesByDtz` and `RootDtzRank`.
+
+### TT safety for tablebase scores
+
+`CanReuseTtScore` now blocks reuse of TB-band scores when `halfmoveClock > 0`. The Zobrist key deliberately omits the clock, so a decisive TB score learned immediately after a zeroing move could propagate to the same position with a live counter and cause an incorrect early cutoff.
+
+`ToTT`/`FromTT` now handle the full `TbScoreBound` range (both mate and TB scores) consistently.
+
+### Memory-mapped file reader (future-proofing for 6/7-man)
+
+`SyzygyTable` migrated from `byte[]` + `int` offsets to `MemoryMappedFile`/`MemoryMappedViewAccessor` with `long` offsets throughout. The OS pages in only the blocks a probe actually touches; the 2 GB `byte[]` ceiling is eliminated, making 6- and 7-man files (many exceed 2 GB) usable without code changes. All `PairsData` offset fields are now `long`. `SyzygyTable` implements `IDisposable`; `Syzygy.Init` disposes all open mappings before re-initialising, so no file handles are leaked between path reloads.
+
+### Capture history — main search integration (5G)
+
+`_captureHistory` is now passed to `ScoreAndSortCaptures` and `OrderCaptures` (ProbCut) throughout `AlphaBetaSearch`. Capture cutoffs earn a bonus (`depth²`); captures tried before the cutoff earn a malus. The ordering formula is `captureHistory + 7 × victimValue`, matching the reference.
+
+`CaptureHistory.AddBonus`/`AddMalus` now use a `Magnitude()` helper (`Math.Abs((long)value)`) to prevent overflow before the gravity clamp.
+
+### Partial insertion sort for quiet moves (5G)
+
+`MovePicker.ScoreAndSortQuiets` now accepts `int? depth`. When provided:
+- the quiet block is moved in front of any unserved losing captures (`MoveRangeToFront`), matching the reference stage order QUIET → BAD_CAPTURE;
+- `PartialSortRange` sorts only moves scoring above `−3000 × depth` into a descending prefix; the low-scored tail is left unsorted (paying O(n²) to order moves the node will never reach has no value).
+
+### Threat-aware and check-aware quiet scoring (5G)
+
+`Score()` now awards `CheckBonus = +16 384` to direct checks that do not clearly lose material (`SEE >= −75`). It also applies a `ThreatEscapeWeight × PieceValue` term: moves that escape a lesser-piece threat score higher; moves that enter one score lower. Threat maps (pawn, minor, rook attacks) are built once per quiet batch in `BuildQuietOrderingContext`.
+
+### X-ray mobility correctness fix
+
+Sliders now see through the own queen only (bishops and rooks through the own queen; rooks additionally through own rooks), matching the reference exactly. The v2.8.0 code was computing x-ray attacks through all queens.
+
+### UCI — Ponder option
+
+`option name Ponder type check default false` is now declared in the UCI handshake. `setoption name Ponder value true/false` is accepted. Relevant for GUI usage (Arena, BanksiaGUI, etc.). Note: cutechess-cli does not implement pondering in tournament mode and warns regardless of the declaration.
+
+### Portable Syzygy test infrastructure
+
+`SyzygyTests.cs` completely rewritten. All integration tests now gate on the local tablebase path (configured at build time) via `SyzygyFactAttribute`/`SyzygyTheoryAttribute` — they skip gracefully when the large external files are absent. New integration cases cover: root-filter-not-regenerated, DTZ-at-rule-50-boundary, lost-position-longest-defense, WDL-only fallback when DTZ files are missing, ProbeDepth ignored below the loaded cardinality, `TbHits` counting. `SyzygyScoreTests` (always-on, no files needed) verifies `ToTT`/`FromTT`/`CanReuseTtScore` arithmetic via reflection.
+
+### New test files
+
+- `CaptureHistoryTests.cs` — gravity overflow guard, main ordering (7×victim + history), capture-promotion ordering, safe-check bonus, threat-escape/enter bonuses, partial sort prefix, quiet-before-bad-capture invariant.
+- `UciSearchLimitsTests.cs` — regression tests for the `go` parser combining clock + depth + nodes; movetime takes the tighter bound; `infinite` has no artificial depth cap.
+
+### New development tools (not shipped in the UCI binary)
+
+- `tools/NoaChess.DataGen/` — self-play data generation for NNUE training corpus: random-opening games with fixed-depth search, FEN + result output in a format suitable for the Python training pipeline.
+- `tools/NoaChess.Tuner/` — Texel tuning infrastructure: `ParameterRegistry`, coordinate-descent loop, `tuned_values.txt` output. Re-usable for any classical evaluation parameter.
+- `tools/training/nnue/` — Python NNUE training pipeline: dataset loader, HalfKP model definition, training loop, validation, weight export. Configs in `tools/training/nnue/configs/`.
+
+### Tests
+
+193/193 always-running tests pass. The 5 regressions present in the early branch state (rule-50/stalemate/dead-position/quiet-mate in `QuiescenceTests`) are resolved by the Syzygy TT-safety and draw-detection fixes above.
+
+
+## 2026-07-20 (v2.8.0) — block 9: Syzygy endgame tablebases
+
+**Never independently validated.** Two critical bugs in the root filter and DTZ ranking (fixed in v2.8.1) made the Syzygy integration a functional no-op in practice. The SPRT and gauntlet were run against v2.8.1 instead. Everything below that is stated as measured, is measured.
+
+Pulled ahead of NNUE deliberately, following the reference's own order (Syzygy 2014, NNUE 2020): it improves endgame play now, and later it relabels the noisiest slice of the NNUE training corpus with exact WDL.
+
+**Not a P/Invoke — a managed port.** The roadmap called for binding the usual C probing library. That is not what shipped: there is no C toolchain on this machine, and a native DLL would break the single self-contained .exe requirement. The prober is ~1250 lines of C#.
+
+**Why that had to be proven rather than assumed.** A wrong index does not crash: it returns a WRONG result that looks perfectly valid, and the search then trusts it absolutely — strictly worse than having no tablebases at all. The port is therefore differentially tested against an independent prober over randomly generated endgames: **3000 positions, 3-to-5 men, both sides to move, zero WDL discrepancies and zero DTZ discrepancies.** That harness found three bugs that would otherwise have reached play silently:
+
+- the symbol-tree base offset was cached per TABLE instead of per `PairsData`. A pawn table holds eight of them (4 files × 2 sides), so the decompressor walked a misaligned tree and **hung the engine outright** rather than returning anything wrong.
+- an off-by-one in the DTZ value remap (`map[idx + value]`, not `idx + value - 1`).
+- captures reducing to bare kings have no two-man table; the recursion failed instead of returning the obvious draw.
+
+**What ships:**
+
+- search: **WDL probe** after the TT probe, gated on the fifty-move counter being zero — the tables answer "won" without regard to that rule, and a win needing more plies than the counter allows is really a draw. Castling rights are refused inside the prober for the same class of reason. Verdicts live in **their own score band below the mate range**: they are certain, so they must outrank every heuristic evaluation, but reporting them as mate scores would claim a forced mate the engine has not proven and corrupt the mate-distance arithmetic.
+- search: **root move filtering** by WDL then DTZ — win > draw > loss, and among wins the shortest distance to zeroing. Knowing an ending is won is not enough to win it: with no distance to steer by the engine shuffles and draws by the fifty-move rule. **Deliberately a filter and not an early return**: returning the verdict directly would replace "mate in 3" with a plain tablebase win in the UCI output and undo the mate reporting added in v2.7.1. Filtering keeps the search running while making it structurally impossible to throw a won ending away.
+- uci: `SyzygyPath`, `SyzygyProbeDepth`, `SyzygyProbeLimit`, `Syzygy50MoveRule`.
+- perf: the probe guard is ordered by **selectivity rather than readability** — the piece count is the test that fails at practically every middlegame node, so it goes first, against a cached limit that is 0 when no tablebases are loaded. The obvious ordering cost **3.5% NPS on positions that never probe at all**; this brings it to 1.1%, which is the honest cost of one popcount per node.
+- tests: 208/208, including 16 new Syzygy cases. **Every expectation is derived from the independent prober, not hand-reasoned** — five hand-written fixtures were wrong across this session (illegal positions with the side not to move already in check, a "drawn" position where a rook simply hangs, a "won" KPvK that is actually drawn).
+
+**Measured behaviour:** a won KPvK converts in **15 plies with tablebases against 25 without** — the DTZ filter steering to the fastest win. KRvK and KQvK convert identically either way: the engine already handled those. The gain is concentrated where the heuristic is actually wrong (pawn endings, opposition, drawn positions that look won), which is rarer than "I am a rook up".
+
+**Expected reach, counted over the previous runs' own PGNs** — and this corrects an assumption made when the block started: the 10+0.1 SPRT reaches five men or fewer in **32.1%** of games, the 60+0.6 gauntlet in only **22.9%**. At the longer control games are decided earlier and simplify less, so the SPRT is the better instrument here, not the gauntlet. More telling still: of the previous SPRT's decisive games only 189 of 565 reached five men, so **two thirds were settled before tablebases could have any say**. The reachable effect is therefore small — roughly +3 to +10 Elo — and elo0=0/elo1=10 struggles to resolve that. A flat result would not mean the probing is broken; it would mean the ceiling is in the EVALUATION, which is the same conclusion block 5 reached over seven consecutive blocks.
+
 
 ## 2026-07-20 (5F ProbCut · multi-cut · NMP dynamic R) — ALL THREE MEASURED AND CUT, NO RELEASE
 
@@ -49,7 +142,7 @@ Every capture that gives check lands the opponent in exactly that node, so the h
 
 **A false premise was corrected in the documentation.** Our notes since 5B claimed the reference qsearch "generates checks at the first ply", and that claim had propagated into five separate design decisions. It does not: its own comment reads *"captures, or evasions only when in check"*. The real difference was the −infinity start in check, which is what is ported here.
 
-**Field audit** (624-game LTC gauntlet): **Marvin-2960 measured 62 low for the second cycle running** (−56 in the v2.7.2 gauntlet, −62 here) → renamed to 2900. **BitGenie-3010 cleared**: +43 here after −130 last cycle, i.e. noise, off the watch list. **Rubichess-3150 (−120) and Meltdown-2817 (+73) to watch** — single-run deviations, and 48 games per opponent carries ±80–120, so neither is actionable yet.
+**Field audit** (624-game LTC gauntlet): **Marvin-2960 measured 62 low for the second cycle running** (−56 in the v2.7.2 gauntlet, −62 here) → renamed to 2900. **BitGenie-3010 cleared**: +43 here after −130 last cycle, i.e. noise, off the watch list. **Rubichess-3150 (−120) and Meltdown-2817 (+73) to watch** — single-run deviations, and 48 games per opponent carries ±80–120, so neither is actionable yet. (Resolved in the v2.8.1 field audit: Winter-3200 → 3120, Meltdown cleared, Rubichess still on watch.)
 
 ## 2026-07-19 (blocks 5E + 5G, the v2.7.3 campaign) — MEASURED AND CUT, NO RELEASE
 

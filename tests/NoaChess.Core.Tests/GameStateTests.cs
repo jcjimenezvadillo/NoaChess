@@ -31,6 +31,35 @@ public class GameStateTests
     }
 
     [Fact]
+    public void Checkmate_TakesPrecedenceAtHalfmove100()
+    {
+        var board = new Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 100 4");
+        Assert.Equal(GameResult.Checkmate, GameState.GetResult(board));
+    }
+
+    [Theory]
+    [InlineData("7k/8/8/8/8/8/8/K7 w - - 0 1")]             // K-K.
+    [InlineData("7k/8/8/8/8/8/8/KN6 w - - 0 1")]            // KN-K.
+    [InlineData("7k/8/8/8/8/8/8/KB6 w - - 0 1")]            // KB-K.
+    [InlineData("5b1k/8/8/8/8/8/8/K1B5 w - - 0 1")]         // Same-colour bishops.
+    public void DeadMaterial_IsImmediateDraw(string fen)
+    {
+        var board = new Board(fen);
+        Assert.True(GameState.IsDeadPosition(board));
+        Assert.Equal(GameResult.InsufficientMaterial, GameState.GetResult(board));
+    }
+
+    [Theory]
+    [InlineData("7k/5b2/8/8/8/8/8/K1B5 w - - 0 1")]         // Opposite-colour bishops.
+    [InlineData("7k/8/8/8/8/8/8/KNN5 w - - 0 1")]           // KNN-K can reach mate.
+    public void MaterialThatCanStillMate_IsNotDead(string fen)
+    {
+        var board = new Board(fen);
+        Assert.False(GameState.IsDeadPosition(board));
+        Assert.Equal(GameResult.Ongoing, GameState.GetResult(board));
+    }
+
+    [Fact]
     public void StartPosition_IsOngoing()
     {
         Assert.Equal(GameResult.Ongoing, GameState.GetResult(new Board()));
