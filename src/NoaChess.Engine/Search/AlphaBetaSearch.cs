@@ -211,6 +211,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // 5C adjuster suite kept measuring against.
     private const int LmrScale = 1024;
 
+    // NO history-informed LMR adjustment, on measured evidence — the line is
+    // closed, not merely unimplemented. Three variants of "let LMR read the
+    // butterfly history" were tested against v2.8.3-class baselines and land on
+    // a monotone curve by how much reduction they remove:
+    //     statScore, continuous, biased to LESS reduction   -18 Elo (H0)
+    //     clamp(hist/384, -2, +2), symmetric                -4.8 +/-11.4, LLR -2.89 (H0)
+    //     clamp(hist/256, -2,  0), one-sided add-only        +4.2 +/-9.1  flat, 3000 games
+    // Every version that clawed moves out of reduction lost, in proportion to how
+    // aggressively it did so; the add-only version merely returned to noise. Our
+    // base reductions are milder than the reference's, so a history term here is
+    // redundant with the killer/counter shallowing already applied and only costs
+    // nodes. (For most of the engine's life this line shipped as
+    // clamp(hist/16384, -2, 2) and was arithmetically DEAD — the butterfly table
+    // is bounded at 7183 so it returned 0 at every node — which is the third
+    // inert-threshold bug of that family and is why it was investigated at all.)
+    // Do not re-add without a new mechanism; the direct form is settled.
+
 
     private static int[,] BuildLmrTable()
     {
@@ -616,13 +633,18 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             int score;
             if (searched == 0)
             {
-                score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+                // The root is a PV node; its first child stays on the PV.
+                score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
+                                 cutNode: false);
             }
             else
             {
-                score = -Negamax(board, depth - 1, -alpha - 1, -alpha, ply: 1, allowNull: true);
+                // Scout children of the PV root are expected cut nodes.
+                score = -Negamax(board, depth - 1, -alpha - 1, -alpha, ply: 1, allowNull: true,
+                                 cutNode: true);
                 if (score > alpha && !_stopped)
-                    score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+                    score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
+                                     cutNode: false);
             }
 
             board.UnmakeMove();
@@ -841,7 +863,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // search WITH the move) nor store its result (it describes a different,
     // move-less position). Move.None means a normal search.
     private int Negamax(Board board, int depth, int alpha, int beta, int ply, bool allowNull,
-                        Move excluded = default)
+                        bool cutNode, Move excluded = default)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
@@ -1083,7 +1105,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             _incremental?.PushNull();
             board.MakeNullMove();
             int nullScore = -Negamax(board, depth - r, -beta, -beta + 1,
-                                     ply + 1, allowNull: false);
+                                     ply + 1, allowNull: false, cutNode: false);
             board.UnmakeNullMove();
             _incremental?.Pop();
 
@@ -1107,7 +1129,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 // position, null moves disabled for us until past nmpMinPly.
                 _nmpMinPly = ply + 3 * (depth - r) / 4;
                 _nmpColor = board.SideToMove;
-                int v = Negamax(board, depth - r, beta - 1, beta, ply, allowNull: false);
+                int v = Negamax(board, depth - r, beta - 1, beta, ply, allowNull: false,
+                                cutNode: cutNode);
                 _nmpMinPly = 0;
 
                 if (_stopped)
@@ -1164,7 +1187,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
                 if (score >= probBeta)
                     score = -Negamax(board, probCutDepth, -probBeta, -probBeta + 1,
-                                     ply + 1, allowNull: false);
+                                     ply + 1, allowNull: false, cutNode: !cutNode);
 
                 board.UnmakeMove();
                 _incremental?.Pop();
@@ -1210,7 +1233,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 int singularBeta = ttScore - 2 * depth;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
-                                    ply, allowNull: false, excluded: ttMove);
+                                    ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
                     return 0;
                 if (score < singularBeta)
@@ -1232,6 +1255,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         bool ttServed = ttMove != Move.None && MoveGenerator.IsPseudoLegal(board, ttMove);
         if (ttServed)
             moves.Add(ttMove);
+
+        // If the TT's best move is itself a capture, quiet alternatives are less
+        // likely to be the refutation, so late quiets are reduced one extra ply
+        // in the LMR block below. Gated on ttServed so the flag is known coherent
+        // with this position (pseudo-legality already validated), matching the
+        // reference's capture_stage(ttMove) rather than a stale stored flag.
+        bool ttCapture = ttServed && (ttMove.IsCapture || ttMove.IsPromotion);
 
         // Previous-move context for counter moves and continuation history
         // (absent at the root or right after a null move).
@@ -1380,8 +1410,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             if (searched == 0)
             {
-                // PVS: the first (best-ordered) move gets the full window.
-                score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true);
+                // PVS: the first (best-ordered) move gets the full window and,
+                // as a PV child, is never a cut node.
+                score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true,
+                                 cutNode: false);
             }
             else
             {
@@ -1404,13 +1436,51 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     int r = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
                     if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
-                    // History-informed adjustment: a quiet move the history
-                    // tables like is reduced less (it keeps refuting things
-                    // elsewhere); a disliked one is reduced more. Killers and
-                    // the counter move also earn a shallower reduction.
-                    r -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2) * LmrScale;
+                    // No butterfly-history term here — three variants were tested
+                    // and rejected; see the LmrReductions block above. "This move
+                    // is good" is expressed only through the killer/counter
+                    // shallowing below, which is measured net positive.
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
                         r -= LmrScale;
+
+                    // 5C adjuster (shipped, +7.1 Elo): reduce quiet moves one
+                    // extra ply when the TT best move is a capture. Reference
+                    // value 1079 in 1024ths (~1.05 plies); a reduction is measured
+                    // in plies so neither the value-unit nor history-unit scaling
+                    // applies.
+                    if (ttCapture) r += 1079;
+
+                    // NO cutNode reduction term. The reference's largest LMR
+                    // adjuster (r += 4026 at cut nodes) was measured at two
+                    // magnitudes and rejected both times: 4026 (~3.9 plies) at
+                    // −4.0 ±10.8 H0, 1536 (~1.5 plies) at −7.1 ±12.5 H0 — losing
+                    // ~5 Elo regardless of strength, the two intervals overlapping.
+                    // Most likely our cut-node classification is noisier than the
+                    // reference's (no IIR, thinner node-type discipline), so the
+                    // adjuster reduces the wrong nodes at any magnitude. cutNode
+                    // stays THREADED (behaviour-neutral) because allNode/cutoffCnt
+                    // adjusters need it, but it drives no reduction directly.
+
+                    // 5C adjuster under test: reduce LESS at ttPv nodes (a node
+                    // that was on a previous search's principal variation is worth
+                    // searching more carefully). Reference removes 3023 + 1004*PV
+                    // + 885*(ttValue>alpha) + 816*(ttDepth>=depth) [+940*cutNode].
+                    // Scaled ×0.34 so the base is ~1 ply instead of ~3: at 3 plies
+                    // it would floor our milder reductions to zero at every ttPv
+                    // node and the conditionals would stop modulating. The cutNode
+                    // sub-term is dropped — our cut-node signal is too noisy to
+                    // trust (see above). Conditionals gated on ttHit so ttValue and
+                    // ttDepth are real.
+                    if (ttPv)
+                    {
+                        r -= 1024 + (nonPv ? 0 : 340);
+                        if (ttHit)
+                        {
+                            if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
+                                r -= 300;
+                            if (entry.Depth >= depth) r -= 277;
+                        }
+                    }
 
                     // Position is worsening: the remaining moves are even less
                     // likely to be good — reduce them one extra ply.
@@ -1422,19 +1492,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 }
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
+                // A reduced LMR probe is searched as an expected cut node; an
+                // unreduced scout mirrors the reference's non-LMR path (!cutNode).
                 score = -Negamax(board, newDepth - reduction, -alpha - 1, -alpha,
-                                 ply + 1, allowNull: true);
+                                 ply + 1, allowNull: true,
+                                 cutNode: reduction > 0 ? true : !cutNode);
 
-                // The reduced probe beat alpha: verify at full depth first.
+                // The reduced probe beat alpha: verify at full depth first
+                // (reference re-search flips the parent's node type).
                 if (score > alpha && reduction > 0 && !_stopped)
                     score = -Negamax(board, newDepth, -alpha - 1, -alpha,
-                                     ply + 1, allowNull: true);
+                                     ply + 1, allowNull: true, cutNode: !cutNode);
 
                 // Still inside the window: it is a genuine PV candidate,
-                // re-search with the real window.
+                // re-search with the real window as a PV (non-cut) child.
                 if (score > alpha && score < beta && !_stopped)
                     score = -Negamax(board, newDepth, -beta, -alpha,
-                                     ply + 1, allowNull: true);
+                                     ply + 1, allowNull: true, cutNode: false);
             }
 
             board.UnmakeMove();
