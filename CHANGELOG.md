@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-07-23 (v2.8.4) — LMR ttCapture and ttPv adjusters on the fixed-point pipeline
+
+**SPRT vs v2.8.3 (tc=10+0.1, elo0=0, elo1=10): exhausted positive at 3000 games — 851-772-1377 [0.513], +9.2 ±9.1 Elo, LOS 97.5%, LLR 1.91. LTC gauntlet pending.**
+
+The v2.8.3 fixed-point LMR pipeline (1024ths of a ply, verified behaviour-neutral) created the precision needed to port individual reduction adjusters from reference engines without integer truncation swamping the signal. This release carries the two adjusters that survived individual screens at the real time control: **ttCapture** (reduce more when the TT move was a capture) and **ttPv** (reduce less at nodes that were on a previous PV). Each was screened individually against the running bundle (+7.1 and +7.5 Elo respectively at LOS >93%), then validated together against the shipped v2.8.3 baseline.
+
+### Changes
+
+- **ttCapture LMR adjuster.** When the TT move is a capture or promotion, late quiets are reduced by an additional ~1 ply (`r += 1079` in 1024ths): the position has a forcing continuation in the TT, so quiets on this node are relatively less interesting. Gated on `ttServed` so the flag is only set when the TT actually delivered the move. Screened +7.1 ±9.1 Elo, LOS 93.7%.
+- **ttPv LMR adjuster.** When the TT entry's `ttPv` flag is set (the node was on a previous search's principal variation), late quiets are reduced by ~1 ply less: `r -= 1024 + (nonPv ? 0 : 340)`, plus two small TT-hit sub-terms (`r -= 300` if the TT score beats alpha; `r -= 277` if the TT depth covers the current depth). Scaled ~×0.34 from the reference magnitude to keep the base at ~1 ply rather than ~3 (which would floor the milder reductions to zero). Screened +7.5 ±9.0 Elo, LOS 94.9%.
+- **cutNode threaded through Negamax (behaviour-neutral).** The expected-cut-node flag is now propagated correctly through all recursive calls (root, PV, LMR scout/re-search, null-move, ProbCut, singular). The isolated `cutNode` LMR adjuster was measured at both magnitudes on the fixed-point pipeline and rejected (−4.0 H0 at r+=4026; −7.1 H0 at r+=1536). Threading KEPT as a correctness prerequisite for allNode/cutoffCnt adjusters.
+- **ContinuationHistory MaxScore 8192 (correctness fix).** The continuation-history table's gravity bound was 2²⁰ (inert — measured flat +4.1 ±9.1). Correctly sized at 8192, matching the operating range of the table. Behaviour-neutral in practice.
+- **Dead LMR history term removed.** The `clamp(history/16384, -2, 2)` butterfly-history adjuster was always zero (butterfly is bounded at 7183, so `7183/16384 = 0` in integer division). Three variants of direct butterfly-history adjustment were measured and all rejected: statScore −18 Elo H0, symmetric clamp −4.8 ±11.4 H0, one-sided add-only +4.2 ±9.1 flat. The line is closed.
+
+### New lesson: signal quality predicts LMR adjuster success
+
+**Signal quality, not reduction direction, determines whether an LMR adjuster works.** Both winning adjusters use clean categorical signals (TT move IS a capture? node WAS on a PV?) and work regardless of whether they add or remove reduction. Both losing signals were noisy: our derived cut-node classification and raw butterfly-history magnitude (skewed distribution, mean +71.8 against median −8). Prefer future adjusters keyed on clean categorical facts.
+
+### Verification
+
+- **276/276 tests green** (71 Core + 205 Engine). The two pre-existing intermittent failures (Syzygy DTZ NullReferenceException and EvalSymmetry colour-symmetry assertion) are unchanged and pass in isolation.
+
 ## 2026-07-23 (v2.8.3) — working history gravity, and the fixed-point LMR pipeline
 
 **SPRT vs v2.8.2 (tc=10+0.1, elo0=0, elo1=10): 241-183-411 [0.535] at 835 games, +24.4 ±17.5 Elo — the interval excludes zero, but read the caveat.** The run was stopped by hand at 840 games with **LLR 2.61 against an upper bound of 2.94**, so this is **NOT a formally accepted H1**: cutting a sequential test at a favourable moment is exactly what the stopping rule exists to prevent, and it inflates the false-positive rate by an amount this entry cannot quantify. It is reported as a strong point estimate backed by a second instrument, not as a passed test. **Calibrated LTC gauntlet: 624 games, 65.6%, +112 ±24 relative to the field** against v2.8.2's +94 ±23 — the same direction, though the +18 difference sits inside the ±33 the two gauntlets jointly carry.
