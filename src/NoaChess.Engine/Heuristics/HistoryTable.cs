@@ -39,5 +39,17 @@ public sealed class HistoryTable
             Decay(); // Rescale everything to keep relative ordering.
     }
 
+    // Punishes a quiet move that was searched before the cutoff move at this
+    // node and did NOT refute: it sinks in the ordering next time. The clamp
+    // (instead of a rescale) keeps one heavily punished move from erasing the
+    // accumulated knowledge about every other move.
+    public void AddMalus(Color color, Move move, int depth)
+    {
+        ref int score = ref _scores[(int)color, move.From, move.To];
+        score -= depth * depth;
+        if (score < -MaxScore)
+            score = -MaxScore;
+    }
+
     public int Get(Color color, Move move) => _scores[(int)color, move.From, move.To];
 }

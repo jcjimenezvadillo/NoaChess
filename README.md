@@ -6,12 +6,12 @@
 
 NoaChess is a modular UCI chess engine written from scratch in C# on .NET 10, with its own WPF board GUI. It follows an incremental, measured development process: every version is validated with unit tests, Perft, automated engine matches and Elo estimation before moving on.
 
-**Current strength: ~2600 Elo** (CCRL-equivalent, measured over a 350-game LTC gauntlet at tc=60+0.6 against 7 engines rated 2580–2788 CCRL — see [CHANGELOG](CHANGELOG.md)). SPRT vs v2.1.1 passed H1 in 160 games: +429 ± 88 Elo, LOS 100%.
+**Current strength: ~2710 Elo measured** (v2.3.0, CCRL-equivalent: 59.5% over a 231-game LTC precision gauntlet vs 7 engines rated 2580–2788, after passing SPRT vs v2.2.0 with +91 ± 34 Elo, LOS 100% — see [CHANGELOG](CHANGELOG.md)).
 
-### **Main Features (v2.2.0)**
+### **Main Features (v2.3.0)**
 - Bitboard board representation with **magic bitboards** for sliding pieces.
 - Full legal move generation (castling, en passant, promotions), validated against the public Perft reference values.
-- **Search**: iterative deepening, aspiration windows, PVS, transposition table (Zobrist), quiescence search, null-move pruning, check extensions, SEE (static exchange evaluation) ordering and pruning, killer/history move ordering, logarithmic LMR, reverse futility pruning, futility pruning, late move pruning.
+- **Search**: iterative deepening, aspiration windows with progressive widening, PVS, transposition table (Zobrist), quiescence search, null-move pruning, check extensions, singular extensions, SEE (static exchange evaluation) ordering and pruning, killer/history/counter-move/continuation-history ordering, history-informed logarithmic LMR, reverse futility pruning, futility pruning, late move pruning, Internal Iterative Reductions, ProbCut.
 - **Evaluation**: tapered (middlegame/endgame) evaluation blended by game phase — PeSTO piece values, two-phase piece-square tables, king safety (attack units + pawn shield through quadratic danger curve), piece mobility, bishop pair, rooks on open/semi-open files, tapered pawn structure (doubled/isolated/passed passers); mop-up term for won endgames.
 - **NNUE infrastructure**: HalfKP neural network runtime, incremental accumulators, SIMD inference; optional via UCI `UseNNUE` / `EvalFile` options.
 - **Time management**: soft/hard budgets, movestogo support, GUI-latency safety margins.
@@ -54,7 +54,8 @@ The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, Banksia
 - **v1.1** — NPS optimization (magic bitboards, zero-alloc paths), Bullet profile, benchmarks. ✅ (~2070 Elo)
 - **v2.0** — NNUE evaluation infrastructure. ✅
 - **v2.2** — Tapered classical evaluation overhaul + search pruning (log LMR, RFP, futility, LMP). ✅ (~2600 Elo)
-- **Next** — Search core improvements (continuation history, singular extensions, IIR, ProbCut) · Eval tuning · NNUE retrain · Lazy SMP · see the full roadmap.
+- **v2.3** — Search core overhaul: continuation/counter-move history, singular extensions, history-based LMR, IIR, ProbCut. ✅ (~2710 Elo measured)
+- **Next** — Eval terms + tuning · Speed · NNUE retrain · Lazy SMP · Book/tablebases · see the full roadmap.
 
 Full change history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -74,12 +75,12 @@ For other uses, please contact the owner.
 
 NoaChess es un motor de ajedrez UCI modular escrito desde cero en C# sobre .NET 10, con su propia GUI de tablero en WPF. Sigue un desarrollo incremental y medido: cada versión se valida con tests unitarios, Perft, matches automáticos entre motores y estimación de Elo antes de avanzar.
 
-**Fuerza actual: ~2600 Elo** (equivalente CCRL, medido en un gauntlet LTC de 350 partidas a tc=60+0.6 contra 7 motores de 2580–2788 CCRL — ver [CHANGELOG](CHANGELOG.md)). SPRT vs v2.1.1 superó H1 en 160 partidas: +429 ± 88 Elo, LOS 100%.
+**Fuerza actual: ~2710 Elo medido** (v2.3.0, equivalente CCRL: 59.5% en un gauntlet LTC de precisión de 231 partidas contra 7 motores de 2580–2788, tras superar el SPRT contra v2.2.0 con +91 ± 34 Elo, LOS 100% — ver [CHANGELOG](CHANGELOG.md)).
 
-### **Características principales (v2.2.0)**
+### **Características principales (v2.3.0)**
 - Representación por bitboards con **magic bitboards** para piezas deslizantes.
 - Generación de movimientos legales completa (enroques, al paso, promociones), validada contra los valores públicos de referencia de Perft.
-- **Búsqueda**: iterative deepening, aspiration windows, PVS, tabla de transposición (Zobrist), quiescence, null-move pruning, extensiones de jaque, SEE para ordenación y poda, killers/history, LMR logarítmico, reverse futility pruning, futility pruning, late move pruning.
+- **Búsqueda**: iterative deepening, aspiration windows con ensanchado progresivo, PVS, tabla de transposición (Zobrist), quiescence, null-move pruning, extensiones de jaque, singular extensions, SEE para ordenación y poda, ordenación por killers/history/counter-move/continuation history, LMR logarítmico informado por historia, reverse futility pruning, futility pruning, late move pruning, Internal Iterative Reductions, ProbCut.
 - **Evaluación**: evaluación tapered (fase media/final) mezclada por fase de juego — valores PeSTO, tablas pieza-casilla de dos fases, seguridad del rey (unidades de ataque + escudo de peones mediante curva cuadrática), movilidad de piezas, par de alfiles, torres en columnas abiertas/semiabiertas, estructura de peones tapered (doblados/aislados/pasados); término mop-up para finales ganados.
 - **Infraestructura NNUE**: runtime de red neuronal HalfKP, acumuladores incrementales, inferencia SIMD; opcional mediante opciones UCI `UseNNUE` / `EvalFile`.
 - **Gestión de tiempo**: presupuestos soft/hard, soporte movestogo, márgenes de seguridad para la latencia de la GUI.
@@ -122,7 +123,8 @@ El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess,
 - **v1.1** — Optimización NPS (magic bitboards, cero allocations), perfil Bullet, benchmarks. ✅ (~2070 Elo)
 - **v2.0** — Infraestructura NNUE. ✅
 - **v2.2** — Evaluación clásica tapered + podas de búsqueda (LMR log, RFP, futility, LMP). ✅ (~2600 Elo)
-- **Siguiente** — Mejoras core de búsqueda (continuation history, singular extensions, IIR, ProbCut) · Tuning de evaluación · Re-entrenamiento NNUE · Lazy SMP · ver roadmap completo.
+- **v2.3** — Búsqueda core: continuation/counter-move history, singular extensions, LMR por historia, IIR, ProbCut. ✅ (~2710 Elo medido)
+- **Siguiente** — Términos + tuning de evaluación · Velocidad · Re-entrenamiento NNUE · Lazy SMP · Libro/tablebases · ver roadmap completo.
 
 Historial de cambios completo en [CHANGELOG.md](CHANGELOG.md).
 

@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-07-09 (v2.3.0) — search core overhaul (Bloque 1)
+
+**Measured strength: ~2710 Elo (CCRL-equivalent)** — 231-game LTC precision gauntlet (tc=60+0.6) vs 7 engines rated 2580–2788 CCRL; scored 59.5% (+67 Elo over the ~2642 field average), up from 44.4% for v2.2.0 against the same field (~110 Elo real-play gain). The long-standing Black-side weakness is gone: wins 54 White / 52 Black, losses 32 / 32 — fully symmetric. SPRT vs v2.2.0 had passed H1 earlier: +91 ± 34 Elo, LOS 100%, score 106-43-96 [62.9%] over 245 games at 10+0.1.
+
+- search: counter-move heuristic — the quiet refutation of the opponent's last move is remembered per (piece, destination) and ordered right after the killers.
+- search: continuation history — a second history table conditioned on the previous move (prev piece/destination x current piece/destination, ~2.3 MB), blended into quiet-move ordering. Learns "after THIS, THAT reply refutes" — far sharper than the global butterfly history.
+- search: history maluses — quiet moves searched before a beta cutoff are punished in both history tables, so failed moves sink in the ordering instead of lingering.
+- search: singular extensions — when the TT move's stored score is trustworthy (depth >= 8, entry depth >= depth-3, lower/exact bound), all other moves are verified shallower against a lowered window; if none comes close the TT move is "singular" and searched one ply deeper. Excluded-move searches skip TT cutoffs/stores and prunings.
+- search: history-informed LMR — the log-formula reduction is decreased for quiet moves with a good history score (and killers/counter moves) and increased for disliked ones.
+- search: progressive aspiration widening — on a fail high/low the window is re-centered on the failing score and doubled instead of jumping straight to a full-width re-search.
+- search: Internal Iterative Reductions — nodes at depth >= 4 with no TT move are searched one ply shallower (bad ordering is not worth full depth; a later visit finds the TT move waiting).
+- search: ProbCut — at non-PV depth >= 5 nodes, a non-losing capture that beats beta + 150 in a quiescence probe and then in a depth-4 verification search cuts the node immediately.
+
+## 2026-07-09 (v2.2.1) — REJECTED by SPRT (not merged)
+
+Tempo bonus + pawn-threat penalties, targeting the measured weakness playing Black. The colour-symmetry investigation DID rule out any sign bug (a fuzz test mirrors ~6,000 random-playout positions and asserts identical scores — kept in the test suite). But the eval terms themselves failed SPRT vs v2.2.0 (-16 Elo after 350 games at 10+0.1, llr trending to H0): the threat penalties were too large and distorted material judgement. Reverted; the Black-side weakness stays open for Bloque 2 with tuned values.
+
 ## 2026-07-09 (v2.2.0) — classical evaluation & search overhaul
 
 **Measured strength: ~2600 Elo (CCRL-equivalent)** — 350-game LTC gauntlet (tc=60+0.6) vs 7 engines rated 2580–2788 CCRL; scored 44.4% overall. SPRT vs v2.1.1 at tc=60+0.6 **passed H1** in 160 games: +429 ± 88 Elo, LOS 100%, score 140–5–15 [92.2%].
