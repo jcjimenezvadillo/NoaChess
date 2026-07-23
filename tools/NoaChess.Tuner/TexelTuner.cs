@@ -81,4 +81,50 @@ public sealed class TexelTuner(List<Program.Position> positions)
             Console.WriteLine($"pass {pass + 1}/{passes} (step {step}): {improved} params moved, error = {best:F6}");
         }
     }
+
+    // Greedy variant for small parameter sets (the 4H material retune): each
+    // parameter keeps walking in its improving direction until the error
+    // stops dropping, so a material value can travel tens of centipawns in
+    // one pass instead of one step; the step then shrinks. Repeats rounds at
+    // the same step while anything still moves (parameters interact).
+    public void CoordinateDescentGreedy(List<TunableParam> parameters, double k, int[] steps)
+    {
+        double best = Error(k);
+        Console.WriteLine($"initial error = {best:F6}");
+
+        foreach (int step in steps)
+        {
+            bool moved = true;
+            int round = 0;
+            while (moved && round++ < 8)
+            {
+                moved = false;
+                foreach (var param in parameters)
+                {
+                    foreach (int dir in (ReadOnlySpan<int>)[step, -step])
+                    {
+                        while (true)
+                        {
+                            int original = param.Get();
+                            param.Set(original + dir);
+                            double error = Error(k);
+                            if (error < best - 1e-9)
+                            {
+                                best = error;
+                                moved = true;
+                            }
+                            else
+                            {
+                                param.Set(original);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Console.WriteLine($"step {step}, round {round}: error = {best:F6}");
+                foreach (var param in parameters)
+                    Console.WriteLine($"    {param.Name} = {param.Get()}");
+            }
+        }
+    }
 }

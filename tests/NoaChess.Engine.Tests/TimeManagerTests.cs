@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using NoaChess.Core;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
 using Xunit;
@@ -77,6 +79,32 @@ public class TimeManagerTests
     }
 
     [Fact]
+    public void SustainabilityGuard_TimeTroubleSpendStaysNearTheIncrement()
+    {
+        // 2+1 bullet with 5s left (the Arena death spiral): the raw reference
+        // formula allowed a ~4s hard deadline — 80% of the clock on one move.
+        // The guard bounds the target by inc + clock/16 and the deadline by
+        // inc + clock/4, so the clock stabilizes around the increment.
+        SearchLimits trouble = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
+                                                     moveOverheadMs: 30, movesToGo: null, gamePly: 100);
+
+        Assert.True(trouble.SoftTimeMs <= 1_000 + 5_000 / 16, $"soft={trouble.SoftTimeMs}");
+        Assert.True(trouble.HardTimeMs <= 1_000 + 5_000 / 4 - 30, $"hard={trouble.HardTimeMs}");
+    }
+
+    [Fact]
+    public void SustainabilityGuard_DoesNotStrangleAHealthyClock()
+    {
+        // 2+1 with 90s left in the middlegame: the guard thresholds
+        // (inc + clock/16 = 6.6s target) sit above the reference budget
+        // (~4.3s), so normal pacing is untouched.
+        SearchLimits healthy = TimeManager.FromClock(remainingMs: 90_000, incrementMs: 1_000,
+                                                     moveOverheadMs: 30, movesToGo: null, gamePly: 20);
+
+        Assert.True(healthy.SoftTimeMs > 4_000, $"soft={healthy.SoftTimeMs}");
+    }
+
+    [Fact]
     public void MovesToGo_TightensBudgetForTheNextControl()
     {
         // With only two moves to the next control the clock must be split over
@@ -86,5 +114,37 @@ public class TimeManagerTests
 
         Assert.True(twoMoves.SoftTimeMs > suddenDeath.SoftTimeMs,
             $"suddenDeath={suddenDeath.SoftTimeMs} twoMoves={twoMoves.SoftTimeMs}");
+    }
+
+    [Fact]
+    public void ElapsedOffset_DefaultsToZero()
+    {
+        // Every existing construction path must keep a zero offset — only the
+        // ponderhit relaunch sets it.
+        Assert.Equal(0, SearchLimits.Clock(100, 200).ElapsedOffsetMs);
+        Assert.Equal(0, TimeManager.FromClock(60_000, 600, 30).ElapsedOffsetMs);
+        Assert.Equal(0, SearchLimits.Depth(10).ElapsedOffsetMs);
+        Assert.Equal(0, SearchLimits.Time(1_000).ElapsedOffsetMs);
+    }
+
+    [Fact]
+    public void PonderCredit_ConsumedBudget_AnswersAlmostInstantly()
+    {
+        // A ponderhit after a long ponder: the budget is nearly exhausted
+        // before the search starts, so it must come back in well under the
+        // nominal soft time — and still with a legal move (the position is
+        // mid-game, 20+ legal moves, so the forced-move shortcut is not what
+        // answers here).
+        var engine = new ChessEngine();
+        var board = new Board();
+        SearchLimits limits = SearchLimits.Clock(softMs: 3_000, hardMs: 6_000)
+            with { ElapsedOffsetMs = 5_900 };
+
+        var sw = Stopwatch.StartNew();
+        var result = engine.FindBestMove(board, limits);
+        sw.Stop();
+
+        Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
+        Assert.True(sw.ElapsedMilliseconds < 1_500, $"took {sw.ElapsedMilliseconds}ms");
     }
 }

@@ -1,10 +1,12 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 
 namespace NoaChess.Engine.Evaluation.Classical;
 
 // Classical evaluator, v3.0: a tapered (middlegame/endgame) evaluation with
-// material, piece-square tables, mobility, king safety, pawn structure and a
-// handful of positional terms (bishop pair, rooks on open files).
+// material, material imbalance, piece-square tables, mobility, king safety,
+// pawn structure, winnable/scale-factor correction and a handful of
+// positional terms (bishop pair, rooks on open files, trapped rook,
+// outposts...).
 //
 // "Tapered" means every term is a (middlegame, endgame) pair; the two are
 // blended by the game phase, computed from the non-pawn material still on the
@@ -15,9 +17,14 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // Performance: the piece loop makes ONE pass per side. The attack bitboard of
 // each piece is computed once and feeds BOTH the mobility term and the enemy
 // king-safety term, instead of scanning the pieces several times.
-public sealed class ClassicalEvaluator : IPositionEvaluator
+public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluator
 {
     private readonly PawnStructureEvaluator _pawnStructure = new();
+    private readonly MaterialImbalance _imbalance = new();
+
+    // Complexity (initiative magnitude, cp) of the last evaluated position,
+    // reported by the winnable pass. Consumed by the search's NMP margin.
+    public int LastComplexity { get; private set; }
 
     // Per-color king square and king ring (the king attacks of the king square
     // clamped to files b-g / ranks 2-7, plus the square itself, minus squares
@@ -488,7 +495,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
                 }
             }
 
-            // Bishop pair: two bishops cover both colors and are worth a bonus.
+            // The bishop pair covers both square colors.
             if (Bitboard.PopCount(board.Pieces(color, PieceType.Bishop)) >= 2)
                 side += EvaluationParams.BishopPair;
 
@@ -501,6 +508,10 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 
         // Pawn structure score (computed before the piece loop, see above).
         score += pawnScore;
+
+        // Material imbalance (4H): pairwise piece synergies, White minus
+        // Black, cached by the packed piece counts.
+        score += _imbalance.Compute(board);
 
         // Second pass: terms that mix pawn structure with piece locations
         // (passer blockers/escorts, space, threats). Runs after the piece loop
@@ -524,7 +535,13 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         if (phase > EvaluationParams.PhaseMax)
             phase = EvaluationParams.PhaseMax; // Early promotions can exceed it.
 
-        int tapered = score.Taper(phase);
+        // Winnable / scale factors (4I): complexity adjustment plus the
+        // endgame scale factor folded into the phase interpolation (drawish
+        // structures — OCB, lone-flank rook endings, no-pawn material edges —
+        // keep the raw score from overstating the win).
+        int tapered = Winnable.Apply(board, score, phase, whitePassers, blackPassers,
+                                     out int complexityCp);
+        LastComplexity = complexityCp;
 
         // Mop-up: nudge a won bare-king endgame towards the mate (see below).
         tapered += MopUp(board, Color.White) - MopUp(board, Color.Black);

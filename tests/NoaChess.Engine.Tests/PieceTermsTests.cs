@@ -179,7 +179,9 @@ public class PieceTermsTests
         // positions stay in a sane range.
         int wingPawns = Eval("4k3/8/8/4N3/3P4/8/5PPP/4K3 w - - 0 1");
         int farPawns = Eval("4k3/8/8/4N3/3P4/8/PP6/4K3 w - - 0 1");
-        Assert.InRange(wingPawns, -1000, 1000);
-        Assert.InRange(farPawns, -1000, 1000);
+        // The bound leaves headroom for the material-imbalance polynomial
+        // (knight-with-pawns synergy in a K+N+4P vs K position).
+        Assert.InRange(wingPawns, -1200, 1200);
+        Assert.InRange(farPawns, -1200, 1200);
     }
 }
