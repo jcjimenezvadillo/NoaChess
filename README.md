@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v2.8.2** — **Validated search audit and UCI log hardening. SPRT H1: 256-189-389, +28.0 ±17.2 Elo vs v2.8.1; LTC gauntlet 296-131-197, +94 ±23 relative, ~3013 ±30 CCRL.** Adds pawn correction history to main search and quiescence while preserving raw static evaluation in the TT; reworks ProbCut around mandatory regular-search verification and exempts queen promotions from its simplified SEE gate; gives continuation history bounded gravity updates; and makes UCI logging explicit-only, lifecycle-safe and able to distinguish clean `quit` from stdin EOF. The first all-features candidate failed H0 at -13.1 ±15.2 Elo. The final H1 build kept correction and ProbCut but restored the fixed aspiration window and hard killer/counter bands and removed the unconditional check extension.
@@ -130,10 +132,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v2.8.2** — **Auditoría de búsqueda validada y endurecimiento del log UCI. SPRT H1: 256-189-389, +28.0 ±17.2 Elo frente a v2.8.1; gauntlet LTC 296-131-197, +94 ±23 relativo, ~3013 ±30 CCRL.** Añade pawn correction history a búsqueda principal y quiescence manteniendo la evaluación estática cruda en la TT; rehace ProbCut con verificación obligatoria mediante búsqueda normal y deja las promociones a dama fuera del gate SEE simplificado; aplica gravedad acotada a continuation history; y hace que el log UCI sea exclusivamente explícito, seguro durante todo su ciclo de vida y capaz de distinguir `quit` limpio de EOF. El primer candidato con todos los experimentos falló H0 con -13.1 ±15.2 Elo. La versión final H1 conservó correction y ProbCut, pero restauró la ventana fija de aspiración y las bandas duras killer/counter y eliminó la extensión incondicional de jaque.
