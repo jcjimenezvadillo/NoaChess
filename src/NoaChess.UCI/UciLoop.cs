@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.6.7.1";
+    public const string EngineVersion = "2.7.1";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -43,11 +43,16 @@ public sealed class UciLoop
     private Task? _searchTask;
 
     // Pondering state: while thinking on the opponent's time, the original
-    // "go ponder ..." tokens are kept so a "ponderhit" can relaunch the same 
+    // "go ponder ..." tokens are kept so a "ponderhit" can relaunch the same
     // search with the real clock limits. _suppressBestmove silences the
     // aborted ponder search (UCI forbids a bestmove between ponderhit and
-    // the timed search's own answer).
+    // the timed search's own answer). _ponderTimer measures how long the
+    // ponder ran: the relaunched search charges that time against its budget
+    // (the reference anchors its clock at "go ponder"), so a long successful
+    // ponder answers almost instantly instead of re-spending the whole
+    // optimum over the warm TT.
     private string[]? _pendingPonderTokens;
+    private readonly Stopwatch _ponderTimer = new();
     private volatile bool _suppressBestmove;
 
     public UciLoop(TextReader input, TextWriter output)
@@ -175,12 +180,15 @@ public sealed class UciLoop
                     // The opponent played the predicted move: everything the
                     // ponder search stored in the TT is valid. Silently stop
                     // it and relaunch as a normal timed search — the warm TT
-                    // makes the early iterations nearly free.
+                    // makes the early iterations nearly free, and the time
+                    // already pondered is charged against the new budget so
+                    // a long ponder answers almost instantly.
                     if (_pendingPonderTokens is string[] goTokens)
                     {
+                        long ponderedMs = _ponderTimer.ElapsedMilliseconds;
                         _pendingPonderTokens = null;
                         WaitForSearchToFinish(suppressBestmove: true);
-                        HandleGo(goTokens.Where(t => t != "ponder").ToArray());
+                        HandleGo(goTokens.Where(t => t != "ponder").ToArray(), ponderedMs);
                     }
                     break;
 
@@ -304,19 +312,34 @@ public sealed class UciLoop
 
     // "go [ponder] [depth N | nodes N | movetime N | wtime N btime N [winc N] [binc N] | infinite]".
     // Launches the search asynchronously so the loop keeps serving stop/isready.
-    private void HandleGo(string[] tokens)
+    // 'ponderedMs' (ponderhit relaunch only) is the time the ponder search
+    // already ran; it is charged against this search's clock budget, floored
+    // so at least 100 ms of hard budget always remain (a warm-TT iteration
+    // needs almost nothing to reproduce the pondered move).
+    private void HandleGo(string[] tokens, long ponderedMs = 0)
     {
         // "go ponder": think on the opponent's time. The search runs without
         // limits (the opponent's clock is ticking, not ours) until the GUI
         // resolves it with "ponderhit" (prediction right -> timed re-search
-        // over a warm TT) or "stop" (prediction wrong -> discarded).
+        // over a warm TT, pondered time deducted) or "stop" (prediction
+        // wrong -> discarded).
         bool ponder = Array.IndexOf(tokens, "ponder") != -1;
         bool infinite = Array.IndexOf(tokens, "infinite") != -1;
         _pendingPonderTokens = ponder ? tokens : null;
+        if (ponder)
+            _ponderTimer.Restart();
 
         SearchLimits limits = ponder
             ? SearchLimits.Depth(SearchLimits.DepthUnlimited)
             : ParseLimits(tokens);
+
+        // Clock-managed searches only (soft < hard): movetime/depth/nodes
+        // budgets are explicit GUI requests and stay untouched.
+        if (ponderedMs > 0 && limits.SoftTimeMs < limits.HardTimeMs)
+            limits = limits with
+            {
+                ElapsedOffsetMs = Math.Min(ponderedMs, Math.Max(0, limits.HardTimeMs - 100)),
+            };
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
         // "bestmove" until the GUI resolves the search with "stop" or
@@ -330,6 +353,18 @@ public sealed class UciLoop
         var cts = new CancellationTokenSource();
         _searchCts = cts;
         _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop));
+    }
+
+    // Mate scores carry distance-to-mate in plies from the root; UCI wants
+    // "mate N" in MOVES (negative when the engine is being mated).
+    private static string FormatUciScore(int score)
+    {
+        const int mateBound = AlphaBetaSearch.MateScore - 1_000;
+        if (score > mateBound)
+            return $"mate {(AlphaBetaSearch.MateScore - score + 1) / 2}";
+        if (score < -mateBound)
+            return $"mate {-(AlphaBetaSearch.MateScore + score + 1) / 2}";
+        return $"cp {score}";
     }
 
     private void RunSearch(SearchLimits limits, CancellationToken token, bool waitForStop)
@@ -367,8 +402,12 @@ public sealed class UciLoop
             lastPv = p.Pv;
             long ms = Math.Max(1, stopwatch.ElapsedMilliseconds);
             long nps = p.NodesSearched * 1000 / ms;
+            // Mate scores go out as "score mate N" (moves, signed) per UCI;
+            // reporting them as huge cp values confuses GUI eval displays
+            // and adjudication.
+            string score = FormatUciScore(p.Score);
             _output.WriteLine(
-                $"info depth {p.Depth} score cp {p.Score} nodes {p.NodesSearched} time {ms} nps {nps} pv {string.Join(' ', p.Pv)}");
+                $"info depth {p.Depth} score {score} nodes {p.NodesSearched} time {ms} nps {nps} pv {string.Join(' ', p.Pv)}");
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);
