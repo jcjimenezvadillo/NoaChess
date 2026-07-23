@@ -1,4 +1,124 @@
-﻿# CHANGELOG
+# CHANGELOG
+
+## 2026-07-20 (5F ProbCut · multi-cut · NMP dynamic R) — ALL THREE MEASURED AND CUT, NO RELEASE
+
+**Search block 5 closes here.** These three were the archived items whose stated blocker was the broken quiescence, so they were retried on top of v2.7.4 to close the debt with measurement instead of inference. All three failed, and the premise itself turned out to be wrong: the quiescence was not the blocker for any of them.
+
+| Candidate | Result vs v2.7.4 |
+|---|---|
+| 5F ProbCut rework | four variants, best still **+5.0% nodes**, WAC flat |
+| Multi-cut | **−4.2% nodes but WAC 248 vs 266** |
+| NMP dynamic R | **−14.3 ± 15.7 Elo, LOS 3.8%, H0 at 925 games** |
+
+- **5F ProbCut** — reference shape (entry at depth 3, any node type) +16.3% nodes; with our validated conservative entry (non-PV, depth ≥ 5) +7.3%; with a flat depth−4 verification +11.2%, so the reference's improving-aware verification depth is genuinely better than ours; with the SEE threshold floored at 0, +5.0%. That last one is a real finding: the reference's threshold `probCutBeta − staticEval` goes NEGATIVE once the static eval already clears the bar, so every losing capture passes the filter and each one costs a quiescence plus a verification search. Even so, no variant beat the baseline, and WAC 269 vs 266 is inside the ±5 noise band, so there is no nodes-for-accuracy trade. The `probCutDepth` floor at 1 (no cutoff may rest on quiescence alone) is applied throughout and is the fix for the earlier −90 Elo.
+- **Multi-cut** — returning the verification score when it reaches beta with the TT move excluded. WAC 248 vs 266, eighteen points down. In 5E the same test measured 265 → 245; after the quiescence fix it is 266 → 248, essentially unchanged. Unsound on our search in its own right.
+- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated Stockfish**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
+- The bench signature was the usual trap: −11.9% nodes and −17% wall time meant **more pruning, not better search**, and WAC cannot see unsound prunes. Node counts falling is not by itself evidence of improvement.
+- Branches `exp-probcut`, `exp-multicut` and `exp-nmpr` keep the code and the numbers in their commit messages. Not merged.
+
+**Block 5 tally.** Shipped: 5A improving flag (v2.7.0), 5B scope-cut NMP/RFP (v2.7.1), 5D transposition-table redesign (v2.7.2) and the v2.7.4 quiescence rework. Cut: 5C, 5E, 5G, 5F, multi-cut, NMP dynamic R. **Over seven blocks the pattern never moved: infrastructure and exact knowledge transfer** (staged movegen +101, TT redesign +37.9, timeman +14.3); **tuned reference heuristics do not**, because each one depends on entry filters that measure worse on this engine. Next is block 9, Syzygy (v2.8.0) — infrastructure, and it also supplies perfect labels for the NNUE datagen.
+
+
+## 2026-07-20 (v2.7.4) — quiescence rework: correctness first, plus a terminal-root hang fix
+
+**Correctness release: no measurable strength change.** SPRT vs v2.7.2 (tc 10+0.1, elo0=0 elo1=10): **−2.1 ± 9.9 Elo over 2347 games [0.498], H0**. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors): **+52 ± 23 relative to the field** vs v2.7.2's +48 on the identical field — **+4 ± 32, statistically zero**. Strength stays **~2975 ± 25 CCRL**. Both instruments agree, so the equity is real and is reported as such.
+
+It ships anyway because what it fixes are BUGS, not heuristics — including one that freezes the engine outright.
+
+**The quiescence search handled in-check nodes wrongly in four separate ways:**
+
+- It stood pat on the static evaluation of a position whose king is attacked — a meaningless number — and could therefore return a beta cutoff *while being mated*.
+- It generated captures only, so the quiet king step or the interposition that is usually the ONLY escape from a check did not exist as far as the search was concerned.
+- It applied SEE pruning in check, discarding the single legal defence whenever that defence loses material.
+- It never detected mate: in check with no legal reply it returned the stand-pat score as if nothing had happened.
+
+Every capture that gives check lands the opponent in exactly that node, so the hole sat on the main line of every tactical sequence — and ProbCut, null-move probes and multi-cut all verify captures THROUGH quiescence, so they were reading those wrong scores as proof. That is why five separate reference features have needed gates or been cut since 5B.
+
+- search: in check — no stand-pat (`bestScore` starts at −infinity, the reference's own device for making its pruning block unreachable), ALL moves generated, no pruning of any kind, mate returned as `−MateScore + ply`.
+- search: **stalemate guard** at the horizon, in the reference's shape — only reached when the side to move has nothing but king and pawns AND no pawn can even step forward, so full legal generation stays rare.
+- search: **fail-soft** scores throughout (the real bestScore, never the alpha/beta rail).
+- search: **all four promotion pieces** are searched; only the queen was before. An underpromotion can be the move that avoids stalemate, mates, or dodges a fork.
+- search: the reference's **Step 6 pruning block**, ported whole rather than as isolated constants — `futilityBase = staticEval + 147`, a second gate on `min(alpha, futilityBase)`, and the SEE floor relaxed from `>= 0` to `>= −36`. Constants converted by the pawn ratio (the reference's pawn is 208, ours 100 — exactly the project's ×0.48 rule): 306 → 147, −74 → −36.
+- heuristics: new **`CaptureHistory`** table `[piece][to][victimType]` with gravity updates (`entry += bonus − entry×|bonus|/4096`), feeding quiescence capture ordering as `captureHistory + 7×victimValue` in place of MVV-LVA.
+- **uci/search: a terminal root hung the engine forever.** With no legal move on the board (checkmate or stalemate) iterative deepening looped through every depth without ever producing a best move, and no `bestmove` was ever sent — any GUI handing the engine such a position froze it permanently. Present in v2.7.2 and every earlier release. Now answered instantly with `bestmove 0000`.
+- tests: 192/192, including **8 new quiescence correctness cases** (quiet-only escape, sole interposition, mate and stalemate at the horizon, a sole defence with negative SEE, perpetual-check termination, checking captures).
+
+**Bench vs v2.7.2** (60 positions sampled from real games at the test time control, depth 13; wall time over 30): nodes geo-mean **0.943 (−5.7%)**, median 0.928, 33 better / 27 worse; **wall time to depth −9.0% / −12.6%**; NPS neutral; **WAC-300 at 400ms: 269/300 — new record** (v2.7.2 measured 263 the same day; 265 was the old record).
+
+**The two halves only work together.** Correctness ALONE cost +8.3% nodes and +4.0% time — searching quiet evasions and promotions is real work. Adding the reference's own pruning block turned that into −5.7% nodes and −9…−12% time. The reference prunes harder BECAUSE it searches correctly; taking either half without the other is what made every earlier attempt look bad.
+
+**A false premise was corrected in the documentation.** Our notes since 5B claimed the reference qsearch "generates checks at the first ply", and that claim had propagated into five separate design decisions. It does not: its own comment reads *"captures, or evasions only when in check"*. The real difference was the −infinity start in check, which is what is ported here.
+
+**Field audit** (624-game LTC gauntlet): **Marvin-2960 measured 62 low for the second cycle running** (−56 in the v2.7.2 gauntlet, −62 here) → renamed to 2900. **BitGenie-3010 cleared**: +43 here after −130 last cycle, i.e. noise, off the watch list. **Rubichess-3150 (−120) and Meltdown-2817 (+73) to watch** — single-run deviations, and 48 games per opponent carries ±80–120, so neither is actionable yet.
+
+## 2026-07-19 (blocks 5E + 5G, the v2.7.3 campaign) — MEASURED AND CUT, NO RELEASE
+
+**The v2.7.3 slot closes with no release: both candidate blocks measured at the real time control and cut per the project decision rule. The engine stays at v2.7.2 exactly; the next release will be v2.7.4. Everything below is archived for the pre-NNUE review pass.**
+
+**5E — singular extensions upgrade: four SPRTs at 10+0.1, all negative.**
+
+| Candidate | Content | vs v2.7.2 |
+|---|---|---|
+| 1 | full port from an outdated spec (ttPv sign inverted, no multi-cut) | **−19.7**, H0 |
+| 3 | trigger only: `depth >= 6 + ttPv` + shuffling guard | [0.492], 897g |
+| 4 | trigger + qsearch in-check evasion rework | **−12.5 ± 15.0**, H0 at 1054g |
+| 5 | + reference `!is_loss(bestValue)` evasion pruning guard | [0.476], 700g |
+
+Root cause: the reference's extensions are only stable next to reference-grade reductions (r += 4026 cutNode, +1079 ttCapture in 1024ths; our whole LMR table tops out near 4). Also measured and rejected: `depth++` on singular (tree explosion), faithful `(28+32)*depth/63` margins, multi-cut (WAC 265→245), and **qsearch TT probe/store at depth 0** (depth-0 entries flood the clusters and evict main-search entries: d15 nodes ROSE 1.35M→1.75M, nps −11%).
+
+**5G — multi-level continuation history: four builds, the last two at exact equity.**
+
+| Attempt | Content | vs v2.7.2 |
+|---|---|---|
+| 1 | multi-level read/write on the SHARED single table, averaged blend into statScore | **−33.9 ± 25.8**, stopped at 413g |
+| 2 | one table per distance, blend confined to move ordering | **−10.9 ± 14.3**, H0 at 1180g |
+| 3 | + blend gated to depth ≥ 6 | [0.496] at ~1900g, stopped |
+| 4 | + gravity updates (`entry += bonus − entry·|bonus|/2^20`) | **−4.2 ± 10.9**, H0 at 2000g [0.494] |
+
+Real defects found and fixed along the way (the fixes are proven and stay in the archive, ready for the revisit):
+
+- A single shared table CORRUPTS the levels: a bonus written for "the move two plies ago" lands on the very key another node reads as "one ply ago". With separate tables, a control build reading only level 0 reproduces v2.7.2 **bit-for-bit**; with the shared table the same control diverged −52%/+17% per position.
+- The blend must never reach statScore: reverse futility's thresholds (offset 1250, divisor 180, the measured ×0.28 transfer) describe a one-level signal; feeding them the blend re-tunes the pruning silently (attempt 1's real failure mode).
+- Blending everywhere costs −9.9% NPS (5 random probes over 14 MB per quiet move): +9.6% wall time to depth = the −10.9 Elo of attempt 2, exactly. Gated to depth ≥ 6 it wins on nodes AND nps (−11.5/−14.0% wall time to depth).
+- The continuation table was never decayed within a game (18M entries, too big to sweep like the butterfly's halving): with depth² bonuses and a hard clamp, frequent pairs park on the ±2^20 rails — and a railed level-0 entry pollutes statScore with ±1M. The reference's O(1) gravity update fixes it; bench-invisible by design (node counts identical to within 5 nodes in 20.7M — short searches never saturate).
+
+**Why the final, defect-free build still measures zero:** killers and the counter move occupy fixed hard bands (3.0M / 2.9M) ABOVE all history, so the multi-level signal can only reorder the tail of already-late quiets. The reference has no hard bands — everything is continuous history — which is what gives its continuation levels room to act. The revisit plan (pre-NNUE checkpoint): fold killers/counter into history-space bonuses first, then the already-built per-distance infrastructure (separate tables, gravity, depth gate) has somewhere to bite.
+
+**Method lessons added to the golden rules:** node counts DO measure ordering, but only over 50–60 positions sampled from a real match PGN (a 4-position bench inverted the sign of every variant tested); wall-time-to-depth, not nodes, is the gate for any change that adds memory traffic; a per-color split must be judged against its MIRROR (both engines scored ~+0.05 with White — first-move advantage, not a black weakness).
+
+## 2026-07-18 (v2.7.2) — block 5D (formerly 5F, renumbered to execution order): transposition table redesign (clustering + aging + cached eval + ttPv)
+
+**SPRT vs v2.7.1 (tc 10+0.1, bounds elo0=0 elo1=10), two independent runs POOLED: +37.9 ± 15.0 Elo at 1103 games [0.554]** (own run +38.3 ± 20.9 H1 at 546g; user confirmation +37.6 ± 20.7 H1 at 557g — near-identical, both LOS 100%) — the largest search gain since the v2.3.0 overhaul. **Strength: ~2975 ± 25 CCRL** — LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3200): **+48 ± 23 relative to the field, 56.8%** (vs v2.7.1's +44 — the field-relative LTC measure saturates between adjacent versions; the pooled SPRT carries the increment). Field audit: the Dumb 2856→2810 and Marvin 3000→2960 renames are VALIDATED (deviations −16/−56 vs the previous systematic −45/−35); **BitGenie-3010 on watch** (implied −130 this run after a clean previous cycle — single-run volatility, no rename); no further renames. **Bench profile: −19% nodes to depth (4.70M vs 5.81M), +24% NPS (768K vs 620K — the cached eval), WAC 265/300 (best ever; 262 baseline), Fine 70 zugzwang correct, KRK longest defense preserved, 184 tests green (7 new TT tests).**
+
+After 5B and 5C proved that reference HEURISTIC constants do not transfer without their ecosystem (see the 5C post-mortem below), the TT block was pulled forward precisely because it is pure INFRASTRUCTURE — and it delivered (block letters renumbered to execution order: TT = 5D; double extensions and ProbCut/IIR shift to 5E/5F):
+
+- tt: 4-entry clustering — the entry is packed to exactly 16 bytes (key32 verification half, int32 score, int32 cached static eval, move16, depth8, genBound8), so a 64-byte cache line holds a full 4-entry cluster: one memory access serves four candidate slots, and index collisions stop destroying useful entries. (The reference packs 3×10B in 32B by shrinking scores to int16; our ±100000 mate scale keeps int32 scores and gets a 4-wide cluster instead — no risky mate-score rescale.)
+- tt: generation aging — every "go" bumps a 5-bit generation (32-cycle); replacement worth is `depth − 8×relative_age` (the reference formula), so stale entries from previous searches yield their slots gracefully instead of squatting. A probe hit refreshes the entry's generation.
+- tt: cached static eval — a TT hit serves the stored eval without calling the evaluator, and a miss stores an eval-only entry (bound None, never cuts, never evicts real results, backfills the eval of in-check-stored twins) so the next visit — IIR revisits, re-searches — skips the evaluator too. This is where the +24% NPS comes from.
+- tt: sticky ttPv flag — every node records "is or was on the PV" (PvNode || entry.IsPv), preserved across re-stores. **Deliberately consumer-less this release**: the reference's LMR ttPv −2 was measured in the 5C campaign at +220% PV-subtree explosion via a proxy; with the real flag now stored, that adjuster can be A/B-tested BY PLAY in a later block.
+- tt: reference overwrite rule — a fresh Exact always replaces; a bound more than 4 plies shallower than the incumbent does not; a known best move survives moveless re-stores; the PV mark is sticky.
+- verification: the 5C lesson applied — validated by GAMES at the real TC before handover (own SPRT above), not by benches; benches only corroborate.
+
+## 2026-07-18 (block 5C: reference LMR adjuster suite + 4-component statScore) — MEASURED AND CUT, NO RELEASE
+
+**Every 5C component measures NEGATIVE at the real time control. Cut per the project decision rule (like king-safety Fase B), search reverted to v2.7.1 exactly. The numbers, so this is never re-tried without its ecosystem:**
+
+| Candidate | Content | vs v2.7.1 |
+|---|---|---|
+| Full reference bundle | 20.26·ln 1D base + delta/rootDelta + 8 adjusters + unclamped statScore/13628 | **−9.7 ± 13.8** (SPRT 10+0.1, H0 at 1252g) |
+| Conservative rebuild | validated 2D base + 6 adjusters + clamped statScore, NPS-equal | **−25.7 ± 20.0** (SPRT 10+0.1, H0 at 597g) |
+| V-a: adjusters alone | cutNode +1, ttCapture +1, moveCount>7 −1, cutoffCnt>3 +1, singularQuietLMR −1, threat escape −1 | **−11.5 ± 16.0** (1000g @ 5+0.05) |
+| V-b: statScore machinery alone | 4-component statScore (contHist ply-2/ply-4 write fix) for RFP + futility reprieve | +17.4 ± 16.1 @ 5+0.05 **but −10.8 ± 14.3 at 10+0.1 (SPRT, H0 at 1218g)** — the hyperfast result did not survive the real TC |
+| V-c: V-b + LMR statScore term | the reference's flagship `r −= statScore` consumer | **−6.9 ± 16.3** (1000g @ 5+0.05) |
+
+**Lessons (added to the golden rules):**
+
+- Depth benches and WAC CANNOT green-light a search change: the conservative rebuild had −23% nodes, WAC 263/300 (best profile ever measured) and equal NPS — and lost 25 Elo in play. Only games at the REAL time control validate search heuristics; hyperfast (5+0.05) matches can invert sign vs 10+0.1.
+- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle. → revisit only after the TT block (ttPv/static-eval — DONE as 5D/v2.7.2 hours later) and 5G (history rework), if at all.
+- The ply−2/ply−4 continuation-history contexts genuinely never existed (single-parity keys — found by a probe reading exact zeros) and the fix is implemented and archived, but with our depth² tables feeding pruning margins it measures −10.8 at STC: parked with its measurements until 5G reworks the history update rule (reference-style bonus/gravity), which is what makes those reads trustworthy.
+- ttPv −2 via a PvNode proxy explodes the PV subtree +220% when stacked with the PvNode depth discount — the real thing needs the TT flag (5F).
+
+The search was verified node-identical to v2.7.1 after the revert (5.81M depth bench, 177 tests, Fine 70, KRK defense); the freed v2.7.2 number went to the 5F TT redesign above.
 
 ## 2026-07-17 (v2.7.1) — block 5B: NMP verification + statScore-informed RFP (scope cut by measurement) + mate-search fixes
 
@@ -359,3 +479,5 @@ Time management (reference port, replaces the v2.6.4 scheduler):
 - infra: added CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
+
+
