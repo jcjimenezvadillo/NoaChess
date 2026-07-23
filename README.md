@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v2.8.0** — **Syzygy endgame tablebases.** Exact results at five men or fewer: WDL probed in the search (gated on the fifty-move counter, verdicts in their own band below the mate range) and root moves filtered by WDL then DTZ, so a won ending is converted instead of shuffled into a fifty-move draw. Root handling is a filter and NOT an early return, which keeps "mate in N" reporting intact. UCI: `SyzygyPath`, `SyzygyProbeDepth`, `SyzygyProbeLimit`, `Syzygy50MoveRule`. A ~1250-line managed port rather than the P/Invoke the roadmap assumed — no C toolchain here, and a native DLL would break the single-exe requirement — differentially verified against an independent prober over **3000 random endgames with zero WDL and zero DTZ discrepancies**, which caught three bugs that would otherwise have reached play silently. Measured: a won KPvK converts in 15 plies against 25 without. 208/208 tests. 🔲 (SPRT vs v2.7.4 pending)
@@ -128,10 +130,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v2.8.0** — **Tablebases Syzygy.** Resultado exacto con cinco piezas o menos: WDL consultado dentro de la búsqueda (condicionado al contador de 50 jugadas, con los veredictos en su propia banda por debajo del rango de mate) y jugadas de raíz filtradas por WDL y luego DTZ, para que un final ganado se convierta en vez de acabar en tablas por repetición. En la raíz es un **filtro y no un retorno inmediato**, lo que preserva el anuncio de "mate en N". UCI: `SyzygyPath`, `SyzygyProbeDepth`, `SyzygyProbeLimit`, `Syzygy50MoveRule`. Port nativo de ~1250 líneas en vez del P/Invoke que asumía el roadmap —no hay compilador de C aquí, y una DLL nativa rompería el requisito de un único exe— verificado contra un prober independiente sobre **3000 finales aleatorios sin una sola discrepancia**, lo que cazó tres bugs que habrían llegado a partida en silencio. Medido: un KPvK ganado se convierte en 15 plies frente a 25 sin tablebases. 208/208 tests. 🔲 (SPRT vs v2.7.4 pendiente)
