@@ -1,0 +1,15 @@
+// Tuned values (texel, NoaChess.Tuner) — paste into EvaluationParams:
+BishopPair = new(38, 56);
+RookOpenFile = new(46, -4);
+RookSemiOpenFile = new(25, 22);
+KnightOutpost = new(39, 32);
+SpacePerSquare = new(2, -8);
+DoubledPawn = new(-6, -12);
+IsolatedPawn = new(-6, -20);
+ConnectedPassers = new(-6, 22);
+RookBehindPasser = new(4, 10);
+ThreatByPawn = [ new(0, 0), new(46, 28), new(46, 44), new(50, 24), new(30, 14), new(0, 0), ];
+ThreatByMinor = [ new(0, 0), new(18, 14), new(28, 34), new(44, 32), new(34, 26), new(0, 0), ];
+ThreatByRook = [ new(0, 0), new(26, 10), new(30, 24), new(0, 0), new(40, 30), new(0, 0), ];
+PassedPawn = [ new(0, 0), new(19, 26), new(2, 36), new(15, 51), new(33, 69), new(40, 64), new(44, 104), new(0, 0), ];
+MobilityStep = [ new(0, 0), new(8, -12), new(9, -5), new(10, -10), new(3, -14), new(0, 0), ];
