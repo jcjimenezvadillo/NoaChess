@@ -8,19 +8,20 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // - Doubled pawns: extra pawns on the same file.
 // - Isolated pawns: no friendly pawns on adjacent files.
 // - Passed pawns: no enemy pawns ahead on the same or adjacent files, with a
-//   bonus that grows with the rank.
+//   bonus that grows with the rank (endgame-heavy: a passer wins endgames).
 //
 // Why a cache: pawns move rarely, so consecutive positions in the search tree
 // almost always share the exact same pawn formation. The structure score is
 // stored under the board's pawn-only Zobrist key and the hit rate is huge —
 // the (moderately expensive) computation below runs only on formation changes.
+// The cached value is a tapered Score (middlegame + endgame).
 public sealed class PawnStructureEvaluator
 {
     // One slot per low-bits pattern of the pawn key. Small (1 MB-ish) because
     // distinct pawn formations in one search number in the thousands.
     private const int CacheSize = 1 << 16;
 
-    private readonly (ulong Key, int Score)[] _cache = new (ulong, int)[CacheSize];
+    private readonly (ulong Key, int Mg, int Eg)[] _cache = new (ulong, int, int)[CacheSize];
 
     // Masks precomputed once: file of a square, adjacent files, and the
     // "passed pawn" cone (squares ahead on own + adjacent files, per color).
@@ -53,31 +54,31 @@ public sealed class PawnStructureEvaluator
         }
     }
 
-    // Pawn structure score, positive = good for White. Cached by pawn key.
-    public int Evaluate(Board board)
+    // Pawn structure score (White's point of view), cached by pawn key.
+    public Score Evaluate(Board board)
     {
         int slot = (int)(board.PawnZobristKey & (CacheSize - 1));
-        (ulong key, int score) = _cache[slot];
+        (ulong key, int mg, int eg) = _cache[slot];
         if (key == board.PawnZobristKey)
-            return score;
+            return new Score(mg, eg);
 
-        score = EvaluateSide(board, Color.White) - EvaluateSide(board, Color.Black);
-        _cache[slot] = (board.PawnZobristKey, score);
+        Score score = EvaluateSide(board, Color.White) - EvaluateSide(board, Color.Black);
+        _cache[slot] = (board.PawnZobristKey, score.Mg, score.Eg);
         return score;
     }
 
-    private static int EvaluateSide(Board board, Color color)
+    private static Score EvaluateSide(Board board, Color color)
     {
         ulong ourPawns = board.Pieces(color, PieceType.Pawn);
         ulong theirPawns = board.Pieces(Board.OppositeColor(color), PieceType.Pawn);
-        int score = 0;
+        Score score = default;
 
         // Doubled pawns: counted per file (each pawn beyond the first).
         for (int f = 0; f < 8; f++)
         {
             int pawnsOnFile = Bitboard.PopCount(ourPawns & FileMask[f]);
             if (pawnsOnFile > 1)
-                score += (pawnsOnFile - 1) * EvaluationParams.DoubledPawnPenalty;
+                score += EvaluationParams.DoubledPawn * (pawnsOnFile - 1);
         }
 
         // Isolated and passed pawns: per pawn.
@@ -88,7 +89,7 @@ public sealed class PawnStructureEvaluator
             int file = Squares.FileOf(sq);
 
             if ((ourPawns & AdjacentFilesMask[file]) == 0)
-                score += EvaluationParams.IsolatedPawnPenalty;
+                score += EvaluationParams.IsolatedPawn;
 
             if ((theirPawns & PassedPawnMask[(int)color, sq]) == 0)
             {
@@ -96,7 +97,7 @@ public sealed class PawnStructureEvaluator
                 int relativeRank = color == Color.White
                     ? Squares.RankOf(sq)
                     : 7 - Squares.RankOf(sq);
-                score += EvaluationParams.PassedPawnBonus[relativeRank];
+                score += EvaluationParams.PassedPawn[relativeRank];
             }
         }
 
