@@ -58,7 +58,19 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly TranspositionTable _tt = new(sizeMb: 64);
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
+    private readonly ContinuationHistory _contHist = new();
     private readonly Stopwatch _timer = new();
+
+    // Counter move: the quiet refutation of the opponent's last move, indexed
+    // by (mover piece 0-11, destination). Cheaper and more specific than a
+    // killer: it follows the MOVE being answered, not the ply.
+    private readonly Move[,] _counterMoves = new Move[12, 64];
+
+    // Search stack: piece index (color*6+type) and destination of the move
+    // played to REACH each ply. -1 piece marks "no usable previous move"
+    // (a null move); continuation history and counter moves then skip it.
+    private readonly int[] _stackPiece = new int[MaxPly + 2];
+    private readonly int[] _stackTo = new int[MaxPly + 2];
 
     // One reusable MoveList per ply (plus root and PV scratch lists): move
     // generation in the search allocates NOTHING. At any moment a given ply
@@ -112,6 +124,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _tt.Clear();
         _killers.Clear();
         _history.Clear();
+        _contHist.Clear();
+        Array.Clear(_counterMoves);
     }
 
     public SearchResult FindBestMove(Board board, SearchLimits limits,
@@ -168,16 +182,34 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             // Aspiration window around the previous iteration's score (only
             // once there is a reasonably stable score to aspire around).
+            // On a fail the window is re-centered on the failing score and
+            // DOUBLED, instead of jumping straight to a full-width re-search:
+            // most fails land just outside the window, so the progressive
+            // widening usually resolves them in one cheap retry.
             int window = Profile.AspirationWindow;
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
 
-            int score = SearchRoot(board, depth, alpha, beta, out Move bestMove);
+            int score;
+            Move bestMove;
+            while (true)
+            {
+                score = SearchRoot(board, depth, alpha, beta, out bestMove);
+                if (_stopped || _softStopped || (score > alpha && score < beta))
+                    break;
 
-            // Fail low/high: the true score is outside the window, so the
-            // result is just a bound. Re-search this depth with a full window.
-            if (!_stopped && !_softStopped && (score <= alpha || score >= beta))
-                score = SearchRoot(board, depth, -Infinity, Infinity, out bestMove);
+                if (score <= alpha)
+                    alpha = Math.Max(score - window, -Infinity);
+                else
+                    beta = Math.Min(score + window, Infinity);
+
+                window *= 2;
+                if (window > 1000) // Give up widening: full window.
+                {
+                    alpha = -Infinity;
+                    beta = Infinity;
+                }
+            }
 
             if (_stopped)
                 break; // Hard interruption: keep the previous result.
@@ -235,6 +267,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
+            _stackPiece[0] = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
+            _stackTo[0] = move.To;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
@@ -293,7 +327,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return bestScore;
     }
 
-    private int Negamax(Board board, int depth, int alpha, int beta, int ply, bool allowNull)
+    // 'excluded' is the singular-extension verification mode: that one move is
+    // skipped and the node must NOT use its own TT entry (which describes the
+    // search WITH the move) nor store its result (it describes a different,
+    // move-less position). Move.None means a normal search.
+    private int Negamax(Board board, int depth, int alpha, int beta, int ply, bool allowNull,
+                        Move excluded = default)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
@@ -314,27 +353,39 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         // ---- Transposition table probe ----
         Move ttMove = Move.None;
-        if (_tt.Probe(board.ZobristKey, out TTEntry entry))
+        bool ttHit = _tt.Probe(board.ZobristKey, out TTEntry entry);
+        if (ttHit)
         {
             ttMove = entry.BestMove; // Always useful for ordering.
 
             // The stored score is only reusable if it comes from a search at
             // least as deep as the one we are about to do, and its bound type
-            // allows a conclusion within the current window.
-            if (entry.Depth >= depth)
+            // allows a conclusion within the current window. Never in singular
+            // verification mode: the entry describes the search WITH the
+            // excluded move available.
+            if (entry.Depth >= depth && excluded == Move.None)
             {
-                int ttScore = FromTT(entry.Score, ply);
+                int score = FromTT(entry.Score, ply);
                 switch (entry.Bound)
                 {
                     case BoundType.Exact:
-                        return ttScore;
-                    case BoundType.LowerBound when ttScore >= beta:
-                        return ttScore;
-                    case BoundType.UpperBound when ttScore <= alpha:
-                        return ttScore;
+                        return score;
+                    case BoundType.LowerBound when score >= beta:
+                        return score;
+                    case BoundType.UpperBound when score <= alpha:
+                        return score;
                 }
             }
         }
+
+        // ---- Internal Iterative Reductions ----
+        // No TT move at a node that deserves real depth means either the
+        // position was never searched or its entry was overwritten — move
+        // ordering will be poor and the full depth is not worth its cost.
+        // Search one ply shallower; if the node matters, a later (deeper)
+        // visit will find a TT move waiting and search it properly.
+        if (depth >= 4 && ttMove == Move.None && excluded == Move.None)
+            depth--;
 
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
@@ -355,7 +406,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // this line — return without searching. Only at shallow depth and away
         // from mate scores, where the static eval is a trustworthy proxy.
         if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
-            && staticEval - 85 * depth >= beta)
+            && excluded == Move.None && staticEval - 85 * depth >= beta)
             return staticEval;
 
         // ---- Null Move Pruning ----
@@ -364,10 +415,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // Skipped: in check (passing is illegal), without non-pawn material
         // (zugzwang), right after another null move, and at reduced depths
         // where the verification search would be meaningless.
-        if (allowNull && !inCheck && depth >= 3 && ply > 0
+        if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
             && board.HasNonPawnMaterial(board.SideToMove))
         {
             int reduction = 2 + depth / 4;
+            _stackPiece[ply] = -1; // No usable "previous move" for the child.
+            _incremental?.PushNull();
             board.MakeNullMove();
             int nullScore = -Negamax(board, depth - 1 - reduction, -beta, -beta + 1,
                                      ply + 1, allowNull: false);
@@ -379,6 +432,83 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 return beta;
         }
 
+        // ---- ProbCut ----
+        // When the position is SO good that a shallow search of a promising
+        // capture already lands well above beta (with a safety margin), the
+        // full-depth search would almost certainly fail high too — cut now.
+        // Non-PV only, never in singular verification, away from mate scores.
+        if (nonPv && !inCheck && depth >= 5 && excluded == Move.None
+            && Math.Abs(beta) < MateBound)
+        {
+            int probBeta = beta + 150;
+            MoveList captures = _moveLists[ply];
+            MoveGenerator.GeneratePseudoLegalMoves(board, captures, capturesOnly: true);
+            MovePicker.OrderCaptures(captures, board);
+            Color mover = board.SideToMove;
+
+            for (int i = 0; i < captures.Count; i++)
+            {
+                Move move = captures[i];
+
+                // Only captures that do not clearly lose material can beat
+                // beta by a margin; skip the rest (and the odd non-queen
+                // promotion the captures-only generator also emits).
+                if (move.IsPromotion && move.Flag is not (MoveFlag.PromoQueen or MoveFlag.PromoQueenCapture))
+                    continue;
+                if (move.IsCapture && !move.IsPromotion
+                    && StaticExchangeEvaluator.LosesAtLeast(board, move))
+                    continue;
+
+                _incremental?.PushMove(board, move);
+                board.MakeMove(move);
+                if (board.IsSquareAttacked(board.KingSquare(mover), board.SideToMove))
+                {
+                    board.UnmakeMove();
+                    _incremental?.Pop();
+                    continue; // Pseudo-legal move left the king in check.
+                }
+                _stackPiece[ply] = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.To));
+                _stackTo[ply] = move.To;
+
+                // Cheap filter first (quiescence), real verification second.
+                int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
+                if (score >= probBeta)
+                    score = -Negamax(board, depth - 4, -probBeta, -probBeta + 1,
+                                     ply + 1, allowNull: false);
+
+                board.UnmakeMove();
+                _incremental?.Pop();
+
+                if (_stopped)
+                    return 0;
+                if (score >= probBeta)
+                    return probBeta;
+            }
+        }
+
+        // ---- Singular extension detection ----
+        // A TT move whose stored score is trustworthy gets a verification
+        // search: all OTHER moves are searched shallower against a lowered
+        // window. If none comes close, the TT move is "singular" — the only
+        // move holding the position — and deserves an extra ply, because
+        // getting forced lines right is what wins/saves games.
+        int singularExtension = 0;
+        if (depth >= 8 && excluded == Move.None && ttMove != Move.None
+            && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound)
+        {
+            int ttScore = FromTT(entry.Score, ply);
+            if (Math.Abs(ttScore) < MateBound)
+            {
+                int singularBeta = ttScore - 2 * depth;
+                int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
+                                    ply, allowNull: false, excluded: ttMove);
+                if (_stopped)
+                    return 0;
+                if (score < singularBeta)
+                    singularExtension = 1;
+            }
+        }
+
         MoveList moves = _moveLists[ply];
         MoveGenerator.GenerateLegalMoves(board, moves);
 
@@ -388,17 +518,33 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (moves.Count == 0)
             return inCheck ? -MateScore + ply : 0;
 
-        MovePicker.Order(moves, board, ttMove, _killers, _history, ply);
+        // Previous-move context for counter moves and continuation history
+        // (absent at the root or right after a null move).
+        int prevPiece = ply > 0 ? _stackPiece[ply - 1] : -1;
+        int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
+        Move counterMove = prevPiece >= 0 ? _counterMoves[prevPiece, prevTo] : Move.None;
 
+        MovePicker.Order(moves, board, ttMove, _killers, _history, ply,
+                         _contHist, prevPiece, prevTo, counterMove);
+
+        Color stm = board.SideToMove;
         int originalAlpha = alpha;
         Move bestMove = Move.None;
         int bestScore = -Infinity;
         int searched = 0;
         int quietsSearched = 0;
 
+        // Quiet moves actually searched at this node, kept so that a later
+        // beta cutoff can punish them (history malus): they had their chance
+        // before the cutoff move and did not refute.
+        Span<Move> triedQuiets = stackalloc Move[64];
+        int triedQuietCount = 0;
+
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
+            if (move == excluded)
+                continue; // Singular verification searches everything BUT this.
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
@@ -430,6 +576,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 continue;
             }
 
+            // The singular extension applies to the TT move only: it is the
+            // move whose uniqueness the verification search just proved.
+            int newDepth = depth - 1 + (move == ttMove ? singularExtension : 0);
+
+            _stackPiece[ply] = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+            _stackTo[ply] = move.To;
+            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             int score;
@@ -437,7 +590,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             if (searched == 0)
             {
                 // PVS: the first (best-ordered) move gets the full window.
-                score = -Negamax(board, depth - 1, -beta, -alpha, ply + 1, allowNull: true);
+                score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true);
             }
             else
             {
@@ -455,23 +608,32 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 {
                     reduction = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
                     if (nonPv) reduction++;              // Reduce harder off the PV.
+
+                    // History-informed adjustment: a quiet move the history
+                    // tables like is reduced less (it keeps refuting things
+                    // elsewhere); a disliked one is reduced more. Killers and
+                    // the counter move also earn a shallower reduction.
+                    reduction -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2);
+                    if (move == counterMove || _killers.Rank(ply, move) > 0)
+                        reduction--;
+
                     if (reduction < 0) reduction = 0;
-                    if (reduction > depth - 1) reduction = depth - 1;
+                    if (reduction > newDepth - 1) reduction = newDepth - 1;
                 }
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
-                score = -Negamax(board, depth - 1 - reduction, -alpha - 1, -alpha,
+                score = -Negamax(board, newDepth - reduction, -alpha - 1, -alpha,
                                  ply + 1, allowNull: true);
 
                 // The reduced probe beat alpha: verify at full depth first.
                 if (score > alpha && reduction > 0 && !_stopped)
-                    score = -Negamax(board, depth - 1, -alpha - 1, -alpha,
+                    score = -Negamax(board, newDepth, -alpha - 1, -alpha,
                                      ply + 1, allowNull: true);
 
                 // Still inside the window: it is a genuine PV candidate,
                 // re-search with the real window.
                 if (score > alpha && score < beta && !_stopped)
-                    score = -Negamax(board, depth - 1, -beta, -alpha,
+                    score = -Negamax(board, newDepth, -beta, -alpha,
                                      ply + 1, allowNull: true);
             }
 
@@ -479,7 +641,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             _incremental?.Pop();
             searched++;
             if (isQuiet)
+            {
                 quietsSearched++;
+                if (triedQuietCount < triedQuiets.Length)
+                    triedQuiets[triedQuietCount++] = move;
+            }
 
             if (_stopped)
                 return 0;
@@ -496,11 +662,33 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     if (alpha >= beta)
                     {
                         // Beta cutoff by a quiet move: exactly the signal the
-                        // killer and history heuristics feed on.
+                        // ordering heuristics feed on. The cutoff move gets a
+                        // bonus everywhere (killers, counter move, butterfly
+                        // and continuation history); the quiets tried before
+                        // it get a malus — they had their chance and failed.
                         if (isQuiet)
                         {
                             _killers.Store(ply, move);
-                            _history.AddBonus(board.SideToMove, move, depth);
+                            _history.AddBonus(stm, move, depth);
+
+                            int piece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+                            if (prevPiece >= 0)
+                            {
+                                _counterMoves[prevPiece, prevTo] = move;
+                                _contHist.AddBonus(prevPiece, prevTo, piece, move.To, depth);
+                            }
+
+                            for (int q = 0; q < triedQuietCount; q++)
+                            {
+                                Move tried = triedQuiets[q];
+                                if (tried == move)
+                                    continue;
+                                _history.AddMalus(stm, tried, depth);
+                                if (prevPiece >= 0)
+                                    _contHist.AddMalus(prevPiece, prevTo,
+                                        ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
+                                        tried.To, depth);
+                            }
                         }
                         break;
                     }
@@ -512,10 +700,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // then still valid (the first move is never pruned).
 
         // ---- Store the result in the TT with the right bound type ----
-        BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
-                        : bestScore >= beta ? BoundType.LowerBound
-                        : BoundType.Exact;
-        _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply), bound, bestMove);
+        // Not in singular verification mode: the searched position (one move
+        // forbidden) is not the position the key describes.
+        if (excluded == Move.None)
+        {
+            BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
+                            : bestScore >= beta ? BoundType.LowerBound
+                            : BoundType.Exact;
+            _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply), bound, bestMove);
+        }
 
         return bestScore;
     }

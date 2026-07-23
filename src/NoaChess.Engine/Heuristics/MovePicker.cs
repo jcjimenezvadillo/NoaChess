@@ -11,19 +11,22 @@ namespace NoaChess.Engine.Heuristics;
 //   2. Winning/equal captures (SEE >= 0), ranked by MVV-LVA.
 //   3. Non-capture promotions.
 //   4. Killer moves (quiet refutations from sibling nodes).
-//   5. Remaining quiet moves, ranked by history score.
-//   6. Losing captures (SEE < 0) — tried last: they are usually just blunders,
+//   5. Counter move (the quiet refutation of the opponent's LAST move).
+//   6. Remaining quiet moves, ranked by history + continuation history.
+//   7. Losing captures (SEE < 0) — tried last: they are usually just blunders,
 //      but occasionally a sacrifice, so they cannot be skipped entirely here.
 public static class MovePicker
 {
     // Score bands. They only need to keep the categories apart; the exact
     // numbers are irrelevant as long as the bands never overlap. History is
-    // explicitly clamped below the killer band to guarantee that.
+    // explicitly clamped below the counter-move band to guarantee that; its
+    // floor (two maluses of -2^20) stays above the losing-capture band.
     private const int TTMoveScore = 10_000_000;
     private const int GoodCaptureBase = 5_000_000;
     private const int PromotionBase = 4_000_000;
     private const int KillerBase = 3_000_000;
-    private const int HistoryCap = KillerBase - 10;
+    private const int CounterMoveScore = 2_900_000;
+    private const int HistoryCap = CounterMoveScore - 10;
     private const int LosingCaptureBase = -5_000_000;
 
     // Rough piece values for MVV-LVA (index = PieceType, king included as
@@ -35,7 +38,17 @@ public static class MovePicker
     // them together with the moves (n is small — typically 20-45 — so
     // insertion sort beats fancier algorithms here).
     public static void Order(MoveList moves, Board board, Move ttMove,
-                             KillerTable killers, HistoryTable history, int ply)
+                             KillerTable killers, HistoryTable history, int ply) =>
+        Order(moves, board, ttMove, killers, history, ply,
+              contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None);
+
+    // Full-context variant: also ranks the counter move to the opponent's last
+    // move and blends continuation history into the quiet-move scores.
+    // prevPiece < 0 means "no usable previous move" (root or after a null move).
+    public static void Order(MoveList moves, Board board, Move ttMove,
+                             KillerTable killers, HistoryTable history, int ply,
+                             ContinuationHistory? contHist, int prevPiece, int prevTo,
+                             Move counterMove)
     {
         int n = moves.Count;
         if (n < 2)
@@ -43,7 +56,8 @@ public static class MovePicker
 
         int[] scores = moves.Scores;
         for (int i = 0; i < n; i++)
-            scores[i] = Score(moves[i], board, ttMove, killers, history, ply);
+            scores[i] = Score(moves[i], board, ttMove, killers, history, ply,
+                              contHist, prevPiece, prevTo, counterMove);
 
         for (int i = 1; i < n; i++)
         {
@@ -71,7 +85,9 @@ public static class MovePicker
     private static readonly HistoryTable NoHistory = new();
 
     private static int Score(Move move, Board board, Move ttMove,
-                             KillerTable killers, HistoryTable history, int ply)
+                             KillerTable killers, HistoryTable history, int ply,
+                             ContinuationHistory? contHist, int prevPiece, int prevTo,
+                             Move counterMove)
     {
         if (move == ttMove)
             return TTMoveScore;
@@ -102,6 +118,15 @@ public static class MovePicker
         if (killerRank > 0)
             return KillerBase + killerRank;
 
-        return Math.Min(history.Get(board.SideToMove, move), HistoryCap);
+        if (move == counterMove)
+            return CounterMoveScore;
+
+        int quietScore = history.Get(board.SideToMove, move);
+        if (contHist is not null && prevPiece >= 0)
+        {
+            int piece = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
+            quietScore += contHist.Get(prevPiece, prevTo, piece, move.To);
+        }
+        return Math.Min(quietScore, HistoryCap);
     }
 }
