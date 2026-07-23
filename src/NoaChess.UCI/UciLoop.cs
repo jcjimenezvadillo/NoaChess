@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.7.4";
+    public const string EngineVersion = "2.8.1";
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -153,6 +153,19 @@ public sealed class UciLoop
                     HandleSetOption(tokens);
                     break;
 
+                case "tbprobe":
+                {
+                    // Not UCI: prints the tablebase verdict for the current
+                    // position. Drives the differential test harness.
+                    bool okW = NoaChess.Engine.Tablebases.Syzygy.ProbeWdl(
+                        _board, out var wdlScore);
+                    bool okD = NoaChess.Engine.Tablebases.Syzygy.ProbeDtz(
+                        _board, out int dtzScore);
+                    _output.WriteLine($"tbresult wdl {(okW ? ((int)wdlScore).ToString() : "none")}"
+                                    + $" dtz {(okD ? dtzScore.ToString() : "none")}");
+                    break;
+                }
+
                 case "ucinewgame":
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
@@ -246,6 +259,20 @@ public sealed class UciLoop
             _engine.ResizeHash(_options.Hash);
         if (changed == "Profile")
             _engine.Profile = EngineProfile.ByName(_options.Profile);
+        if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
+        {
+            _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
+            _engine.SyzygyProbeDepth = _options.SyzygyProbeDepth;
+            _engine.Syzygy50MoveRule = _options.Syzygy50MoveRule;
+        }
+        if (changed == "SyzygyPath")
+        {
+            NoaChess.Engine.Tablebases.Syzygy.Init(_options.SyzygyPath);
+            _engine.RefreshTablebaseLimit();
+            _output.WriteLine(NoaChess.Engine.Tablebases.Syzygy.Available
+                ? $"info string Syzygy: {NoaChess.Engine.Tablebases.Syzygy.Cardinality}-man tablebases loaded"
+                : "info string Syzygy: no tablebases found");
+        }
         if (changed == "Debug Log File" && _options.DebugLogFile.Length > 0)
             OpenLog(_options.DebugLogFile);
 
@@ -310,7 +337,13 @@ public sealed class UciLoop
         }
     }
 
-    // "go [ponder] [depth N | nodes N | movetime N | wtime N btime N [winc N] [binc N] | infinite]".
+    // "go [ponder] [depth N] [nodes N] [movetime N] [wtime N btime N
+    //      [winc N] [binc N] [movestogo N] | infinite]".
+    // Limits are cumulative: a GUI may send clock + depth + nodes and the
+    // first one reached must stop the search. "searchmoves" and "mate" are
+    // not implemented yet because SearchLimits cannot express a root subset
+    // or a mate-search horizon; they are deliberately ignored, never
+    // approximated with incorrect semantics.
     // Launches the search asynchronously so the loop keeps serving stop/isready.
     // 'ponderedMs' (ponderhit relaunch only) is the time the ponder search
     // already ran; it is charged against this search's clock budget, floored
@@ -330,7 +363,7 @@ public sealed class UciLoop
             _ponderTimer.Restart();
 
         SearchLimits limits = ponder
-            ? SearchLimits.Depth(SearchLimits.DepthUnlimited)
+            ? SearchLimits.Unlimited()
             : ParseLimits(tokens);
 
         // Clock-managed searches only (soft < hard): movetime/depth/nodes
@@ -407,13 +440,13 @@ public sealed class UciLoop
             // and adjudication.
             string score = FormatUciScore(p.Score);
             _output.WriteLine(
-                $"info depth {p.Depth} score {score} nodes {p.NodesSearched} time {ms} nps {nps} pv {string.Join(' ', p.Pv)}");
+                $"info depth {p.Depth} score {score} nodes {p.NodesSearched} time {ms} nps {nps} tbhits {_engine.TbHits} pv {string.Join(' ', p.Pv)}");
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);
 
-        // Ponder/infinite search that finished on its own (forced mate, depth
-        // cap): park here until the GUI sends "stop" (-> answer below) or
+        // Ponder/infinite search that finished on its own (e.g. a forced
+        // mate): park here until the GUI sends "stop" (-> answer below) or
         // "ponderhit"/new position (-> cancelled with bestmove suppressed).
         // Answering early violates UCI and desyncs the GUI.
         if (waitForStop && !token.IsCancellationRequested)
@@ -462,7 +495,7 @@ public sealed class UciLoop
             : $"bestmove {result.BestMove} ponder {ponderHint}");
     }
 
-    private SearchLimits ParseLimits(string[] tokens)
+    internal SearchLimits ParseLimits(string[] tokens)
     {
         // Reads the numeric value following a keyword ("wtime 60000" -> 60000).
         long? Value(string keyword)
@@ -472,33 +505,59 @@ public sealed class UciLoop
         }
 
         if (Array.IndexOf(tokens, "infinite") != -1)
-            return SearchLimits.Depth(SearchLimits.DepthUnlimited); // Runs until "stop".
+            return SearchLimits.Unlimited(); // Runs until "stop".
 
-        if (Value("depth") is long depth)
-            return SearchLimits.Depth((int)depth);
-
-        if (Value("nodes") is long nodes)
-            return SearchLimits.Nodes(nodes);
-
-        if (Value("movetime") is long movetime)
-            return SearchLimits.Time(movetime);
+        long? requestedDepth = Value("depth");
+        long? requestedNodes = Value("nodes");
+        long? moveTime = Value("movetime");
 
         // Clock mode: the TimeManager turns remaining time + increment into a
         // soft/hard budget, discounting MoveOverhead for GUI latency.
         // "movestogo N" (classical time controls) tightens the budget to the
         // moves left until the next time control.
         long? myTime = _board.SideToMove == Color.White ? Value("wtime") : Value("btime");
+        SearchLimits limits = SearchLimits.Unlimited();
+        bool hasLimit = false;
         if (myTime is long time)
         {
             long inc = (_board.SideToMove == Color.White ? Value("winc") : Value("binc")) ?? 0;
-            int? movesToGo = Value("movestogo") is long mtg ? (int)mtg : null;
+            int? movesToGo = Value("movestogo") is long mtg
+                ? (int)Math.Clamp(mtg, 1, int.MaxValue)
+                : null;
             // Game ply (halfmoves elapsed) drives the optimum-time curve: the
             // engine spends a growing share of its clock as the game advances.
             int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
-            return TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly);
+            limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly);
+            hasLimit = true;
         }
 
-        return SearchLimits.Depth(_engine.DefaultDepth);
+        // Every supplied constraint narrows the same limit object. This is
+        // important for tournament GUIs, which routinely add a safety depth
+        // or node cap to normal clock parameters.
+        if (moveTime is long milliseconds)
+        {
+            long budget = Math.Max(1, milliseconds);
+            limits = limits with
+            {
+                HardTimeMs = Math.Min(limits.HardTimeMs, budget),
+                SoftTimeMs = Math.Min(limits.SoftTimeMs, budget),
+            };
+            hasLimit = true;
+        }
+
+        if (requestedDepth is long depth)
+        {
+            limits = limits with { MaxDepth = (int)Math.Clamp(depth, 1, int.MaxValue) };
+            hasLimit = true;
+        }
+
+        if (requestedNodes is long nodes)
+        {
+            limits = limits with { MaxNodes = Math.Max(1, nodes) };
+            hasLimit = true;
+        }
+
+        return hasLimit ? limits : SearchLimits.Depth(_engine.DefaultDepth);
     }
 
     // IProgress<T> implementation that invokes the callback on the calling

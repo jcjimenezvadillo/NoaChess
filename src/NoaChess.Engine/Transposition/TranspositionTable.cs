@@ -15,8 +15,9 @@ namespace NoaChess.Engine.Transposition;
 //   line — a probe reads the whole cluster for one memory access). Four
 //   candidate slots per position instead of one means far fewer useful
 //   entries destroyed by index collisions.
-// - AGED: each new search bumps a 5-bit generation. Replacement treats an
-//   entry's depth minus 8x its age as its worth, so stale results from
+// - AGED: each new search bumps a 5-bit generation. Zero is reserved for an
+//   empty slot, so the 31 live values form the ageing cycle. Replacement
+//   treats an entry's depth minus 8x its age as its worth, so stale results from
 //   previous searches yield their slots gracefully instead of squatting.
 // - The full 64-bit key is split: low bits index the cluster, the high 32
 //   bits are stored for verification (TT moves are pseudo-legality-vetted
@@ -24,7 +25,10 @@ namespace NoaChess.Engine.Transposition;
 public sealed class TranspositionTable
 {
     private const int ClusterSize = 4;
-    private const int GenerationCycle = 32; // 5 bits in TTEntry.GenBound.
+    // GenBound == 0 is the empty marker. Keeping the live generation in 1..31
+    // prevents a generation-wrap eval-only non-PV entry from encoding exactly
+    // like an empty slot, while preserving TTEntry's 16-byte size.
+    private const int GenerationCycle = 31;
 
     // Assigned by Resize (called from the constructor); the initializer only
     // silences the compiler, which cannot see through the method call.
@@ -49,23 +53,23 @@ public sealed class TranspositionTable
 
         _entries = new TTEntry[clusters * ClusterSize];
         _clusterMask = (ulong)(clusters - 1);
-        _generation = 0;
+        _generation = 1;
     }
 
     // Wipes all entries (new game).
     public void Clear()
     {
         Array.Clear(_entries);
-        _generation = 0;
+        _generation = 1;
     }
 
     // Called once at the start of every search ("go"): ages every existing
     // entry by one generation step.
-    public void NewSearch() => _generation = (_generation + 1) & (GenerationCycle - 1);
+    public void NewSearch() => _generation = _generation % GenerationCycle + 1;
 
     // An entry's age in generations, respecting the 5-bit wrap-around.
     private int RelativeAge(in TTEntry entry)
-        => (GenerationCycle + _generation - entry.Generation) & (GenerationCycle - 1);
+        => (GenerationCycle + _generation - entry.Generation) % GenerationCycle;
 
     // Looks up a position. Returns true (and the entry) when any slot of the
     // position's cluster holds it. A hit also refreshes the entry's

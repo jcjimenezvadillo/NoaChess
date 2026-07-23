@@ -45,6 +45,18 @@ public sealed class ChessEngine
     public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
 
     // Active parameter profile (Default/Bullet, see EngineProfile).
+    /// Syzygy probing settings, driven by the UCI options of the same name.
+    public int SyzygyProbeLimit { set => _search.SyzygyProbeLimit = value; }
+    public int SyzygyProbeDepth { set => _search.SyzygyProbeDepth = value; }
+    public bool Syzygy50MoveRule { set => _search.Syzygy50MoveRule = value; }
+
+    /// Positions this search resolved from tablebases (UCI "tbhits").
+    public long TbHits => _search.TbHits;
+
+    /// Must be called after the tablebases are (re)loaded: the search caches
+    /// the largest piece count worth probing.
+    public void RefreshTablebaseLimit() => _search.RefreshTbLimit();
+
     public Profiles.EngineProfile Profile
     {
         get => _search.Profile;
