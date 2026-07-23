@@ -18,6 +18,9 @@ public sealed class UciOptions
     public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
     public bool UseNnue { get; private set; }
+    public string EvalFile { get; private set; } = "";
+    public string Profile { get; private set; } = "Default";
+    public string DebugLogFile { get; private set; } = "";
 
     // Prints the option declarations the GUI expects right after "id".
     public void Print(TextWriter output)
@@ -27,6 +30,9 @@ public sealed class UciOptions
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
         output.WriteLine("option name UseNNUE type check default false");
+        output.WriteLine("option name EvalFile type string default <empty>");
+        output.WriteLine("option name Profile type combo default Default var Default var Bullet");
+        output.WriteLine("option name Debug Log File type string default <empty>");
     }
 
     // Applies "setoption name <name> value <value>". Returns the canonical
@@ -55,6 +61,18 @@ public sealed class UciOptions
             case "usennue" when bool.TryParse(value, out bool useNnue):
                 UseNnue = false && useNnue; // No NNUE until v2.0.
                 return "UseNNUE";
+
+            case "evalfile":
+                EvalFile = value == "<empty>" ? "" : value;
+                return "EvalFile";
+
+            case "profile":
+                Profile = value.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? "Bullet" : "Default";
+                return "Profile";
+
+            case "debug log file":
+                DebugLogFile = value == "<empty>" ? "" : value;
+                return "Debug Log File";
 
             default:
                 return null;

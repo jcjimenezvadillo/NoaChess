@@ -268,23 +268,44 @@ public static class EvaluationParams
     // enemy queen, with double attack on that square. ref: (62,21).
     public static Score SliderOnQueen = new(30, 10);
 
-    // ---- Pawn structure ----
-    public static Score DoubledPawn = new(-14, -14);
-    public static Score IsolatedPawn = new(-10, -12);
-    // Phalanx: two friendly pawns side-by-side (same rank, adjacent file)
-    // protect each other's advance. Bonus grows with rank because a phalanx
-    // on the 5th rank is a real threat; on the 2nd it is just potential.
-    // Rank-indexed (0 = own back rank, 7 unused).
-    public static Score[] Phalanx =
+    // ---- Pawn structure (reference pawns.cpp scoring chain, ×0.48) ----
+    // The per-pawn score is a chain of MUTUALLY EXCLUSIVE branches, not a sum
+    // of independent terms: a supported/phalanx pawn scores the Connected
+    // formula, an isolated pawn pays Isolated (or the trebled-pawn Doubled
+    // special case), a backward pawn pays Backward; on top, any unsupported
+    // pawn pays Doubled/WeakLever, and advanced blocked pawns get BlockedPawnRank.
+    //
+    // Doubled: own pawn DIRECTLY behind on the same file (not the per-file
+    // count of the old model) and no support. ref S(11,51) ×0.48.
+    public static Score Doubled = new(5, 25);
+    // DoubledEarly: extra penalty for a doubled pawn while no enemy pawn is
+    // fixed yet (no own pawn rams or restrains them) — early doubling is
+    // harder to justify because the structure is still fluid. ref S(17,7) ×0.48.
+    public static Score DoubledEarly = new(8, 3);
+    // Isolated: no friendly pawn on adjacent files. ref S(1,20) ×0.48.
+    public static Score Isolated = new(0, 10);
+    // Backward: all neighbours strictly ahead and the pawn cannot advance
+    // (stop square blocked or covered by a lever-push). ref S(6,19) ×0.48.
+    public static Score Backward = new(3, 9);
+    // WeakLever: an unsupported pawn attacked by two enemy pawns loses the
+    // exchange on either recapture. ref S(2,57) ×0.48.
+    public static Score WeakLever = new(1, 27);
+    // WeakUnopposed: an isolated or backward pawn with a free file in front is
+    // an easy target for rooks (added on top of Isolated/Backward; the
+    // backward case only off the rook files). ref S(15,18) ×0.48.
+    public static Score WeakUnopposed = new(7, 9);
+    // Connected: supported and/or phalanx pawns, by relative rank. RAW
+    // reference units — the formula v = Connected[r]*(2 + phalanx - opposed)
+    // + 22*support is computed in reference units and converted ×0.48 at the
+    // end (eg = v*(r-2)/4 before conversion).
+    public static readonly int[] Connected = [0, 5, 7, 11, 23, 48, 87, 0];
+    // Blocked pawn on relative rank 5-6 (indexed rank-4): a rammed pawn deep
+    // in the enemy camp cramps the defense — small bonus that turns positive
+    // in the endgame on rank 6. ref {S(-19,-8), S(-7,3)} ×0.48. Added as-is.
+    public static Score[] BlockedPawnRank =
     [
-        new(0, 0), new(3, 0), new(4, 5), new(13, 12),
-        new(16, 26), new(44, 34), new(64, 54), new(0, 0),
+        new(-9, -4), new(-3, 1),
     ];
-    // Backward pawn: cannot advance safely (stop square attacked by an enemy
-    // pawn) and has no friendly pawn on adjacent files behind it that could
-    // advance to give support. Not as severe as isolated because the pawn
-    // can still be defended by pieces.
-    public static Score BackwardPawn = new(-12, -6);
     // Passed pawn bonus by RELATIVE rank (0 = own back rank, 7 unused). Endgame
     // heavy: a passer wins games once the pieces come off.
     public static Score[] PassedPawn =
@@ -298,7 +319,8 @@ public static class EvaluationParams
     // Rook behind its own passed pawn (Tarrasch): pushes the pawn and never
     // blocks it. Applied per (rook, passer) pair on the same file.
     public static Score RookBehindPasser = new(12, 14);
-    // A passer whose stop square is occupied by an enemy piece is going
-    // nowhere for now: give back a third of the rank bonus.
-    public const int BlockedPasserDivisor = 3;
+    // Penalty per file distance from the edge: flank passers are worth more
+    // than central ones (the defending king covers fewer squares). Reference
+    // S(13,8) x0.48. Subtracted per passer.
+    public static Score PassedFile = new(6, 4);
 }

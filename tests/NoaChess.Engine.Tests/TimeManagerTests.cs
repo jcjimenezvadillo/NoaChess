@@ -60,6 +60,23 @@ public class TimeManagerTests
     }
 
     [Fact]
+    public void OpeningDamp_FirstMoveStaysASmallShareOfTheClockDespiteIncrement()
+    {
+        // 3+2: the horizon folds 49 future increments into the usable time,
+        // which used to budget ~7.5s optimum for the first move. The opening
+        // damp must keep the first-move soft budget under ~3% of the clock.
+        SearchLimits first = TimeManager.FromClock(180_000, 2_000, 30, movesToGo: null, gamePly: 0);
+
+        Assert.True(first.SoftTimeMs < 5_400, $"soft={first.SoftTimeMs}");
+
+        // And the damp fades out: by ply 18 the budget is back on the
+        // reference curve, above the damped opening value.
+        SearchLimits later = TimeManager.FromClock(180_000, 2_000, 30, movesToGo: null, gamePly: 18);
+        Assert.True(later.SoftTimeMs > first.SoftTimeMs,
+            $"first={first.SoftTimeMs} later={later.SoftTimeMs}");
+    }
+
+    [Fact]
     public void MovesToGo_TightensBudgetForTheNextControl()
     {
         // With only two moves to the next control the clock must be split over
