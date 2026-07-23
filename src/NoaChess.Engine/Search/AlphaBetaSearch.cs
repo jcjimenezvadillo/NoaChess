@@ -27,8 +27,11 @@ namespace NoaChess.Engine.Search;
 //   near the horizon and ordered last elsewhere.
 // - Repetition detection: a single repetition already scores as a draw inside
 //   the search (if a position repeated once, nothing stops it repeating again).
-// - Soft/hard time management: past the soft budget no new iteration starts;
-//   past the hard deadline the search aborts and keeps the last completed one.
+// - Adaptive time management: TimeManager supplies an optimum and a maximum
+//   time; each completed iteration re-modulates the optimum by falling-eval,
+//   best-move-stability and best-move-instability factors and the search stops
+//   past the modulated budget (gracefully at root-move boundaries, keeping the
+//   partial iteration's best). Past the maximum the search aborts outright.
 public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 {
     private const int Infinity = 1_000_000;
@@ -109,6 +112,32 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private long _maxNodes;
     private CancellationToken _cancellation;
 
+    // ---- Adaptive time management state (v2.6.5) ----
+    // The per-move budget from TimeManager is the OPTIMUM time; every
+    // completed iteration re-modulates it into the actual deadline
+    // (optimum x fallingEval x reduction x bestMoveInstability). This is the
+    // dynamic part of a top engine's scheduler: stable searches with a rising
+    // eval stop at about half the optimum, while a falling eval or a flapping
+    // best move extends the think up to ~3x.
+
+    // Deadline used by the iteration/root-boundary soft checks. Starts at the
+    // optimum and is re-derived after each completed iteration (clock mode).
+    private long _softDeadlineMs;
+
+    // Root best-move changes during the current iteration (root fills it).
+    private int _bestMoveChanges;
+
+    // Sentinel for "no previous score yet" (first search of the game).
+    private const int ScoreNone = int.MaxValue / 2;
+
+    // Cross-move state (persists between searches, cleared on new game):
+    // the previous move's score/average score, the previous move's stability
+    // factor and the last four iteration scores of the previous search.
+    private int _bestPreviousScore = ScoreNone;
+    private int _bestPreviousAverageScore = ScoreNone;
+    private double _previousTimeReduction = 1.0;
+    private readonly int[] _iterValue = new int[4];
+
     // Set when the hard deadline, the node cap or a cancellation fires. From
     // that point every node returns immediately and all partial scores are
     // discarded: only the last fully completed iteration is trusted.
@@ -126,6 +155,9 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _history.Clear();
         _contHist.Clear();
         Array.Clear(_counterMoves);
+        _bestPreviousScore = ScoreNone;
+        _bestPreviousAverageScore = ScoreNone;
+        _previousTimeReduction = 1.0;
     }
 
     public SearchResult FindBestMove(Board board, SearchLimits limits,
@@ -140,6 +172,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _softStopped = false;
         _cancellation = cancellation;
         _hardTimeMs = limits.HardTimeMs;
+        _softTimeMs = limits.SoftTimeMs;
+        _softDeadlineMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
         _timer.Restart();
 
@@ -169,28 +203,40 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         SearchResult best = default;
         int previousScore = 0;
 
+        // ---- Dynamic time management (per-search state) ----
+        // Exponentially decayed count of root best-move changes: a search that
+        // keeps flapping between root moves needs more time to settle.
+        double totBestMoveChanges = 0;
+        // Stability factor carried to the NEXT move via _previousTimeReduction.
+        double timeReduction = 1.0;
+        // The last completed-iteration best move and the depth where it last
+        // changed ("stable for 10 iterations" halves the budget).
+        Move lastBestMove = Move.None;
+        int lastBestMoveDepth = 0;
+        // Running average of the best score across iterations (weights recent
+        // iterations 2:1), carried to the next move for the falling-eval term.
+        int averageScore = ScoreNone;
+        // Ring buffer index over the previous 4 iteration scores.
+        int iterIdx = 0;
+        // Seed the iteration scores with the previous move's score so the
+        // falling-eval factor reacts to drops ACROSS moves, not only within
+        // this search. First move of the game: no history, seeded with 0 and
+        // the sentinel deliberately maxes the factor (an unknown position
+        // deserves the full extended budget, exactly once).
+        int seed = _bestPreviousScore == ScoreNone ? 0 : _bestPreviousScore;
+        for (int i = 0; i < _iterValue.Length; i++)
+            _iterValue[i] = seed;
+
         for (int depth = 1; depth <= limits.MaxDepth; depth++)
         {
             CheckStop();
             if (_stopped)
                 break;
 
-            // Soft budget (clock mode). The budget is the static per-move slice
-            // computed by TimeManager (a small, conservative fraction of the
-            // clock plus 85% of the increment). Past it, do not START another
-            // iteration — the moves banked so far are complete and the rest of
-            // the clock is preserved for the rest of the game. An iteration
-            // already under way is bounded by the mid-root soft stop and, past
-            // that, by the hard deadline.
-            //
-            // NOTE (v2.6.4): a best-move-instability / falling-eval extension
-            // was tried here and reverted — without an eval-complexity metric it
-            // fired hardest in the volatile opening (where any reasonable move is
-            // fine), spending 3-4x the budget on the first moves and rushing the
-            // rest of the game (SPRT -5.7 Elo). It belongs with the later search
-            // block that also ports the complexity signal.
-            if (depth > 1 && _timer.ElapsedMilliseconds >= _softTimeMs)
-                break;
+            // Age out the best-move variability metric and restart the
+            // per-iteration change counter (SearchRoot increments it).
+            totBestMoveChanges /= 2;
+            _bestMoveChanges = 0;
 
             // Aspiration window around the previous iteration's score (only
             // once there is a reasonably stable score to aspire around).
@@ -223,15 +269,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 }
             }
 
-            if (_stopped)
-                break; // Hard interruption: keep the previous result.
-
-            if (_softStopped)
+            if (_stopped || _softStopped)
             {
-                // Soft cut mid-iteration: the moves searched so far (starting
-                // with the previous iteration's best, thanks to TT ordering)
-                // were searched completely — their best is at least as good
-                // as the previous iteration's answer. Use it and stop.
+                // Interrupted mid-iteration. The moves searched so far
+                // (starting with the previous iteration's best, thanks to TT
+                // ordering) were searched completely — their best is at least
+                // as good as the previous iteration's answer. Use it and stop.
                 if (bestMove != Move.None)
                     best = new SearchResult(bestMove, score, _nodes);
                 break;
@@ -245,16 +288,90 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // A forced mate found: deeper iterations cannot improve it.
             if (Math.Abs(score) > MateBound)
                 break;
+
+            // ---- Dynamic per-iteration budget (clock mode only) ----
+            if (bestMove != lastBestMove)
+            {
+                lastBestMove = bestMove;
+                lastBestMoveDepth = depth;
+            }
+            totBestMoveChanges += _bestMoveChanges;
+            averageScore = averageScore == ScoreNone ? score : (2 * score + averageScore) / 3;
+
+            if (clockMode)
+            {
+                // Falling eval: when the score is dropping against the
+                // previous move's average and the recent iterations, think
+                // longer (the position is deteriorating and the move matters);
+                // rising scores stop sooner. Constants are the reference
+                // engine's with score differences rescaled to NoaChess
+                // centipawns (x2.08: its internal pawn ~ 208).
+                double fallingEval = _bestPreviousAverageScore == ScoreNone
+                    ? 1.5
+                    : Math.Clamp((71 + 25.0 * (_bestPreviousAverageScore - score)
+                                     + 12.5 * (_iterValue[iterIdx] - score)) / 656.7,
+                                 0.5, 1.5);
+
+                // Stability: if the best move has not changed for 10
+                // iterations the position is decided — spend less; the factor
+                // also carries over to the next move via previousTimeReduction.
+                timeReduction = lastBestMoveDepth + 9 < depth ? 1.37 : 0.65;
+                double reduction = (1.4 + _previousTimeReduction) / (2.15 * timeReduction);
+
+                // Instability: each root best-move change (decayed per
+                // iteration) extends the budget.
+                double bestMoveInstability = 1 + 1.7 * totBestMoveChanges;
+
+                double totalTime = _softTimeMs * fallingEval * reduction * bestMoveInstability;
+
+                // Stop if past the modulated budget; otherwise it becomes the
+                // deadline the next iteration's root-boundary checks use.
+                if (_timer.ElapsedMilliseconds > totalTime)
+                    break;
+                _softDeadlineMs = (long)totalTime;
+            }
+
+            _iterValue[iterIdx] = score;
+            iterIdx = (iterIdx + 1) & 3;
         }
 
-        // Extreme fallback (e.g. cancelled before depth 1 finished): never
-        // return "no move" while legal moves exist — a GUI or match runner
-        // must always receive a playable bestmove.
+        // Carry the scheduler state to the next move of the game.
+        if (clockMode)
+        {
+            _previousTimeReduction = timeReduction;
+            if (best.BestMove != Move.None)
+            {
+                _bestPreviousScore = best.Score;
+                _bestPreviousAverageScore = averageScore == ScoreNone ? best.Score : averageScore;
+            }
+        }
+
+        // Extreme fallback (e.g. cancelled before depth 1 finished — a cold
+        // process under a tiny first-move budget): never return "no move" while
+        // legal moves exist. Instead of the FIRST generated move (move ordering
+        // makes that a rook-pawn push, which looks absurd), pick the move with
+        // the best static eval — a one-ply search that costs one eval per legal
+        // move and guarantees a sane reply even when the real search never ran.
         if (best.BestMove == Move.None)
         {
             var legal = MoveGenerator.GenerateLegalMoves(board);
             if (legal.Count > 0)
-                best = new SearchResult(legal[0], 0, _nodes);
+            {
+                Move fallbackMove = legal[0];
+                int fallbackVal = int.MinValue;
+                for (int i = 0; i < legal.Count; i++)
+                {
+                    board.MakeMove(legal[i]);
+                    int val = -_evaluator.Evaluate(board); // child is opponent-relative
+                    board.UnmakeMove();
+                    if (val > fallbackVal)
+                    {
+                        fallbackVal = val;
+                        fallbackMove = legal[i];
+                    }
+                }
+                best = new SearchResult(fallbackMove, fallbackVal, _nodes);
+            }
         }
 
         return best;
@@ -310,6 +427,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 bestScore = score;
                 bestMove = move;
+
+                // Best-move change bookkeeping for the time manager: a root
+                // move other than the first one taking over the lead signals
+                // an unstable position that deserves more time.
+                if (searched > 1)
+                    _bestMoveChanges++;
+
                 if (score > alpha)
                     alpha = score;
             }
@@ -319,11 +443,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             // Soft time boundary: root moves are the only place where the
             // search can stop "gracefully" — everything searched so far is
-            // complete and usable. Requires at least one searched move and
-            // never fires at depth 1 (a full depth-1 pass costs nothing and
-            // guarantees a sane fallback move).
+            // complete and usable. The deadline is the dynamically modulated
+            // budget from the previous iteration (see FindBestMove). Requires
+            // at least one searched move and never fires at depth 1 (a full
+            // depth-1 pass costs nothing and guarantees a sane fallback move).
             if (depth > 1 && bestMove != Move.None
-                && _timer.ElapsedMilliseconds >= _softTimeMs)
+                && _timer.ElapsedMilliseconds >= _softDeadlineMs)
             {
                 _softStopped = true;
                 break;

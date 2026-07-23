@@ -117,6 +117,24 @@ public class SearchTests
     }
 
     [Fact]
+    public void CancelledBeforeDepthOne_FallsBackToStaticBestNotFirstMove()
+    {
+        // A search cancelled before it can complete even depth 1 (e.g. a cold
+        // process on a tiny first-move budget) must not return the FIRST
+        // generated move — move ordering makes that a rook-pawn push (…a6),
+        // which looks absurd. The fallback picks the static-best move instead.
+        // After 1.e4 the static eval prefers …d5 over …a6 by a wide margin.
+        var board = new Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = _engine.FindBestMove(board, depth: 6, cts.Token);
+
+        Assert.NotEqual("a7a6", result.BestMove.ToString());
+        Assert.Equal("d7d5", result.BestMove.ToString());
+    }
+
+    [Fact]
     public void EngineVsEngine_PlaysLegalGame()
     {
         // Mini integration test: the engine plays against itself for a few
