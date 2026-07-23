@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v2.8.1** — **Syzygy correctness fixes + 5G move ordering. ~3000 ±25 CCRL.** Two critical bugs in v2.8.0: (1) the root Syzygy filter was silently nullified — `SearchRoot` regenerated all moves after `FilterRootMovesByTablebase`, discarding the filter entirely; (2) DTZ ranking at the root scored irreversible moves as if they had not yet happened and chose the fastest loss in losing positions. Fixed. TT safety: `CanReuseTtScore` now blocks reuse of TB-band scores when the halfmove clock is non-zero. `SyzygyTable` migrated to `MemoryMappedFile` with `long` offsets, eliminating the 2 GB `byte[]` ceiling for future 6/7-man files. Move ordering: capture history now feeds the main search (not just quiescence); partial quiet sort (`PartialSortRange`, `−3000×depth` cutoff) with `MoveRangeToFront` guaranteeing QUIET before BAD_CAPTURE; `CheckBonus +16 384` for safe direct checks; threat-escape/enter bonus using pawn/minor/rook threat maps. X-ray mobility: sliders now see through own queen only (bug since v2.6.2). UCI: `Ponder` option declared. Portable Syzygy tests via `NOACHESS_SYZYGY_PATH`. New: `CaptureHistoryTests`, `UciSearchLimitsTests`; development tools: `NoaChess.DataGen` (NNUE self-play), `NoaChess.Tuner` (Texel), Python NNUE training pipeline. ✅ (**+14.1 ±10.8 Elo SPRT vs v2.7.4, LOS 99.5%, H1 at 2175 games; +75 ±23 gauntlet LTC; ~3000 ±25 CCRL**)
@@ -129,10 +131,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v2.8.1** — **Correcciones Syzygy + ordenación 5G. ~3000 ±25 CCRL.** Dos bugs críticos de v2.8.0: (1) el filtro de raíz se anulaba — `SearchRoot` regeneraba todas las jugadas tras `FilterRootMovesByTablebase`, descartando el filtro; (2) el ranking DTZ puntuaba las jugadas irreversibles antes de que ocurrieran y elegía la derrota más rápida. Seguridad TT: `CanReuseTtScore` bloquea scores en banda TB cuando `halfmoveClock > 0`. `SyzygyTable` migrado a `MemoryMappedFile` + offsets `long` (sin límite de 2 GB para 6/7 piezas). Ordenación: capture history integrado en la búsqueda principal (7×víctima + historia); partial sort quiets (−3000×depth, QUIET antes de BAD_CAPTURE); CheckBonus +16 384; bonus escape/entrada de amenazas. X-ray: sliders solo transparentan la dama propia. UCI: opción `Ponder`. 193/193 tests. ✅ (+14.1 ±10.8 SPRT vs v2.7.4, LOS 99.5%, H1; +75 ±23 gauntlet LTC)
