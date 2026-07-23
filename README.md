@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v2.8.4** — **LMR ttCapture + ttPv adjusters on the fixed-point pipeline. +9.2 ±9.1 Elo vs v2.8.3 (3000 games exhausted positive, LOS 97.5%, LLR 1.91); LTC gauntlet pending.** ttCapture: when the TT move is a capture, late quiets are reduced ~1 ply more (r += 1079). ttPv: when the node was on a previous PV, late quiets are reduced ~1 ply less (r -= 1024 + adjustments). Both screened individually (>93% LOS) and validated together vs v2.8.3. cutNode threaded through search as infrastructure (isolated term rejected at both magnitudes). ContinuationHistory MaxScore corrected to 8192. Dead LMR history term removed. New lesson: clean categorical signals (TT-move type, PV membership) work; noisy derived signals (cut-node classification, raw history magnitude) do not. 276/276 tests.
@@ -133,10 +135,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v2.8.3** — **Gravedad de historia que sí funciona. +24.4 ±17.5 Elo frente a v2.8.2 (835 partidas); gauntlet LTC +112 ±24 relativo.** La "gravedad acotada" que v2.8.2 se acreditó nunca llegó a ejecutarse: su término de decaimiento `score×|bonus|/MaxScore` trunca a cero con una cota de 2²⁰ frente a valores cercanos a 7 000. Dimensionar la cota de butterfly en 7183, como hace la referencia, la activa — media medida +71.8 → +13.5, cola 6086 → 3134. El pipeline de LMR pasó además a punto fijo (1024avos), verificado neutro por conteo de nodos idéntico. statScore como término de historia en LMR se remidió al ritmo real y quedó cortado en −18 Elo, cerrando un hueco de evidencia donde el bloque 5C lo había juzgado con un match a 5+0.05. Salvedad: el SPRT se cortó a mano con LLR 2.61 frente a una banda de 2.94, así que es una estimación puntual sólida, no un test superado. 276/276 tests.
