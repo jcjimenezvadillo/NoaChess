@@ -1,0 +1,23 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.ChangelogDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mdxaml="clr-namespace:MdXaml;assembly=MdXaml"
+        Title="What's new in NoaChess"
+        Width="620" Height="560"
+        MinWidth="400" MinHeight="300"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <!-- Modal shown at startup with the rendered CHANGELOG.md, so the version
+         and its contents are visible before playing. It must be closed to
+         reach the board (ShowDialog blocks the main window). -->
+    <DockPanel Margin="12">
+        <Button DockPanel.Dock="Bottom" Content="Close and play"
+                HorizontalAlignment="Center" Padding="24,6" Margin="0,10,0,0"
+                IsDefault="True" IsCancel="True" Click="OnCloseClicked"/>
+
+        <!-- MdXaml renders the markdown text set from code-behind. -->
+        <mdxaml:MarkdownScrollViewer x:Name="MarkdownViewer"
+                                     VerticalScrollBarVisibility="Auto"
+                                     ClickAction="OpenBrowser"/>
+    </DockPanel>
+</Window>
