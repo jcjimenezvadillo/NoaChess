@@ -50,6 +50,16 @@ public static class TimeManager
                                 0.2 * time / (double)timeLeft)
                        * optExtra;
             maxScale = Math.Min(7.0, 4.0 + gamePly / 12.0);
+
+            // Opening damp (NoaChess addition over the reference formula).
+            // timeLeft folds the whole future increment into the usable time
+            // (inc x 49 on the full horizon), which inflates the early-game
+            // optimum: at 3+2 the raw formula budgets ~7.5s per opening move
+            // (~19s once the dynamic factors extend it), starving the
+            // middlegame. Without an opening book the first moves are the
+            // cheapest of the game — shrink their share and let the ply curve
+            // take over from ~move 10.
+            optScale *= Math.Min(1.0, 0.55 + gamePly * 0.025);
         }
         else
         {

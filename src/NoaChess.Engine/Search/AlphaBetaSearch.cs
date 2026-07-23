@@ -221,8 +221,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // Seed the iteration scores with the previous move's score so the
         // falling-eval factor reacts to drops ACROSS moves, not only within
         // this search. First move of the game: no history, seeded with 0 and
-        // the sentinel deliberately maxes the factor (an unknown position
-        // deserves the full extended budget, exactly once).
+        // the sentinel keeps the factor neutral (see the fallingEval note
+        // below).
         int seed = _bestPreviousScore == ScoreNone ? 0 : _bestPreviousScore;
         for (int i = 0; i < _iterValue.Length; i++)
             _iterValue[i] = seed;
@@ -306,8 +306,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 // rising scores stop sooner. Constants are the reference
                 // engine's with score differences rescaled to NoaChess
                 // centipawns (x2.08: its internal pawn ~ 208).
+                // First move of the game: no cross-move history to compare
+                // against, so use the neutral factor. (The reference maxes it
+                // at 1.5 here; combined with the early-depth reduction factor
+                // ~1.7 that tripled the first-move budget — visible clock
+                // burn at short TC with no upside on an empty TT.)
                 double fallingEval = _bestPreviousAverageScore == ScoreNone
-                    ? 1.5
+                    ? 1.0
                     : Math.Clamp((71 + 25.0 * (_bestPreviousAverageScore - score)
                                      + 12.5 * (_iterValue[iterIdx] - score)) / 656.7,
                                  0.5, 1.5);
@@ -319,8 +324,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 double reduction = (1.4 + _previousTimeReduction) / (2.15 * timeReduction);
 
                 // Instability: each root best-move change (decayed per
-                // iteration) extends the budget.
-                double bestMoveInstability = 1 + 1.7 * totBestMoveChanges;
+                // iteration) extends the budget. Neutral on the first move of
+                // the game: on an empty TT the root flaps between near-equal
+                // openings, and that flapping carries no urgency signal —
+                // extending for it just burns the clock before the game starts.
+                double bestMoveInstability = _bestPreviousAverageScore == ScoreNone
+                    ? 1.0
+                    : 1 + 1.7 * totBestMoveChanges;
 
                 double totalTime = _softTimeMs * fallingEval * reduction * bestMoveInstability;
 

@@ -33,16 +33,24 @@ public static class ParameterRegistry
             () => EvaluationParams.KnightOutpost, v => EvaluationParams.KnightOutpost = v);
         AddScore(list, "SpacePerSquare",
             () => EvaluationParams.SpacePerSquare, v => EvaluationParams.SpacePerSquare = v);
-        AddScore(list, "DoubledPawn",
-            () => EvaluationParams.DoubledPawn, v => EvaluationParams.DoubledPawn = v);
-        AddScore(list, "IsolatedPawn",
-            () => EvaluationParams.IsolatedPawn, v => EvaluationParams.IsolatedPawn = v);
+        AddScore(list, "Doubled",
+            () => EvaluationParams.Doubled, v => EvaluationParams.Doubled = v);
+        AddScore(list, "DoubledEarly",
+            () => EvaluationParams.DoubledEarly, v => EvaluationParams.DoubledEarly = v);
+        AddScore(list, "Isolated",
+            () => EvaluationParams.Isolated, v => EvaluationParams.Isolated = v);
+        AddScore(list, "WeakLever",
+            () => EvaluationParams.WeakLever, v => EvaluationParams.WeakLever = v);
+        AddScore(list, "WeakUnopposed",
+            () => EvaluationParams.WeakUnopposed, v => EvaluationParams.WeakUnopposed = v);
         AddScore(list, "ConnectedPassers",
             () => EvaluationParams.ConnectedPassers, v => EvaluationParams.ConnectedPassers = v);
         AddScore(list, "RookBehindPasser",
             () => EvaluationParams.RookBehindPasser, v => EvaluationParams.RookBehindPasser = v);
-        AddScore(list, "BackwardPawn",
-            () => EvaluationParams.BackwardPawn, v => EvaluationParams.BackwardPawn = v);
+        AddScore(list, "PassedFile",
+            () => EvaluationParams.PassedFile, v => EvaluationParams.PassedFile = v);
+        AddScore(list, "Backward",
+            () => EvaluationParams.Backward, v => EvaluationParams.Backward = v);
 
         // MobilityBonus (the non-linear reference tables, v2.6.2) is deliberately
         // NOT tunable: every texel run converges to negative endgame mobility for
@@ -51,7 +59,11 @@ public static class ParameterRegistry
         // The threat terms (also reference x0.48) stay fixed for the same reason:
         // they are SPRT-validated as a package, not texel-derived.
         AddScoreArray(list, "PassedPawn", EvaluationParams.PassedPawn, 1, 6);
-        AddScoreArray(list, "Phalanx", EvaluationParams.Phalanx, 1, 6);
+        AddScoreArray(list, "BlockedPawnRank", EvaluationParams.BlockedPawnRank, 0, 1);
+        // Connected[] stays fixed: raw reference units consumed by a formula
+        // (the x0.48 conversion happens after the formula), so tuning the raw
+        // entries independently of the 2+phalanx-opposed multiplier and the
+        // 22*support term would break the jointly-calibrated shape.
 
         // Piece-square tables: every square of every piece, both phases.
         // Pawn ranks 1 and 8 (indices 0-7 and 56-63) hold no pawns and stay 0.
@@ -162,13 +174,17 @@ public static class ParameterRegistry
         Append(sb, "RookOnSeventh", EvaluationParams.RookOnSeventh);
         Append(sb, "KnightOutpost", EvaluationParams.KnightOutpost);
         Append(sb, "SpacePerSquare", EvaluationParams.SpacePerSquare);
-        Append(sb, "DoubledPawn", EvaluationParams.DoubledPawn);
-        Append(sb, "IsolatedPawn", EvaluationParams.IsolatedPawn);
+        Append(sb, "Doubled", EvaluationParams.Doubled);
+        Append(sb, "DoubledEarly", EvaluationParams.DoubledEarly);
+        Append(sb, "Isolated", EvaluationParams.Isolated);
+        Append(sb, "WeakLever", EvaluationParams.WeakLever);
+        Append(sb, "WeakUnopposed", EvaluationParams.WeakUnopposed);
         Append(sb, "ConnectedPassers", EvaluationParams.ConnectedPassers);
         Append(sb, "RookBehindPasser", EvaluationParams.RookBehindPasser);
-        Append(sb, "BackwardPawn", EvaluationParams.BackwardPawn);
+        Append(sb, "PassedFile", EvaluationParams.PassedFile);
+        Append(sb, "Backward", EvaluationParams.Backward);
         AppendArray(sb, "PassedPawn", EvaluationParams.PassedPawn);
-        AppendArray(sb, "Phalanx", EvaluationParams.Phalanx);
+        AppendArray(sb, "BlockedPawnRank", EvaluationParams.BlockedPawnRank);
 
         sb.AppendLine();
         sb.AppendLine("// Tuned PSTs — paste into PieceSquareTables (white POV, first row = rank 8):");

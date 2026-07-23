@@ -302,23 +302,16 @@ public class SeeAndEvaluationTests
     [Fact]
     public void Phalanx_BonusIsApplied()
     {
-        // White has two pawns side by side on d4/e4 (phalanx) vs the same
-        // pawns on d4/f4 (not touching). Zero out the phalanx array to verify
-        // the term is responsible for the difference.
-        var phalanxBoard = new Board("4k3/8/8/8/3PP3/8/8/4K3 w - - 0 1");
-        var splitBoard   = new Board("4k3/8/8/8/3P1P2/8/8/4K3 w - - 0 1");
+        // White has two pawns side by side on d4/e4 (phalanx — the Connected
+        // formula doubles their rank base) vs the same pawns on d4/f4 (no
+        // neighbours: both are isolated). Structure evaluator in isolation so
+        // PSTs do not muddy the comparison.
+        var structure = new PawnStructureEvaluator();
+        Score phalanx = structure.Evaluate(new Board("4k3/8/8/8/3PP3/8/8/4K3 w - - 0 1"));
+        Score split   = structure.Evaluate(new Board("4k3/8/8/8/3P1P2/8/8/4K3 w - - 0 1"));
 
-        var savedPhalanx = EvaluationParams.Phalanx;
-        EvaluationParams.Phalanx = [new(0,0), new(0,0), new(0,0), new(0,0),
-                                     new(0,0), new(0,0), new(0,0), new(0,0)];
-        var evaluator = new ClassicalEvaluator();
-        int withoutBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
-
-        EvaluationParams.Phalanx = savedPhalanx;
-        evaluator = new ClassicalEvaluator();
-        int withBonus = evaluator.Evaluate(phalanxBoard) - evaluator.Evaluate(splitBoard);
-
-        Assert.True(withBonus > withoutBonus, "Phalanx bonus must make d4/e4 score better than d4/f4");
+        Assert.True(phalanx.Mg > split.Mg,
+            "Phalanx pawns d4/e4 must score better than split d4/f4");
     }
 
     [Fact]
@@ -326,17 +319,17 @@ public class SeeAndEvaluationTests
     {
         // White e3 is a genuine backward pawn: its stop square e4 is attacked
         // by black d5, its only neighbour (d4) is AHEAD of it so no support
-        // can ever come, and it is not isolated (so the exclusive-of-isolated
-        // rule does not skip it). Every black pawn has level-or-behind support
-        // (b7 backs c6, c6 backs d5), so no black pawn is backward. Only white
-        // is penalized: zeroing BackwardPawn must raise the score.
+        // can ever come, and it is not isolated (the backward branch only
+        // fires with neighbours present). Every black pawn has level-or-behind
+        // support (b7 backs c6, c6 backs d5), so no black pawn is backward.
+        // Only white is penalized: zeroing Backward must raise the score.
         var board = new Board("4k3/1p6/2p5/3p4/3P4/4P3/8/4K3 w - - 0 1");
 
-        var saved = EvaluationParams.BackwardPawn;
-        EvaluationParams.BackwardPawn = new(0, 0);
+        var saved = EvaluationParams.Backward;
+        EvaluationParams.Backward = new(0, 0);
         int scoreWithout = new ClassicalEvaluator().Evaluate(board);
 
-        EvaluationParams.BackwardPawn = saved;
+        EvaluationParams.Backward = saved;
         int scoreWith = new ClassicalEvaluator().Evaluate(board);
 
         Assert.True(scoreWith < scoreWithout, "Backward pawn penalty must lower the score of the position");
