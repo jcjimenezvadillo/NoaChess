@@ -75,6 +75,23 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return lists;
     }
 
+    // Late Move Reduction table: how many plies to shave off a quiet move that
+    // is ranked late in a deep node. The reduction grows with BOTH the depth
+    // and how far down the move order the move sits (a logarithmic product,
+    // the standard shape). A move ordered 20th at depth 12 is almost certainly
+    // not the best move, so it is searched much shallower first and only
+    // re-searched at full depth if it surprisingly beats alpha.
+    private static readonly int[,] LmrReductions = BuildLmrTable();
+
+    private static int[,] BuildLmrTable()
+    {
+        var table = new int[64, 64];
+        for (int depth = 1; depth < 64; depth++)
+            for (int move = 1; move < 64; move++)
+                table[depth, move] = (int)(0.75 + Math.Log(depth) * Math.Log(move) / 2.25);
+        return table;
+    }
+
     private long _nodes;
     private long _hardTimeMs;
     private long _maxNodes;
@@ -323,6 +340,24 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         if (depth <= 0)
             return Quiescence(board, alpha, beta, ply);
 
+        // Non-PV nodes are searched with a null window (beta == alpha + 1);
+        // the aggressive prunings below only fire there, never on the principal
+        // variation where a wrong cut would corrupt the reported line.
+        bool nonPv = beta - alpha == 1;
+
+        // Static evaluation, reused by the forward-pruning heuristics. Skipped
+        // in check (the position is not "quiet" and the eval is meaningless).
+        int staticEval = inCheck ? 0 : _evaluator.Evaluate(board);
+
+        // ---- Reverse futility pruning (a.k.a. static null move) ----
+        // If our static eval is so far above beta that even conceding a healthy
+        // margin per remaining ply keeps us above it, the opponent will avoid
+        // this line — return without searching. Only at shallow depth and away
+        // from mate scores, where the static eval is a trustworthy proxy.
+        if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
+            && staticEval - 85 * depth >= beta)
+            return staticEval;
+
         // ---- Null Move Pruning ----
         // "Pass" the turn: if the opponent moving twice in a row still cannot
         // bring us below beta, no real move will either — prune the branch.
@@ -359,11 +394,29 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         Move bestMove = Move.None;
         int bestScore = -Infinity;
         int searched = 0;
+        int quietsSearched = 0;
 
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
+
+            // ---- Forward pruning of quiet moves (shallow, non-PV, not in
+            //      check, at least one move already searched so a best move is
+            //      guaranteed) ----
+            if (isQuiet && searched > 0 && nonPv && !inCheck && Math.Abs(alpha) < MateBound)
+            {
+                // Late move pruning: once enough quiet moves have been tried at
+                // low depth, the remaining ones are very unlikely to be best.
+                if (depth <= 3 && quietsSearched >= 3 + depth * depth)
+                    continue;
+
+                // Futility pruning: if even a generous per-ply margin over the
+                // static eval cannot lift it to alpha, a quiet move will not
+                // rescue the node — skip it.
+                if (depth <= 4 && staticEval + 100 * depth <= alpha)
+                    continue;
+            }
 
             // ---- SEE pruning near the horizon ----
             // A capture that clearly loses material (per static exchange
@@ -390,10 +443,21 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 // ---- Late Move Reductions ----
                 // Quiet moves ranked far down the ordered list are rarely
-                // best: probe them one ply shallower. Tactical moves, checks
-                // and check evasions always get full depth.
-                int reduction = (searched >= 4 && depth >= 3 && isQuiet
-                                 && !inCheck && !board.IsInCheck()) ? 1 : 0;
+                // best: probe them several plies shallower (amount from the
+                // logarithmic LmrReductions table), then re-search at full
+                // depth only if the probe beats alpha. Tactical moves, checks
+                // and check evasions always get full depth. The trigger
+                // thresholds come from the active profile (Bullet reduces
+                // sooner); board.IsInCheck() here means "the move gives check".
+                int reduction = 0;
+                if (isQuiet && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
+                    && !inCheck && !board.IsInCheck())
+                {
+                    reduction = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
+                    if (nonPv) reduction++;              // Reduce harder off the PV.
+                    if (reduction < 0) reduction = 0;
+                    if (reduction > depth - 1) reduction = depth - 1;
+                }
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
                 score = -Negamax(board, depth - 1 - reduction, -alpha - 1, -alpha,
@@ -414,6 +478,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             board.UnmakeMove();
             _incremental?.Pop();
             searched++;
+            if (isQuiet)
+                quietsSearched++;
 
             if (_stopped)
                 return 0;
