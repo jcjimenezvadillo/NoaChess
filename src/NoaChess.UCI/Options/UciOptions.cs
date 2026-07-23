@@ -1,6 +1,7 @@
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
+// v1.0 set, per the roadmap:
 // - Hash: transposition table size in MB.
 // - Threads: accepted for GUI compatibility, but only 1 is supported until
 //   Lazy SMP arrives in v3.0.
@@ -76,7 +77,7 @@ public sealed class UciOptions
                 return "Ponder";
 
             case "usennue" when bool.TryParse(value, out bool useNnue):
-                UseNnue = useNnue;
+                UseNnue = false && useNnue; // No NNUE until v2.0.
                 return "UseNNUE";
 
             case "evalfile":
