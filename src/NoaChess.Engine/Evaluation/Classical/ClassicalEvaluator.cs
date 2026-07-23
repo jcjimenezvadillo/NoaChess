@@ -26,6 +26,22 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
     // Attack units accumulated against each color's king this call.
     private readonly int[] _kingDanger = new int[2];
 
+    // Per-color pawn attack maps, filled each call (reused: no allocation).
+    private readonly ulong[] _pawnAttacks = new ulong[2];
+
+    // Space area per color: files c-f, relative ranks 2-4.
+    private static readonly ulong[] SpaceMask = new ulong[2];
+
+    static ClassicalEvaluator()
+    {
+        ulong files = PawnStructureEvaluator.FileMask[2] | PawnStructureEvaluator.FileMask[3]
+                    | PawnStructureEvaluator.FileMask[4] | PawnStructureEvaluator.FileMask[5];
+        ulong whiteRanks = (0xFFUL << 8) | (0xFFUL << 16) | (0xFFUL << 24);  // ranks 2-4
+        ulong blackRanks = (0xFFUL << 48) | (0xFFUL << 40) | (0xFFUL << 32); // ranks 7-5
+        SpaceMask[(int)Color.White] = files & whiteRanks;
+        SpaceMask[(int)Color.Black] = files & blackRanks;
+    }
+
     public int Evaluate(Board board)
     {
         ulong whitePawns = board.Pieces(Color.White, PieceType.Pawn);
@@ -34,11 +50,11 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
         // Squares defended by each side's pawns: a piece that moves onto one of
         // the enemy's pawn-attacked squares is simply lost, so those squares do
         // not count as real mobility.
-        ulong whitePawnAttacks = ((whitePawns & ~Bitboard.FileA) << 7)
-                               | ((whitePawns & ~Bitboard.FileH) << 9);
-        ulong blackPawnAttacks = ((blackPawns & ~Bitboard.FileA) >> 9)
-                               | ((blackPawns & ~Bitboard.FileH) >> 7);
-        ulong[] pawnAttacks = [whitePawnAttacks, blackPawnAttacks];
+        ulong[] pawnAttacks = _pawnAttacks;
+        pawnAttacks[(int)Color.White] = ((whitePawns & ~Bitboard.FileA) << 7)
+                                      | ((whitePawns & ~Bitboard.FileH) << 9);
+        pawnAttacks[(int)Color.Black] = ((blackPawns & ~Bitboard.FileA) >> 9)
+                                      | ((blackPawns & ~Bitboard.FileH) >> 7);
 
         for (int c = 0; c < 2; c++)
         {
@@ -106,14 +122,30 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
             if (Bitboard.PopCount(board.Pieces(color, PieceType.Bishop)) >= 2)
                 side += EvaluationParams.BishopPair;
 
-            // Rooks on open / semi-open files.
+            // Rooks on open / semi-open files and on the 7th rank.
             side += RookFileBonus(board, color, whitePawns, blackPawns);
+            side += RookOnSeventh(board, color);
 
             score += side * sign;
         }
 
-        // Pawn structure (cached, tapered, already White-relative).
-        score += _pawnStructure.Evaluate(board);
+        // Pawn structure (cached, tapered, already White-relative). Also hands
+        // back the cached passer bitboards for the piece-dependent terms.
+        score += _pawnStructure.Evaluate(board, out ulong whitePassers, out ulong blackPassers);
+
+        // Second pass: terms that mix pawn structure with piece locations
+        // (outposts, passer blockers/escorts, space). Runs after the piece loop
+        // so both sides' pawn attacks are already computed.
+        for (int c = 0; c < 2; c++)
+        {
+            Color color = (Color)c;
+            int sign = color == Color.White ? 1 : -1;
+            ulong passers = color == Color.White ? whitePassers : blackPassers;
+            Score side = KnightOutposts(board, color, pawnAttacks)
+                       + PasserPieceTerms(board, color, passers)
+                       + Space(board, color, pawnAttacks);
+            score += side * sign;
+        }
 
         // King safety: turn the accumulated attack units (plus a pawn-shield
         // check) into a middlegame penalty on the endangered king.
@@ -130,6 +162,107 @@ public sealed class ClassicalEvaluator : IPositionEvaluator
 
         // Negamax wants the score relative to the side to move.
         return board.SideToMove == Color.White ? tapered : -tapered;
+    }
+
+    // Rook on the 7th rank: attacks the opponent's pawns on their starting rank
+    // and cuts the enemy king off from the rest of the board. The endgame value
+    // is high because a 7th-rank rook frequently decides the game outright.
+    private static Score RookOnSeventh(Board board, Color color)
+    {
+        ulong seventhRank = color == Color.White ? 0xFFUL << 48 : 0xFFUL << 8;
+        ulong rooks = board.Pieces(color, PieceType.Rook) & seventhRank;
+        return EvaluationParams.RookOnSeventh * Bitboard.PopCount(rooks);
+    }
+
+    // Knight outposts: a knight on relative ranks 4-6, protected by a friendly
+    // pawn, on a square no enemy pawn can ever attack (no enemy pawns on the
+    // adjacent files ahead of it). Such a knight is a permanent thorn.
+    private static Score KnightOutposts(Board board, Color color, ulong[] pawnAttacks)
+    {
+        Color enemy = Board.OppositeColor(color);
+        ulong enemyPawns = board.Pieces(enemy, PieceType.Pawn);
+        ulong knights = board.Pieces(color, PieceType.Knight) & pawnAttacks[(int)color];
+        Score score = default;
+
+        while (knights != 0)
+        {
+            int sq = Bitboard.PopLsb(ref knights);
+            int relativeRank = color == Color.White ? Squares.RankOf(sq) : 7 - Squares.RankOf(sq);
+            if (relativeRank is < 3 or > 5)
+                continue;
+
+            // The passed-pawn cone minus the own file = squares from which an
+            // enemy pawn could ever attack this square's file neighbours.
+            ulong evictors = PawnStructureEvaluator.PassedPawnMask[(int)color, sq]
+                           & PawnStructureEvaluator.AdjacentFilesMask[Squares.FileOf(sq)];
+            if ((enemyPawns & evictors) == 0)
+                score += EvaluationParams.KnightOutpost;
+        }
+        return score;
+    }
+
+    // Piece-dependent passed pawn terms (the rank bonus itself lives in the
+    // cached pawn evaluation): a blocked passer gives back part of its bonus,
+    // a rook behind the passer earns the Tarrasch bonus.
+    private static Score PasserPieceTerms(Board board, Color color, ulong passers)
+    {
+        if (passers == 0)
+            return default;
+
+        Color enemy = Board.OppositeColor(color);
+        ulong ownRooks = board.Pieces(color, PieceType.Rook);
+        Score score = default;
+
+        while (passers != 0)
+        {
+            int sq = Bitboard.PopLsb(ref passers);
+            int relativeRank = color == Color.White ? Squares.RankOf(sq) : 7 - Squares.RankOf(sq);
+            int stopSq = color == Color.White ? sq + 8 : sq - 8;
+
+            // Blocked passer: an enemy piece parked on the stop square.
+            if (stopSq is >= 0 and < 64
+                && (board.Occupancy(enemy) & Bitboard.SquareBB(stopSq)) != 0)
+            {
+                Score pp = EvaluationParams.PassedPawn[relativeRank];
+                score += new Score(-pp.Mg / EvaluationParams.BlockedPasserDivisor,
+                                   -pp.Eg / EvaluationParams.BlockedPasserDivisor);
+            }
+
+            // Rook behind the passer on the same file (behind = towards the
+            // own back rank), with nothing between rook and pawn.
+            ulong file = PawnStructureEvaluator.FileMask[Squares.FileOf(sq)];
+            ulong behind = color == Color.White
+                ? file & (Bitboard.SquareBB(sq) - 1)
+                : file & ~(Bitboard.SquareBB(sq) - 1) & ~Bitboard.SquareBB(sq);
+            ulong rooksBehind = ownRooks & behind;
+            if (rooksBehind != 0)
+            {
+                // The rook must see the pawn: no blockers between them.
+                ulong between = behind & board.AllOccupancy & ~rooksBehind;
+                // Keep only blockers strictly between the closest rook and pawn.
+                int rookSq = color == Color.White
+                    ? 63 - System.Numerics.BitOperations.LeadingZeroCount(rooksBehind)
+                    : Bitboard.Lsb(rooksBehind);
+                ulong span = color == Color.White
+                    ? behind & ~(Bitboard.SquareBB(rookSq) | (Bitboard.SquareBB(rookSq) - 1))
+                    : behind & (Bitboard.SquareBB(rookSq) - 1);
+                if ((between & span) == 0)
+                    score += EvaluationParams.RookBehindPasser;
+            }
+        }
+        return score;
+    }
+
+    // Space: safe central squares (files c-f, relative ranks 2-4) that are not
+    // occupied by friendly pawns and not attacked by enemy pawns. Only worth
+    // counting while there are enough pieces to use the room.
+    private static Score Space(Board board, Color color, ulong[] pawnAttacks)
+    {
+        Color enemy = Board.OppositeColor(color);
+        ulong safe = SpaceMask[(int)color]
+                   & ~board.Pieces(color, PieceType.Pawn)
+                   & ~pawnAttacks[(int)enemy];
+        return EvaluationParams.SpacePerSquare * Bitboard.PopCount(safe);
     }
 
     // Rook bonus for standing on a file with no friendly pawns (semi-open) or

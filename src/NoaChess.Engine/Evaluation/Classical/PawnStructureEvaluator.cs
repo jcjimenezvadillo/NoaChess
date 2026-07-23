@@ -21,13 +21,24 @@ public sealed class PawnStructureEvaluator
     // distinct pawn formations in one search number in the thousands.
     private const int CacheSize = 1 << 16;
 
-    private readonly (ulong Key, int Mg, int Eg)[] _cache = new (ulong, int, int)[CacheSize];
+    // Each slot also caches the passer bitboards: the piece-dependent passer
+    // terms in ClassicalEvaluator need them, and recomputing IsPassed for
+    // every pawn on every eval call costs real search speed.
+    private readonly (ulong Key, int Mg, int Eg, ulong WhitePassers, ulong BlackPassers)[] _cache
+        = new (ulong, int, int, ulong, ulong)[CacheSize];
 
     // Masks precomputed once: file of a square, adjacent files, and the
     // "passed pawn" cone (squares ahead on own + adjacent files, per color).
-    private static readonly ulong[] FileMask = new ulong[8];
-    private static readonly ulong[] AdjacentFilesMask = new ulong[8];
-    private static readonly ulong[,] PassedPawnMask = new ulong[2, 64];
+    // Internal so ClassicalEvaluator can reuse them for the piece-dependent
+    // passer terms (blocker, rook behind) that cannot live in the pawn cache.
+    internal static readonly ulong[] FileMask = new ulong[8];
+    internal static readonly ulong[] AdjacentFilesMask = new ulong[8];
+    internal static readonly ulong[,] PassedPawnMask = new ulong[2, 64];
+
+    // True when the pawn on 'sq' has no enemy pawns ahead on its own or the
+    // adjacent files — the same test the cached evaluation uses.
+    internal static bool IsPassed(Color color, int sq, ulong theirPawns)
+        => (theirPawns & PassedPawnMask[(int)color, sq]) == 0;
 
     static PawnStructureEvaluator()
     {
@@ -55,19 +66,28 @@ public sealed class PawnStructureEvaluator
     }
 
     // Pawn structure score (White's point of view), cached by pawn key.
-    public Score Evaluate(Board board)
+    public Score Evaluate(Board board) => Evaluate(board, out _, out _);
+
+    // Same, also returning the cached passed-pawn bitboards of both sides so
+    // the caller's passer/piece terms only visit actual passers.
+    public Score Evaluate(Board board, out ulong whitePassers, out ulong blackPassers)
     {
         int slot = (int)(board.PawnZobristKey & (CacheSize - 1));
-        (ulong key, int mg, int eg) = _cache[slot];
+        (ulong key, int mg, int eg, ulong wp, ulong bp) = _cache[slot];
         if (key == board.PawnZobristKey)
+        {
+            whitePassers = wp;
+            blackPassers = bp;
             return new Score(mg, eg);
+        }
 
-        Score score = EvaluateSide(board, Color.White) - EvaluateSide(board, Color.Black);
-        _cache[slot] = (board.PawnZobristKey, score.Mg, score.Eg);
+        Score score = EvaluateSide(board, Color.White, out whitePassers)
+                    - EvaluateSide(board, Color.Black, out blackPassers);
+        _cache[slot] = (board.PawnZobristKey, score.Mg, score.Eg, whitePassers, blackPassers);
         return score;
     }
 
-    private static Score EvaluateSide(Board board, Color color)
+    private static Score EvaluateSide(Board board, Color color, out ulong passersOut)
     {
         ulong ourPawns = board.Pieces(color, PieceType.Pawn);
         ulong theirPawns = board.Pieces(Board.OppositeColor(color), PieceType.Pawn);
@@ -81,8 +101,10 @@ public sealed class PawnStructureEvaluator
                 score += EvaluationParams.DoubledPawn * (pawnsOnFile - 1);
         }
 
-        // Isolated and passed pawns: per pawn.
+        // Isolated and passed pawns: per pawn. Passers are collected so the
+        // connected-passers bonus can look at the whole set afterwards.
         ulong pawns = ourPawns;
+        ulong passers = 0;
         while (pawns != 0)
         {
             int sq = Bitboard.PopLsb(ref pawns);
@@ -91,8 +113,9 @@ public sealed class PawnStructureEvaluator
             if ((ourPawns & AdjacentFilesMask[file]) == 0)
                 score += EvaluationParams.IsolatedPawn;
 
-            if ((theirPawns & PassedPawnMask[(int)color, sq]) == 0)
+            if (IsPassed(color, sq, theirPawns))
             {
+                passers |= Bitboard.SquareBB(sq);
                 // Relative rank: how far the pawn has advanced from ITS side.
                 int relativeRank = color == Color.White
                     ? Squares.RankOf(sq)
@@ -101,6 +124,17 @@ public sealed class PawnStructureEvaluator
             }
         }
 
+        // Connected passers: each passer with a friendly passer on an adjacent
+        // file gets a bonus — together they escort each other home.
+        ulong p = passers;
+        while (p != 0)
+        {
+            int sq = Bitboard.PopLsb(ref p);
+            if ((passers & AdjacentFilesMask[Squares.FileOf(sq)]) != 0)
+                score += EvaluationParams.ConnectedPassers;
+        }
+
+        passersOut = passers;
         return score;
     }
 }
