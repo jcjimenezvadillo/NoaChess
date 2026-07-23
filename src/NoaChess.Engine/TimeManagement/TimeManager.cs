@@ -50,8 +50,8 @@ public static class TimeManager
         // those moves — plus a small safety margin so the last one is not
         // played on fumes. Otherwise assume the adaptive horizon.
         int divisor = movesToGo is int m && m > 0
-            ? Math.Min(m + 2, horizon)
-            : horizon;
+            ? Math.Min(m + 2, AssumedMovesToGo)
+            : AssumedMovesToGo;
 
         // Target: a clock slice plus most of the increment. NOTE: the bounds
         // are applied with Min/Max, not Math.Clamp — with a nearly exhausted
@@ -62,14 +62,7 @@ public static class TimeManager
         soft = Math.Min(Math.Max(soft, 10), softCap);
 
         // Absolute cap: even a difficult position may not eat half the clock.
-        long hard = Math.Min(soft * 4, usable / 2 + 1);
-
-        // Final safety buffer: GUIs add fixed per-move friction (process
-        // scheduling, I/O, board updates) beyond MoveOverhead. Over a
-        // 70-move game those milliseconds add up; never spend the clock down
-        // to the wire.
-        hard = Math.Max(1, Math.Min(hard, usable - 150));
-        soft = Math.Max(1, Math.Min(soft, hard));
+        long hard = Math.Clamp(soft * 4, soft, usable / 2 + 1);
 
         return SearchLimits.Clock(soft, hard);
     }
