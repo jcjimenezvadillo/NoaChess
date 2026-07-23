@@ -77,7 +77,7 @@ public static class MovePicker
 
     // Capture-only variant used by quiescence search (no killers/history: only
     // captures are searched there).
-    public static void OrderCaptures(MoveList moves, Board board) =>
+    public static void OrderCaptures(List<Move> moves, Board board) =>
         Order(moves, board, Move.None, NoKillers, NoHistory, 0);
 
     // Empty shared instances so OrderCaptures can reuse the same scorer.
@@ -105,11 +105,10 @@ public static class MovePicker
             int mvvLva = PieceValue[(int)victim] * 10 - PieceValue[(int)attacker];
 
             // SEE decides the band: winning/equal exchanges up front, losing
-            // ones at the very back (LosesAtLeast short-circuits the full
-            // exchange computation for downward/equal captures).
-            return StaticExchangeEvaluator.LosesAtLeast(board, move)
-                ? LosingCaptureBase + mvvLva
-                : GoodCaptureBase + mvvLva;
+            // ones at the very back.
+            return StaticExchangeEvaluator.Evaluate(board, move) >= 0
+                ? GoodCaptureBase + mvvLva
+                : LosingCaptureBase + mvvLva;
         }
 
         if (move.IsPromotion)
