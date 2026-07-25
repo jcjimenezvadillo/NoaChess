@@ -18,7 +18,7 @@ The engine's own neural network now outevaluates the hand-tuned classical evalua
 
 ### Datagen and training
 
-- **`NoaChess.DataGen`** self-plays node-limited searches and labels each position with `lambda·sigmoid(score/SCALE) + (1−lambda)·wdl(result)`. Syzygy adjudication, resign and draw adjudication (`--drawscore`/`--drawcount` after `--drawply`) stop dead games instead of shuffling to the cap. Binary `.noadata` format with a magic header and schema validation.
+- **`NoaChess.DataGen`** self-plays node-limited searches and labels each position with `lambda·sigmoid(score/SCALE) + (1−lambda)·wdl(result)`. Resign (`--resign`) and draw (`--drawscore`/`--drawcount`) adjudication plus a ply cap (`--maxplies`) stop dead games instead of shuffling to the cap. Binary `.noadata` format with a magic header and schema validation. (Syzygy WDL relabeling of ≤6-man positions is planned but not yet wired into datagen.)
 - **Training pipeline** (`tools/training/nnue/`): `train_nnue.py` (cosine LR, weight decay, CUDA), `validate_nnue.py` (corr/slope/RMS/sign diagnostics), `export_model.py` (float → quantized `.noannue`). Net width is parametrized (`--ft-out`/`--l1-out`); the C# loader reads dimensions from the header, so architecture sweeps need zero C# changes.
 
 ### Critical datagen bug fixed (AlphaBetaSearch.cs)
