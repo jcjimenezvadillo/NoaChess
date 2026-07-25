@@ -7,7 +7,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 //   8      4     format version        (u32)
 //   12     4     feature schema id     (u32)  must match NnueFeatureIndex
 //   16     4     architecture id       (u32)  frozen layer topology
-//   20     4     ft inputs             (u32)  40960 for schema 1
+//   20     4     ft inputs             (u32)  22528 for schema 2 (HalfKAv2_hm)
 //   24     4     ft outputs            (u32)  accumulator width
 //   28     4     l1 outputs            (u32)  hidden layer width
 //   32     2     QA activation scale   (u16)
