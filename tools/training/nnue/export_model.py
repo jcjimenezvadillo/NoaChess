@@ -23,7 +23,7 @@ from model import NoaNnue, INPUT_SIZE, FT_OUT, L1_OUT, QA, QB, OUTPUT_SCALE
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
-FEATURE_SCHEMA_ID = 1
+FEATURE_SCHEMA_ID = 2
 ARCHITECTURE_ID = 1
 
 
@@ -42,7 +42,10 @@ def main():
     args = parser.parse_args()
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model = NoaNnue()
+    ckpt_args = checkpoint.get("args", {})
+    ft_out = ckpt_args.get("ft_out", FT_OUT)
+    l1_out = ckpt_args.get("l1_out", L1_OUT)
+    model = NoaNnue(ft_out, l1_out)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
@@ -66,7 +69,7 @@ def main():
     header = struct.pack(
         "<8s I I I i i i H H H H Q 32s",
         MAGIC, FORMAT_VERSION, FEATURE_SCHEMA_ID, ARCHITECTURE_ID,
-        INPUT_SIZE, FT_OUT, L1_OUT,
+        INPUT_SIZE, ft_out, l1_out,
         QA, QB, int(OUTPUT_SCALE), 0,
         len(payload), sha)
     assert len(header) == 80

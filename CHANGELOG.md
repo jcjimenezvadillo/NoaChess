@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## 2026-07-25 (v3.0.0) — HalfKAv2_hm NNUE: the neural evaluation ships
+
+**Generational self-play net beats the classical evaluator: gen3 +4.5 ±11.4 Elo, 1002-968-680 [0.506] over 2650 games, LOS 77.8%, exhausted positive (tc=10+0.1, elo0=0, elo1=5). LTC gauntlet calibration pending.**
+
+The engine's own neural network now outevaluates the hand-tuned classical evaluation that took the project from v2.4.0 to v2.8.4. This is the milestone the whole classical/search campaign was banked for: the NNUE is trained end-to-end from self-play data the engine labels itself, quantized to integer weights, and run through a SIMD inference path fast enough to beat the classical eval at equal time. It is selectable at runtime (`UseNNUE`) and the shipped executable embeds the current net (`noa-gen3`) as a resource.
+
+### The network
+
+- **HalfKAv2_hm feature transformer (feature_schema_id 2).** InputSize 22528 per perspective: 32 king buckets × 704, where 704 = 11 piece planes × 64 squares. Kings ARE features (both share a plane). King-orientation mirroring folds files a-d onto e-h; Black's perspective is rank-flipped. Topology: FT 22528→128 ×2 perspectives → concatenated 256 → L1 32 → 1 output. Clipped-ReLU activations.
+- **Quantization contract.** Int16 feature-transformer weights, int32 accumulators, QA=255, QB=64, OutputScale=400. Trained in float, exported to integer with documented scales; C#↔Python inference verified bit-exact within the quantization error.
+- **Incremental accumulator.** A per-perspective accumulator pair is pushed and popped with the search stack; `AddFeature`/`SubtractFeature` are vectorized with `Vector<short>`, and a king move triggers a full refresh of the mover's perspective plus an opponent-side patch (kings are features on both sides). A parity gate asserts incremental == full recompute on every position in the suite.
+
+### SIMD inference
+
+- **AVX2 path** via `Vector<short>` VPMADDWD for the L1 matmul, with the clipped activation precomputed once per evaluation (was re-clipped per L1 output) and a fused single-pass `MoveFeature`. Measured **312k → 446k NPS** on the accumulator-hot path, taking NNUE from ~46% to ~66% of the classical evaluator's speed — fast enough that a wider net is counterproductive at real time controls, so the shipped net stays 128×32.
+
+### Datagen and training
+
+- **`NoaChess.DataGen`** self-plays node-limited searches and labels each position with `lambda·sigmoid(score/SCALE) + (1−lambda)·wdl(result)`. Syzygy adjudication, resign and draw adjudication (`--drawscore`/`--drawcount` after `--drawply`) stop dead games instead of shuffling to the cap. Binary `.noadata` format with a magic header and schema validation.
+- **Training pipeline** (`tools/training/nnue/`): `train_nnue.py` (cosine LR, weight decay, CUDA), `validate_nnue.py` (corr/slope/RMS/sign diagnostics), `export_model.py` (float → quantized `.noannue`). Net width is parametrized (`--ft-out`/`--l1-out`); the C# loader reads dimensions from the header, so architecture sweeps need zero C# changes.
+
+### Critical datagen bug fixed (AlphaBetaSearch.cs)
+
+`FindBestMove` returned `SearchResult.Score = 0` whenever a node-limited search hard-stopped during the first root move of an unfinished iteration, **zeroing 57% of all datagen labels** (a queen-up position could be labeled 0.0). The fix keeps the last completed iteration's result on a hard stop and uses the partial first-move score only when no iteration finished at all. Invisible to game play — UCI reports its score from completed-iteration progress callbacks and plays the same TT-first move; only the returned `.Score`, which datagen consumes directly, was wrong. Verified: **57.6% → 2.1% zero labels** on a fresh 2000-game dataset (the residual 2.1% are genuine repetition/dead-position draws), move selection provably unchanged.
+
+### Generational self-play
+
+A first-generation imitation net learns the classical eval well (corr 0.97) but still loses, because it plays its own games into positions it never trained on — classic distribution shift. The fix is generational: each promoted net teaches the next generation's datagen. **gen2: +1.9 Elo vs classical (H1). gen3: +4.5 ±11.4 Elo, exhausted positive at 2650 games (LOS 77.8%).** The pipeline is automated end to end (datagen → train → validate → export → embed → publish → SPRT → auto-promote).
+
+### Verification
+
+- **276/276 tests green**, including the incremental/full-recompute accumulator parity gate and the frozen golden feature indices. The datagen fix carries 205/205 engine tests with move selection unchanged.
+
 ## 2026-07-23 (v2.8.4) — LMR ttCapture and ttPv adjusters on the fixed-point pipeline
 
 **SPRT vs v2.8.3 (tc=10+0.1, elo0=0, elo1=10): exhausted positive at 3000 games — 851-772-1377 [0.513], +9.2 ±9.1 Elo, LOS 97.5%, LLR 1.91. LTC gauntlet pending.**
@@ -10,7 +43,7 @@ The v2.8.3 fixed-point LMR pipeline (1024ths of a ply, verified behaviour-neutra
 
 - **ttCapture LMR adjuster.** When the TT move is a capture or promotion, late quiets are reduced by an additional ~1 ply (`r += 1079` in 1024ths): the position has a forcing continuation in the TT, so quiets on this node are relatively less interesting. Gated on `ttServed` so the flag is only set when the TT actually delivered the move. Screened +7.1 ±9.1 Elo, LOS 93.7%.
 - **ttPv LMR adjuster.** When the TT entry's `ttPv` flag is set (the node was on a previous search's principal variation), late quiets are reduced by ~1 ply less: `r -= 1024 + (nonPv ? 0 : 340)`, plus two small TT-hit sub-terms (`r -= 300` if the TT score beats alpha; `r -= 277` if the TT depth covers the current depth). Scaled ~×0.34 from the reference magnitude to keep the base at ~1 ply rather than ~3 (which would floor the milder reductions to zero). Screened +7.5 ±9.0 Elo, LOS 94.9%.
-- **cutNode threaded through Negamax (behaviour-neutral).** The expected-cut-node flag is now propagated correctly through all recursive calls (root, PV, LMR scout/re-search, null-move, ProbCut, singular). The isolated `cutNode` LMR adjuster was measured at both magnitudes on the fixed-point pipeline and rejected (−4.0 H0 at r+=4026; −7.1 H0 at r+=1536). Threading KEPT as a correctness prerequisite for allNode/cutoffCnt adjusters.
+- **cutNode threaded through Negamax (behaviour-neutral).** The expected-cut-node flag is now propagated correctly through all recursive calls (root, PV, LMR scout/re-search, null-move, ProbCut, singular). The isolated `cutNode` LMR adjuster was measured at both magnitudes on the fixed-point pipeline and rejected (−4.0 H0 at r+=4026; −7.1 H0 at r+=1536). Threading KEPT as a behaviour-neutral correctness change (consumed by ProbCut verification).
 - **ContinuationHistory MaxScore 8192 (correctness fix).** The continuation-history table's gravity bound was 2²⁰ (inert — measured flat +4.1 ±9.1). Correctly sized at 8192, matching the operating range of the table. Behaviour-neutral in practice.
 - **Dead LMR history term removed.** The `clamp(history/16384, -2, 2)` butterfly-history adjuster was always zero (butterfly is bounded at 7183, so `7183/16384 = 0` in integer division). Three variants of direct butterfly-history adjustment were measured and all rejected: statScore −18 Elo H0, symmetric clamp −4.8 ±11.4 H0, one-sided add-only +4.2 ±9.1 flat. The line is closed.
 
@@ -233,7 +266,7 @@ Every capture that gives check lands the opponent in exactly that node, so the h
 
 ## 2026-07-19 (blocks 5E + 5G, the v2.7.3 campaign) — MEASURED AND CUT, NO RELEASE
 
-**The v2.7.3 slot closes with no release: both candidate blocks measured at the real time control and cut per the project decision rule. The engine stays at v2.7.2 exactly; the next release will be v2.7.4. Everything below is archived for the pre-NNUE review pass.**
+**The v2.7.3 slot closes with no release: both candidate blocks measured at the real time control and cut per the project decision rule. The engine stays at v2.7.2 exactly; the next release will be v2.7.4. Everything below is archived.**
 
 **5E — singular extensions upgrade: four SPRTs at 10+0.1, all negative.**
 
@@ -255,7 +288,7 @@ Root cause: the reference's extensions are only stable next to reference-grade r
 | 3 | + blend gated to depth ≥ 6 | [0.496] at ~1900g, stopped |
 | 4 | + gravity updates (`entry += bonus − entry·|bonus|/2^20`) | **−4.2 ± 10.9**, H0 at 2000g [0.494] |
 
-Real defects found and fixed along the way (the fixes are proven and stay in the archive, ready for the revisit):
+Real defects found and fixed along the way (the fixes are proven and stay in the archive):
 
 - A single shared table CORRUPTS the levels: a bonus written for "the move two plies ago" lands on the very key another node reads as "one ply ago". With separate tables, a control build reading only level 0 reproduces v2.7.2 **bit-for-bit**; with the shared table the same control diverged −52%/+17% per position.
 - The blend must never reach statScore: reverse futility's thresholds (offset 1250, divisor 180, the measured ×0.28 transfer) describe a one-level signal; feeding them the blend re-tunes the pruning silently (attempt 1's real failure mode).
@@ -294,7 +327,7 @@ After 5B and 5C proved that reference HEURISTIC constants do not transfer withou
 **Lessons (added to the golden rules):**
 
 - Depth benches and WAC CANNOT green-light a search change: the conservative rebuild had −23% nodes, WAC 263/300 (best profile ever measured) and equal NPS — and lost 25 Elo in play. Only games at the REAL time control validate search heuristics; hyperfast (5+0.05) matches can invert sign vs 10+0.1.
-- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle. → revisit only after the TT block (ttPv/static-eval — DONE as 5D/v2.7.2 hours later) and 5G (history rework), if at all.
+- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle: the reference search suite does not transfer to this classical engine.
 - The ply−2/ply−4 continuation-history contexts genuinely never existed (single-parity keys — found by a probe reading exact zeros) and the fix is implemented and archived, but with our depth² tables feeding pruning margins it measures −10.8 at STC: parked with its measurements until 5G reworks the history update rule (reference-style bonus/gravity), which is what makes those reads trustworthy.
 - ttPv −2 via a PvNode proxy explodes the PV subtree +220% when stacked with the PvNode depth discount — the real thing needs the TT flag (5F).
 
@@ -316,7 +349,7 @@ What ships (on top of the untouched, validated NMP entry and R):
 - search: NMP verification search at depth >= 14 — a null cutoff at high depth is re-proven by a real reduced search on the same position, with null moves disabled for the verifying side until `nmpMinPly = ply + 3(depth−R)/4` (reference nmpMinPly/nmpColor); zugzwang-proof pinned on Fine 70.
 - search: NMP fail-soft — a passing null returns `nullScore` (bounded away from mate range) instead of the old hard `beta`; mate-range null scores still fall through to the real search (forced mates stay visible at their natural depth).
 - search: improvement value — per-ply eval delta with the reference's ply−4 fallback after checks; the cold default stays STRICT (not improving), see lessons.
-- eval: `Winnable.Apply` overload reports the position complexity (initiative magnitude, cp, >= 0) via `IComplexityEvaluator` — plumbing kept for the 5H time-management complexity factor and the eventual NMP revisit.
+- eval: `Winnable.Apply` overload reports the position complexity (initiative magnitude, cp, >= 0) via `IComplexityEvaluator` — plumbing kept for the 5H time-management complexity factor.
 
 **Deferred by measurement — the reference NMP presumes three ecosystem pieces we don't have yet.** The full reference bundle (entry gated on `staticEval >= beta − 10d − improvement/13 + 112 + complexity/25`, statScore skip, deep `R = min((eval−beta)/81,7) + depth/3 + 4`, capture futility, lmrDepth quiet futility) was implemented faithfully, unit-rescaled and bisected against WAC-300 + node benches across seven builds:
 

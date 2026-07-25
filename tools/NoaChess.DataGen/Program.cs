@@ -18,9 +18,27 @@ using NoaChess.Engine.Search;
 // Reproducibility: the run parameters, engine commit and dataset hash are
 // written to <out>.manifest.json; its SHA-256 is embedded in the file header.
 
+// TEMP debug: `--nnueprobe <model.noannue> "<fen>"` prints the C# NNUE STATIC
+// eval of the position (side-to-move POV), to cross-check against the Python
+// net's eval on the same FEN.
+if (args.Length >= 3 && args[0] == "--nnueprobe")
+{
+    if (!NoaChess.Engine.Evaluation.Nnue.NnueModelLoader.TryLoad(args[1], out var probeNet, out string loadErr))
+    {
+        Console.WriteLine($"nnueprobe load error: {loadErr}");
+        return 1;
+    }
+    var probeEval = new NoaChess.Engine.Evaluation.Nnue.NnueEvaluator(probeNet!);
+    var probeBoard = new Board(args[2]);
+    probeEval.Reset(probeBoard);
+    Console.WriteLine($"nnueprobe: {probeEval.Evaluate(probeBoard)}  sha={probeNet!.Sha256[..12]}  fen=[{args[2]}]");
+    return 0;
+}
+
 var options = ParseArgs(args);
 Console.WriteLine($"datagen: games={options.Games} nodes={options.Nodes} threads={options.Threads} seed={options.Seed}");
 Console.WriteLine($"output : {options.Output}");
+Console.WriteLine($"limits : resign>=|{options.Resign}|cp/6plies, draw<=|{options.DrawScore}|cp/{options.DrawCount}plies(after ply 60), maxPlies={options.MaxPlies}");
 if (options.Model is not null)
     Console.WriteLine($"model  : {options.Model} (self-play uses NNUE instead of the classical evaluator)");
 
@@ -75,8 +93,9 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
             int whiteResult = 0; // +1 white wins, -1 black wins, 0 draw.
             int ply = openingPlies;
             int decisiveStreak = 0;
+            int drawStreak = 0;
 
-            while (ply < 400)
+            while (ply < options.MaxPlies)
             {
                 GameResult state = GameState.GetResult(board);
                 if (state != GameResult.Ongoing)
@@ -92,12 +111,25 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
                     break;
 
                 // Resign adjudication: a stable overwhelming score ends the
-                // game early (saves time; matches how matches are run).
+                // game early (saves time; matches how matches are run). The
+                // threshold is on the active evaluator's scale (see ParseArgs).
                 int whiteScore = board.SideToMove == Color.White ? result.Score : -result.Score;
-                decisiveStreak = Math.Abs(result.Score) >= 1500 ? decisiveStreak + 1 : 0;
+                decisiveStreak = Math.Abs(result.Score) >= options.Resign ? decisiveStreak + 1 : 0;
                 if (decisiveStreak >= 6)
                 {
                     whiteResult = whiteScore > 0 ? 1 : -1;
+                    break;
+                }
+
+                // Draw adjudication: once past the opening, a long run of
+                // near-zero scores ends the game as a draw. Without it, equal
+                // games (which no longer resign) would shuffle to the ply cap,
+                // wasting time and over-representing dead-equal positions. The
+                // positions themselves are still recorded up to this point.
+                drawStreak = Math.Abs(result.Score) <= options.DrawScore ? drawStreak + 1 : 0;
+                if (ply >= 60 && drawStreak >= options.DrawCount)
+                {
+                    whiteResult = 0;
                     break;
                 }
 
@@ -154,10 +186,12 @@ var manifest = new
     nodesPerMove = options.Nodes,
     seed = options.Seed,
     openingPlies = "8-9 random legal",
+    maxPlies = options.MaxPlies,
     filters = "no in-check, no tactical best move, |score| < 20000",
-    resignAdjudication = "|score| >= 1500 for 6 plies",
+    resignAdjudication = $"|score| >= {options.Resign} for 6 plies",
+    drawAdjudication = $"|score| <= {options.DrawScore} for {options.DrawCount} plies after ply 60",
     evaluator = options.Model ?? "classical",
-    engineVersion = "NoaChess 2.4.0",
+    engineVersion = $"NoaChess {ChessEngine.Version}",
     generatedUtc = DateTime.UtcNow.ToString("o"),
     datasetSha256BeforeHeaderPatch = datasetSha
 };
@@ -173,11 +207,15 @@ Console.WriteLine($"done: {gamesDone} games, {totalRecords:N0} positions in {sto
 Console.WriteLine($"manifest: {manifestPath}");
 return 0;
 
-static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
     string? model = null;
+    int resign = int.MinValue; // Sentinel: auto-pick from the evaluator scale below.
+    int maxPlies = 400;
+    int drawScore = 10;        // Draw adjudication threshold in centipawns.
+    int drawCount = 12;        // Consecutive near-zero plies needed to adjudicate.
 
     for (int i = 0; i < args.Length - 1; i++)
     {
@@ -189,7 +227,22 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
             case "--seed": seed = int.Parse(args[i + 1]); break;
             case "--out": output = args[i + 1]; break;
             case "--model": model = args[i + 1]; break;
+            case "--resign": resign = int.Parse(args[i + 1]); break;
+            case "--maxplies": maxPlies = int.Parse(args[i + 1]); break;
+            case "--drawscore": drawScore = int.Parse(args[i + 1]); break;
+            case "--drawcount": drawCount = int.Parse(args[i + 1]); break;
         }
     }
-    return (games, nodes, threads, seed, output, model);
+
+    // The resign threshold is a centipawn score, so it lives on the active
+    // evaluator's scale. The classical evaluator reaches ±1500 readily; an
+    // NNUE model's output is sigmoid-trained and compressed (~0.5-0.6x
+    // classical, saturating further at the extremes), so the same 1500 almost
+    // never triggers and games run to the ply cap — datagen with an NNUE
+    // teacher then takes many times longer for no extra data quality. Default
+    // to a scale-appropriate value per evaluator; --resign overrides.
+    if (resign == int.MinValue)
+        resign = model is null ? 1500 : 700;
+
+    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount);
 }
