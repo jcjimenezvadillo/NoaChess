@@ -1,3 +1,4 @@
+using System.Numerics;
 using NoaChess.Core;
 
 namespace NoaChess.Engine.Evaluation.Nnue;
@@ -46,19 +47,57 @@ public sealed class NnueAccumulator
         Valid[1] = other.Valid[1];
     }
 
+    // The feature-transformer weight row for a feature is FtOutputs int16 wide
+    // (128+) and is added to / subtracted from the accumulator on every move —
+    // several times per search node. A scalar loop is the hottest cost in NNUE
+    // play; process it a full SIMD vector at a time. FtOutputs is a multiple of
+    // the vector width for the shipped nets, so the scalar tail never runs.
     public void AddFeature(NnueNetwork network, Color perspective, int featureIndex)
     {
         short[] values = Values[(int)perspective];
+        short[] weights = network.FtWeights;
         int row = featureIndex * network.FtOutputs;
-        for (int i = 0; i < values.Length; i++)
-            values[i] += network.FtWeights[row + i];
+        int width = Vector<short>.Count;
+        int n = values.Length;
+        int i = 0;
+        for (; i <= n - width; i += width)
+            (new Vector<short>(values, i) + new Vector<short>(weights, row + i)).CopyTo(values, i);
+        for (; i < n; i++)
+            values[i] += weights[row + i];
     }
 
     public void SubtractFeature(NnueNetwork network, Color perspective, int featureIndex)
     {
         short[] values = Values[(int)perspective];
+        short[] weights = network.FtWeights;
         int row = featureIndex * network.FtOutputs;
-        for (int i = 0; i < values.Length; i++)
-            values[i] -= network.FtWeights[row + i];
+        int width = Vector<short>.Count;
+        int n = values.Length;
+        int i = 0;
+        for (; i <= n - width; i += width)
+            (new Vector<short>(values, i) - new Vector<short>(weights, row + i)).CopyTo(values, i);
+        for (; i < n; i++)
+            values[i] -= weights[row + i];
+    }
+
+    // Fused "a piece left removeIndex and arrived at addIndex": one pass over
+    // the accumulator instead of a SubtractFeature + AddFeature pair, halving
+    // the load/store traffic on 'values'. Every non-king move does exactly this
+    // for both perspectives, so it is the single most-executed update.
+    public void MoveFeature(NnueNetwork network, Color perspective, int removeIndex, int addIndex)
+    {
+        short[] values = Values[(int)perspective];
+        short[] weights = network.FtWeights;
+        int addRow = addIndex * network.FtOutputs;
+        int removeRow = removeIndex * network.FtOutputs;
+        int width = Vector<short>.Count;
+        int n = values.Length;
+        int i = 0;
+        for (; i <= n - width; i += width)
+            (new Vector<short>(values, i)
+                + new Vector<short>(weights, addRow + i)
+                - new Vector<short>(weights, removeRow + i)).CopyTo(values, i);
+        for (; i < n; i++)
+            values[i] += (short)(weights[addRow + i] - weights[removeRow + i]);
     }
 }

@@ -56,7 +56,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // for certain wins/losses and outcomes affected by the fifty-move rule.
     private const int MaxDtz = 1 << 18;
 
-    /// Set from the UCI SyzygyProbeLimit / SyzygyProbeDepth options.
+    // Set from the UCI SyzygyProbeLimit / SyzygyProbeDepth options.
     public int SyzygyProbeLimit
     {
         get => _syzygyProbeLimit;
@@ -69,7 +69,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private int _tbMaxMen;
     private int _tbMinProbeDepth = 1;
 
-    /// Recomputed after the tablebases are (re)loaded or the limit changes.
+    // Recomputed after the tablebases are (re)loaded or the limit changes.
     public void RefreshTbLimit()
     {
         if (!Tablebases.Syzygy.Available)
@@ -96,7 +96,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private int _syzygyProbeDepth = 1;
     public bool Syzygy50MoveRule { get; set; } = true;
 
-    /// Number of positions this search resolved from tablebases.
+    // Number of positions this search resolved from tablebases.
     public long TbHits { get; private set; }
 
     private const int MaxPly = 128;
@@ -478,11 +478,20 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             if (_stopped || _softStopped)
             {
-                // Interrupted mid-iteration. The moves searched so far
-                // (starting with the previous iteration's best, thanks to TT
-                // ordering) were searched completely — their best is at least
-                // as good as the previous iteration's answer. Use it and stop.
-                if (bestMove != Move.None)
+                // Interrupted mid-iteration. A SOFT stop lands on a root-move
+                // boundary, so every move searched so far (the previous best
+                // first, thanks to TT ordering) is complete and the partial
+                // result is reliable — use it. A HARD stop aborts mid-node:
+                // the interrupted Negamax returns 0, so if it hit during the
+                // first root move, SearchRoot reports that move with score 0.
+                // Trusting that 0 silently zeroed the returned score of ~half
+                // of all node-limited searches (harmless to game play, which
+                // reports its score from completed-iteration progress and plays
+                // the same TT-first move — but it wrecked datagen labels, which
+                // take the returned score). On a hard stop keep the last
+                // completed iteration's result; fall back to the partial only
+                // when no iteration has finished yet.
+                if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
                     best = new SearchResult(bestMove, score, _nodes);
                 break;
             }

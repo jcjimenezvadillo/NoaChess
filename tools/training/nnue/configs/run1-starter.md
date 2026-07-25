@@ -10,7 +10,7 @@ Reproducibility record per the technical roadmap.
 - Records: 2,820,289 (data/selfplay-run1.noadata + .manifest.json)
 
 ## Training
-- Architecture 1: HalfKP 40960 -> FT 128 x2 -> L1 32 -> 1 (see model.py)
+- Architecture 1: HalfKAv2_hm 22528 -> FT 128 x2 -> L1 32 -> 1 (see model.py)
 - Targets: lambda 0.7 * sigmoid(score/400) + 0.3 * wdl(result)
 - Epochs 6, batch 8192, Adam lr 1e-3, seed 1, val fraction 5% (tail split)
 - Hardware: CPU (Ryzen), PyTorch 2.x

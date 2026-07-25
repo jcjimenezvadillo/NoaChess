@@ -54,16 +54,17 @@ public class NnueTests
     [Fact]
     public void FeatureIndex_GoldenValues()
     {
-        // White pawn e2, white king e1, white perspective:
-        // king 4, pieceIndex = pawn(0)*2 + own(0) = 0, square 12
-        // -> 4*640 + 0*64 + 12 = 2572.
-        Assert.Equal(2572, NnueFeatureIndex.Index(Color.White, 4, Color.White, PieceType.Pawn, 12));
+        // White pawn e2, white king e1, White perspective:
+        // vflip 0, orient(e1=4)=0 (king already on files e-h), oriented sq = 12;
+        // plane = own pawn = 0; kingBucket(e1=4) = 31 -> 31*704 = 21824.
+        // -> 12 + 0 + 21824 = 21836.
+        Assert.Equal(21836, NnueFeatureIndex.Index(Color.White, 4, Color.White, PieceType.Pawn, 12));
 
-        // Same pawn from Black's perspective (black king e8): both squares
-        // are rank-flipped (e8 -> e1 = 4, e2 -> e7 = 52) and the pawn is an
-        // enemy piece -> pieceIndex = 0*2 + 1 = 1:
-        // -> 4*640 + 1*64 + 52 = 2676.
-        Assert.Equal(2676, NnueFeatureIndex.Index(Color.Black, 60, Color.White, PieceType.Pawn, 12));
+        // Same white pawn e2 from Black's perspective (black king e8=60):
+        // vflip 56 -> pawn e2 becomes e7=52; enemy pawn -> plane 1*64 = 64;
+        // kingBucket(60 ^ 56 = 4) = 21824.
+        // -> 52 + 64 + 21824 = 21940.
+        Assert.Equal(21940, NnueFeatureIndex.Index(Color.Black, 60, Color.White, PieceType.Pawn, 12));
 
         // Symmetry: a mirrored position must produce the same index for the
         // mirrored perspective. Black queen d8 seen by Black on king e8 ==
@@ -87,8 +88,9 @@ public class NnueTests
         Assert.Equal(countA, countB);
         Assert.True(a[..countA].SequenceEqual(b[..countB]));
 
-        // Kiwipete has 32 pieces -> 30 non-king features.
-        Assert.Equal(30, countA);
+        // Kiwipete has 32 pieces; in HalfKA every piece (kings included) is a
+        // feature -> 32 active features.
+        Assert.Equal(32, countA);
 
         // All indices inside the schema's space.
         foreach (int f in a[..countA])
