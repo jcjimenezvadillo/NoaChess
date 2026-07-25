@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.8.4";
+    public const string EngineVersion = ChessEngine.Version;
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -41,6 +41,7 @@ public sealed class UciLoop
     private Board _board = new();
     private CancellationTokenSource? _searchCts;
     private Task? _searchTask;
+    private bool _embeddedNnueChecked;
 
     // Pondering state: while thinking on the opponent's time, the original
     // "go ponder ..." tokens are kept so a "ponderhit" can relaunch the same
@@ -61,6 +62,31 @@ public sealed class UciLoop
         // The search task and the command loop both write here.
         _output = TextWriter.Synchronized(output);
 
+    }
+
+    // Loads the .noannue model compiled into the exe as an embedded resource
+    // (LogicalName "noa-embedded.noannue"). Called on the first "isready" only
+    // when EvalFile has not been set by the GUI. If the resource is absent the
+    // method is a no-op (pre-training builds ship without a model).
+    private void TryLoadEmbeddedNnue()
+    {
+        using Stream? stream = typeof(UciLoop).Assembly
+                                              .GetManifestResourceStream("noa-embedded.noannue");
+        if (stream is null) return;
+
+        byte[] bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        if (_engine.TryLoadNnueModel(bytes.AsSpan(), out string error))
+        {
+            _output.WriteLine($"info string NNUE embedded model loaded ({_engine.NnueModelSha256})");
+            // Auto-enable unless the GUI sent "setoption name UseNNUE value false" first.
+            if (!_options.UseNnueExplicitlySet || _options.UseNnue)
+                _engine.SetUseNnue(true);
+        }
+        else
+        {
+            _output.WriteLine($"info string embedded NNUE model rejected: {error}");
+        }
     }
 
     // Opens (or switches) the traffic log and tees stdout through it. The new
@@ -196,6 +222,12 @@ public sealed class UciLoop
                 case "isready":
                     // Must answer even while a search runs — the GUI uses it
                     // as a heartbeat. The loop thread is free, so just reply.
+                    if (!_embeddedNnueChecked)
+                    {
+                        _embeddedNnueChecked = true;
+                        if (_options.EvalFile.Length == 0)
+                            TryLoadEmbeddedNnue();
+                    }
                     _output.WriteLine("readyok");
                     break;
 

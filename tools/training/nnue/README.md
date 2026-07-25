@@ -31,7 +31,7 @@ End-to-end flow (all offline; the engine never depends on Python):
 
 | Contract | C# side | Python side |
 |---|---|---|
-| Feature schema 1 (HalfKP 40960) | `NnueFeatureIndex.cs` | `dataset.py` |
+| Feature schema 2 (HalfKAv2_hm 22528) | `NnueFeatureIndex.cs` | `dataset.py` |
 | Dataset format NOADATA1 | `tools/NoaChess.DataGen/DatasetFormat.cs` | `dataset.py` |
 | Model format NOANNUE1 + quantization | `NnueModelLoader.cs` / `NnueNetwork.cs` | `export_model.py` |
 | Architecture 1 (FT 128, L1 32) | `NnueInference.cs` | `model.py` |
