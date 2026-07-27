@@ -127,18 +127,28 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     """
     Decodes ALL records into dense arrays once (the per-record Python loop is
     the bottleneck; done once, epochs afterwards are pure array slicing):
-      stm_feats, opp_feats  int64 [n, MAX_ACTIVE] (-1 = padding)
+      stm_feats, opp_feats  int16 [n, MAX_ACTIVE] (-1 = padding)
       scores, results       float32 [n]
     Optionally cached to an .npz next to the dataset.
+
+    Feature indices span [0, INPUT_SIZE-1] = [0, 22527] and the padding sentinel
+    is -1, so int16 holds them exactly at 1/4 the RAM of int64. That 4x is what
+    lets the whole combined dataset (all generations) fit in memory without
+    subsampling. EmbeddingBag needs Long indices, so model.forward casts per
+    batch (cheap: batch*32 values).
     """
     if cache_path and os.path.exists(cache_path):
         data = np.load(cache_path)
         print(f"feature cache loaded: {cache_path}")
-        return data["stm"], data["opp"], data["scores"], data["results"]
+        # Legacy caches were saved as int64; cast down to int16 (lossless, the
+        # values fit in [-1, 22527]). No-op if the cache is already int16.
+        return (data["stm"].astype(np.int16, copy=False),
+                data["opp"].astype(np.int16, copy=False),
+                data["scores"], data["results"])
 
     n = len(records)
-    stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int64)
-    opp_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int64)
+    stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
+    opp_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
     scores = np.zeros(n, dtype=np.float32)
     results = np.zeros(n, dtype=np.float32)
 
