@@ -54,41 +54,63 @@ def main():
     # contaminated datasets (an engine hard-stop bug zeroed ~57% of labels,
     # fixed 2026-07-24). Clean datasets have ~2% genuine-draw zeros — leave off.
     parser.add_argument("--drop-zero-scores", action="store_true")
+    # Safety valve only. Features are stored int16 (see dataset.precompute_features),
+    # so the whole combined dataset fits in RAM at 1/4 the old cost; this cap is
+    # far above the generational pipeline's size and normally never triggers. If
+    # it does, files are subsampled proportionally so every generation keeps its
+    # share. Do NOT lower this to "tune" — dropping data weakens the net.
+    parser.add_argument("--max-records", type=int, default=120_000_000,
+                        help="safety cap on total records in RAM (proportional per-file subsample if exceeded)")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
 
-    # One-time decode of all records into arrays (cached next to each file);
-    # epochs afterwards are pure array slicing. Multiple files are concatenated.
-    feats_list = []
+    # Count records first so we can size a proportional subsample if (and only
+    # if) the combined set exceeds the safety cap.
+    sizes = []
     for path in args.data:
+        sizes.append(len(dataset.load_records(path)))
+    total = sum(sizes)
+    ratio = min(1.0, args.max_records / total) if total > 0 else 1.0
+    if ratio < 1.0:
+        print(f"subsampling {total:,} -> {int(total*ratio):,} records ({ratio*100:.1f}%) to fit under --max-records")
+
+    # Decode each file once (cached next to it), optionally subsample, then split
+    # THAT FILE into train/val by a tail cut. Splitting per file — not on the
+    # concatenation — is what makes the validation set a representative mix of
+    # ALL generations instead of only the last file; a tail cut also keeps whole
+    # games on one side (the format orders records by game).
+    train_parts = ([], [], [], [])
+    val_parts = ([], [], [], [])
+    train_total = 0
+    val_total = 0
+    for path, size in zip(args.data, sizes):
         recs = dataset.load_records(path)
-        print(f"dataset: {len(recs):,} records from {path}")
-        feats_list.append(dataset.precompute_features(recs, cache_path=path + ".features.npz"))
-    if len(feats_list) == 1:
-        features = feats_list[0]
-    else:
-        features = tuple(np.concatenate([f[k] for f in feats_list]) for k in range(4))
-        print(f"combined: {len(features[0]):,} records from {len(args.data)} files")
+        feats = dataset.precompute_features(recs, cache_path=path + ".features.npz")
+        if ratio < 1.0:
+            n = max(1, int(size * ratio))
+            idx = rng.choice(size, size=n, replace=False)
+            idx.sort()
+            feats = tuple(a[idx] for a in feats)
+        if args.drop_zero_scores:
+            # (stm, opp, scores, results); keep only real-signal labels.
+            keep = feats[2] != 0
+            feats = tuple(a[keep] for a in feats)
+        m = len(feats[0])
+        vc = int(m * args.val_fraction)
+        cut = m - vc
+        for k in range(4):
+            train_parts[k].append(feats[k][:cut])
+            val_parts[k].append(feats[k][cut:])
+        train_total += cut
+        val_total += vc
+        print(f"dataset: {m:,} records from {path}  (train {cut:,} / val {vc:,})")
 
-    if args.drop_zero_scores:
-        # features = (stm, opp, scores, results); keep only real-signal labels.
-        keep = features[2] != 0
-        features = tuple(a[keep] for a in features)
-        print(f"drop-zero-scores: kept {keep.sum():,} / {len(keep):,} "
-              f"({keep.mean()*100:.1f}%) nonzero-label records")
-
-    # Train/validation split BY GAME would need game ids; the format orders
-    # records by game, so a contiguous tail split approximates it (whole
-    # games end up on one side of the cut except at most one).
-    n_used = len(features[0])
-    val_count = int(n_used * args.val_fraction)
-    cut = n_used - val_count
-    train_set = tuple(a[:cut] for a in features)
-    val_set = tuple(a[cut:] for a in features)
-    print(f"train: {cut:,}  val: {val_count:,}")
-    steps_per_epoch = -(-cut // args.batch)  # ceiling division
+    train_set = tuple(np.concatenate(train_parts[k]) for k in range(4))
+    val_set = tuple(np.concatenate(val_parts[k]) for k in range(4))
+    print(f"train: {train_total:,}  val: {val_total:,}  from {len(args.data)} files")
+    steps_per_epoch = -(-train_total // args.batch)  # ceiling division
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}"

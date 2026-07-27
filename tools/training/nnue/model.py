@@ -42,9 +42,12 @@ class NoaNnue(nn.Module):
             self.ft.weight[INPUT_SIZE].zero_()
 
     def forward(self, stm_feats, opp_feats):
-        # -1 padding -> the zero row.
-        stm_feats = torch.where(stm_feats < 0, torch.full_like(stm_feats, INPUT_SIZE), stm_feats)
-        opp_feats = torch.where(opp_feats < 0, torch.full_like(opp_feats, INPUT_SIZE), opp_feats)
+        # -1 padding -> the zero row. Features are stored int16 in host RAM to
+        # save memory; INPUT_SIZE (22528) fits int16, and EmbeddingBag needs
+        # Long indices, so cast after remapping. .long() is a no-op when the
+        # caller already passes int64 (e.g. validate_nnue's on-the-fly batches).
+        stm_feats = torch.where(stm_feats < 0, torch.full_like(stm_feats, INPUT_SIZE), stm_feats).long()
+        opp_feats = torch.where(opp_feats < 0, torch.full_like(opp_feats, INPUT_SIZE), opp_feats).long()
 
         stm = torch.clamp(self.ft(stm_feats) + self.ft_bias, 0.0, 1.0)
         opp = torch.clamp(self.ft(opp_feats) + self.ft_bias, 0.0, 1.0)
