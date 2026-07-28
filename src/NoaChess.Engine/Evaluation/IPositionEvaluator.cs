@@ -13,4 +13,10 @@ public interface IPositionEvaluator
     // negamax needs: a positive value always means "good for the mover",
     // whether it is white or black.
     int Evaluate(Board board);
+
+    // Returns an independent evaluator usable by another search thread. Each
+    // Lazy SMP helper worker searches on its own board and must not share any
+    // mutable evaluator state (classical scratch buffers, NNUE accumulators);
+    // read-only data (NNUE network weights) may be shared internally.
+    IPositionEvaluator Clone();
 }

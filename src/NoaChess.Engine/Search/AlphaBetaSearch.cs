@@ -30,7 +30,7 @@ namespace NoaChess.Engine.Search;
 //   best-move-stability and best-move-instability factors and the search stops
 //   past the modulated budget (gracefully at root-move boundaries, keeping the
 //   partial iteration's best). Past the maximum the search aborts outright.
-public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
+public sealed class AlphaBetaSearch
 {
     private const int Infinity = 1_000_000;
     public const int MateScore = 100_000;
@@ -109,14 +109,22 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // mask makes the check nearly free.
     private const int StopCheckInterval = 2048;
 
-    private IPositionEvaluator _evaluator = evaluator;
+    // SMP mid-iteration overshoot guard: bound how far a single deep root move
+    // may run past the (dynamic) soft budget before the node-level stop fires.
+    // See the _maxTimeMs update in FindBestMove.
+    private const double SmpOvershootFactor = 1.5;
+
+    private IPositionEvaluator _evaluator;
 
     // Set when the evaluator keeps incremental state (NNUE accumulators):
     // the search notifies it around every make/unmake. Null for stateless
     // evaluators (classical) — one branch-predicted null check per node.
-    private IIncrementalEvaluator? _incremental = evaluator as IIncrementalEvaluator;
+    private IIncrementalEvaluator? _incremental;
 
-    private readonly TranspositionTable _tt = new(sizeMb: 64);
+    // The transposition table. A standalone search owns a fresh 64 MB table; a
+    // Lazy SMP helper worker instead SHARES the main worker's table (that shared
+    // memory is the whole point — threads cross-pollinate through it).
+    private readonly TranspositionTable _tt;
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
@@ -241,6 +249,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
     private long _nodes;
     private long _hardTimeMs;
+    // Node-level (mid-iteration) deadline. Equals _hardTimeMs except under Lazy
+    // SMP, where it is tightened to a small multiple of the soft budget so a
+    // runaway single root move cannot coast to the loose hard maximum (see the
+    // update in FindBestMove and the check in CheckStop).
+    private long _maxTimeMs;
+    private long _softTimeMs;
     private long _maxNodes;
     private CancellationToken _cancellation;
 
@@ -263,8 +277,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // optimum and is re-derived after each completed iteration (clock mode).
     private long _softDeadlineMs;
 
-    // Root best-move changes during the current iteration (root fills it).
+    // Root best-move changes during the current iteration (root fills it,
+    // reset each iteration).
     private int _bestMoveChanges;
+    // Monotonic best-move-change count for the whole search (reset once per
+    // search, never per iteration). The coordinator reads DELTAS of this across
+    // main iterations so a helper's changes are counted once, not re-summed
+    // every iteration.
+    private int _bestMoveChangesTotal;
+
+    // Lazy SMP time-manager coupling. The instability factor must be the AVERAGE
+    // root best-move-change rate across ALL workers (reference: totBestMoveChanges
+    // / threads.size()), not just this thread's. A single thread's count is noisy
+    // and, under the shared-TT races, occasionally spikes the budget to the hard
+    // maximum on trivial moves (measured: a forced recapture taking 22s in a 3+2
+    // game). Averaging over the pool keeps the factor low-variance. Set by the
+    // coordinator on the main worker only; defaults keep the single-thread path
+    // byte-identical (count/1 = count, peer func null).
+    internal int SearchThreadCount = 1;
+    internal Func<int>? PeerBestMoveChanges;
+    // Racy read of this worker's monotonic counter for the coordinator's peer
+    // delta (benign: a stale int read only nudges a heuristic; int reads atomic).
+    internal int BestMoveChangesTotal => _bestMoveChangesTotal;
 
     // Sentinel for "no previous score yet" (first search of the game).
     private const int ScoreNone = int.MaxValue / 2;
@@ -281,6 +315,41 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // that point every node returns immediately and all partial scores are
     // discarded: only the last fully completed iteration is trusted.
     private bool _stopped;
+
+    // Set when the SOFT budget expires at a root-move boundary. Unlike a hard
+    // stop, everything searched so far in the iteration is fully valid — the
+    // iteration just does not continue with the remaining root moves. Without
+    // this cut, an iteration started 1 ms before the soft limit would run all
+    // the way to the hard limit (4x soft), overspending on nearly every move
+    // and flagging in long games.
+    private bool _softStopped;
+
+    // Standalone search: owns a fresh 64 MB transposition table (the historical
+    // behaviour — one search, one table).
+    public AlphaBetaSearch(IPositionEvaluator evaluator)
+        : this(evaluator, new TranspositionTable(sizeMb: 64)) { }
+
+    // Lazy SMP helper worker: shares the main worker's transposition table.
+    // Everything else (history, killers, search stack, evaluator) stays
+    // per-instance so the threads never write the same memory except the TT.
+    public AlphaBetaSearch(IPositionEvaluator evaluator, TranspositionTable sharedTt)
+    {
+        _evaluator = evaluator;
+        _incremental = evaluator as IIncrementalEvaluator;
+        _tt = sharedTt;
+    }
+
+    // The transposition table, so a Lazy SMP coordinator can share this (main)
+    // worker's table with the helper workers and age it exactly once per search.
+    internal TranspositionTable Tt => _tt;
+
+    // The active evaluator, so the coordinator can Clone() it for each helper.
+    internal IPositionEvaluator Evaluator => _evaluator;
+
+    // Ages the shared table one generation. Called ONCE by the coordinator
+    // before launching the pool, so helpers run with newSearch:false and do not
+    // each re-age the same shared table.
+    internal void NewSearchTt() => _tt.NewSearch();
 
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
@@ -301,9 +370,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _previousTimeReduction = 1.0;
     }
 
+    // newSearch: age the shared TT one generation at the start (true for a
+    // standalone/main search). A Lazy SMP coordinator ages the shared table
+    // once itself and passes false to every worker so it is not aged N times.
     public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
-                                     IProgress<SearchProgress>? progress = null)
+                                     IProgress<SearchProgress>? progress = null,
+                                     bool newSearch = true)
     {
         if (limits.MaxDepth < 1)
             throw new ArgumentOutOfRangeException(nameof(limits), "Minimum depth is 1.");
@@ -314,6 +387,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _softStopped = false;
         _cancellation = cancellation;
         _hardTimeMs = limits.HardTimeMs;
+        _maxTimeMs = limits.HardTimeMs; // tightened per-iteration under SMP (see below)
         _softTimeMs = limits.SoftTimeMs;
         _softDeadlineMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
@@ -370,7 +444,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // slots gracefully as this search fills the table.
         _killers.Clear();
         _history.Decay();
-        _tt.NewSearch();
+        if (newSearch)
+            _tt.NewSearch();
 
         // Per-search NMP verification state and statScore stack (stale scores
         // from the previous search describe other positions).
@@ -407,6 +482,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         int seed = _bestPreviousScore == ScoreNone ? 0 : _bestPreviousScore;
         for (int i = 0; i < _iterValue.Length; i++)
             _iterValue[i] = seed;
+
+        _bestMoveChangesTotal = 0; // monotonic; coordinator reads deltas of it
 
         for (int depth = 1; depth <= limits.MaxDepth; depth++)
         {
@@ -499,7 +576,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 lastBestMove = bestMove;
                 lastBestMoveDepth = depth;
             }
-            totBestMoveChanges += _bestMoveChanges;
+            // Sum this worker's changes plus every helper's (peer func); the
+            // instability factor below divides the total by the thread count to
+            // get the per-thread average, matching the reference. Single-thread:
+            // PeerBestMoveChanges is null and SearchThreadCount is 1 -> unchanged.
+            totBestMoveChanges += _bestMoveChanges + (PeerBestMoveChanges?.Invoke() ?? 0);
             averageScore = averageScore == ScoreNone ? score : (2 * score + averageScore) / 3;
 
             if (clockMode)
@@ -534,15 +615,40 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 // extending for it just burns the clock before the game starts.
                 double bestMoveInstability = _bestPreviousAverageScore == ScoreNone
                     ? 1.0
-                    : 1 + 1.7 * totBestMoveChanges;
+                    : 1 + 1.7 * totBestMoveChanges / SearchThreadCount;
 
                 double totalTime = _softTimeMs * fallingEval * reduction * bestMoveInstability;
+
+                // Multi-thread safety cap on the soft deadline. Under the
+                // shared-TT races the dynamic factors (falling-eval, reduction,
+                // instability) can inflate at once and spike the budget toward
+                // the hard maximum on a trivial move. Bound the EXTENSION at the
+                // optimum: a stable move still reduces below it (the reduction
+                // factors apply untouched) but the spike can no longer blow the
+                // clock. Single-thread (count 1) is untouched.
+                if (SearchThreadCount > 1 && totalTime > _softTimeMs)
+                    totalTime = _softTimeMs;
 
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
                 if (ElapsedMs > totalTime)
                     break;
                 _softDeadlineMs = (long)totalTime;
+
+                // SMP mid-iteration overshoot guard. The root-boundary soft-stop
+                // (SearchRoot) only fires BETWEEN root moves, so a single deep
+                // root move begun near the budget edge can run for many seconds
+                // to the loose hard maximum before the next check — a warm TT
+                // after a ponderhit reaches high depth almost instantly, so this
+                // hits trivial/forced moves (measured 22-37s on a forced recapture
+                // at 30 threads). Tighten the NODE-level deadline to a small
+                // multiple of the (dynamic) soft budget: CheckStop then aborts the
+                // runaway move mid-iteration and the hard-stop keeps the last
+                // completed iteration's move. Never above the hard maximum, and
+                // single-thread keeps the loose hard limit (byte-identical).
+                _maxTimeMs = SearchThreadCount > 1
+                    ? Math.Min(_hardTimeMs, (long)(totalTime * SmpOvershootFactor))
+                    : _hardTimeMs;
             }
 
             _iterValue[iterIdx] = score;
@@ -654,9 +760,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
                 // Best-move change bookkeeping for the time manager: a root
                 // move other than the first one taking over the lead signals
-                // an unstable position that deserves more time.
+                // an unstable position that deserves more time. The monotonic
+                // counter feeds the cross-thread peer delta (Lazy SMP).
                 if (searched > 1)
+                {
                     _bestMoveChanges++;
+                    _bestMoveChangesTotal++;
+                }
 
                 if (score > alpha)
                     alpha = score;
@@ -1877,7 +1987,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private void CheckStop()
     {
         if (_cancellation.IsCancellationRequested
-            || ElapsedMs >= _hardTimeMs
+            || ElapsedMs >= _maxTimeMs
             || _nodes >= _maxNodes)
         {
             _stopped = true;
