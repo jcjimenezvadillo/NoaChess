@@ -27,7 +27,7 @@ public static class Syzygy
     private static readonly Dictionary<ulong, SyzygyTable> WdlByKey = [];
     private static readonly Dictionary<ulong, SyzygyTable> DtzByKey = [];
 
-    /// Largest number of men any loaded table covers. 0 means "no tablebases".
+    // Largest number of men any loaded table covers. 0 means "no tablebases".
     public static int Cardinality { get; private set; }
 
     public static bool Available => Cardinality > 0;
@@ -39,8 +39,8 @@ public static class Syzygy
 
     // ---- Initialisation ----
 
-    /// (Re)loads the tablebase index from a semicolon-separated path list.
-    /// Safe to call repeatedly: a failed or empty path simply disables probing.
+    // (Re)loads the tablebase index from a semicolon-separated path list.
+    // Safe to call repeatedly: a failed or empty path simply disables probing.
     public static void Init(string paths)
     {
         DisposeTables(WdlByKey);
@@ -146,7 +146,7 @@ public static class Syzygy
 
     // ---- Probing ----
 
-    /// Probes WDL. Returns false when the position is not in the tablebases.
+    // Probes WDL. Returns false when the position is not in the tablebases.
     public static bool ProbeWdl(Board board, out WdlScore score)
     {
         score = WdlScore.Draw;
@@ -162,8 +162,8 @@ public static class Syzygy
         return true;
     }
 
-    /// Probes DTZ (plies to the next irreversible move), from the point of view
-    /// of the side to move. Returns false when the position is not covered.
+    // Probes DTZ (plies to the next irreversible move), from the point of view
+    // of the side to move. Returns false when the position is not covered.
     public static bool ProbeDtz(Board board, out int dtz)
     {
         dtz = 0;

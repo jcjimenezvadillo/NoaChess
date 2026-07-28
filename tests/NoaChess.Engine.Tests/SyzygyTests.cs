@@ -245,7 +245,7 @@ public class SyzygyIntegrationTests
             };
 
             // The six-man root is outside the installed subset. Rxa8 reaches a
-            // five-man position with no castling rights, which Stockfish probes
+            // five-man position with no castling rights, which reference probes
             // at depth zero because five is below the configured limit of seven.
             var board = new Board("r3k3/6n1/8/8/8/8/1B6/R3K3 w Q - 0 1");
             engine.FindBestMove(board, depth: 1);

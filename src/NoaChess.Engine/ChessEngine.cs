@@ -15,6 +15,8 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
+    public const string Version = "3.0.0";
+
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
     // Default search depth when no explicit limit is given. v0.2's TT,
@@ -44,19 +46,19 @@ public sealed class ChessEngine
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
 
-    // Active parameter profile (Default/Bullet, see EngineProfile).
-    /// Syzygy probing settings, driven by the UCI options of the same name.
+    // Syzygy probing settings, driven by the UCI options of the same name.
     public int SyzygyProbeLimit { set => _search.SyzygyProbeLimit = value; }
     public int SyzygyProbeDepth { set => _search.SyzygyProbeDepth = value; }
     public bool Syzygy50MoveRule { set => _search.Syzygy50MoveRule = value; }
 
-    /// Positions this search resolved from tablebases (UCI "tbhits").
+    // Positions this search resolved from tablebases (UCI "tbhits").
     public long TbHits => _search.TbHits;
 
-    /// Must be called after the tablebases are (re)loaded: the search caches
-    /// the largest piece count worth probing.
+    // Must be called after the tablebases are (re)loaded: the search caches
+    // the largest piece count worth probing.
     public void RefreshTablebaseLimit() => _search.RefreshTbLimit();
 
+    // Active parameter profile (Default/Bullet, see EngineProfile).
     public Profiles.EngineProfile Profile
     {
         get => _search.Profile;
@@ -84,6 +86,17 @@ public sealed class ChessEngine
         _nnue = new NnueEvaluator(network!);
         if (NnueActive)
             _search.SetEvaluator(_nnue); // Refresh active instance.
+        return true;
+    }
+
+    public bool TryLoadNnueModel(ReadOnlySpan<byte> bytes, out string error)
+    {
+        if (!NnueModelLoader.TryParse(bytes, out NnueNetwork? network, out error))
+            return false;
+
+        _nnue = new NnueEvaluator(network!);
+        if (NnueActive)
+            _search.SetEvaluator(_nnue);
         return true;
     }
 

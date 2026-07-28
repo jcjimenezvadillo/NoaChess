@@ -12,9 +12,10 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // - Capture: additionally -capturedSquare in both perspectives.
 // - Promotion: -pawn(from) +promotedPiece(to).
 // - King move (incl. castling): every feature of the mover's perspective is
-//   king-relative, so that whole perspective is invalidated and lazily
-//   refreshed at the next evaluation. The OTHER perspective only sees the
-//   rook displacement on castling (kings are not features).
+//   king-relative (bucket + horizontal orientation), so that whole perspective
+//   is invalidated and lazily refreshed at the next evaluation. In HalfKA the
+//   king IS a feature, so the OTHER perspective (whose king did not move) is
+//   patched with the king's displacement, plus any capture or castling rook.
 // - Null move: nothing changes but the side to move; the top is duplicated.
 public sealed class NnueAccumulatorStack
 {
@@ -57,24 +58,39 @@ public sealed class NnueAccumulatorStack
 
         if (mover == PieceType.King)
         {
-            // Every feature of our perspective is relative to our king: a
-            // king move rewrites them all. Mark invalid; the next Evaluate
-            // that needs it will refresh from the then-current board.
+            // Our king moved: every feature of our perspective is king-relative
+            // (bucket + horizontal orientation), so the whole perspective is
+            // invalidated; the next Evaluate that needs it refreshes it from
+            // the then-current board.
             child.Valid[(int)us] = false;
 
-            // The opponent's perspective does not contain kings, so it only
-            // changes if the move also captured or displaced a rook (castle).
-            if (move.IsCapture)
+            // The opponent's king did not move, so its perspective stays valid —
+            // but in HalfKA our king IS a feature there. Patch our king's
+            // displacement, plus any capture or the castling rook.
+            if (child.Valid[(int)them])
             {
-                PieceType victim = board.PieceTypeAt(move.To);
-                RemovePiece(child, perspective: them, board, owner: them, victim, move.To);
-            }
-            else if (move.Flag == MoveFlag.KingCastle || move.Flag == MoveFlag.QueenCastle)
-            {
-                (int rookFrom, int rookTo) = move.Flag == MoveFlag.KingCastle
-                    ? (move.To + 1, move.To - 1)
-                    : (move.To - 2, move.To + 1);
-                MovePiece(child, them, board, us, PieceType.Rook, rookFrom, rookTo);
+                int themKing = board.KingSquare(them);
+
+                if (move.IsCapture)
+                {
+                    // King captures are never en passant; the victim sits on To.
+                    PieceType victim = board.PieceTypeAt(move.To);
+                    child.SubtractFeature(_network, them,
+                        NnueFeatureIndex.Index(them, themKing, them, victim, move.To));
+                }
+                else if (move.Flag == MoveFlag.KingCastle || move.Flag == MoveFlag.QueenCastle)
+                {
+                    (int rookFrom, int rookTo) = move.Flag == MoveFlag.KingCastle
+                        ? (move.To + 1, move.To - 1)
+                        : (move.To - 2, move.To + 1);
+                    child.MoveFeature(_network, them,
+                        removeIndex: NnueFeatureIndex.Index(them, themKing, us, PieceType.Rook, rookFrom),
+                        addIndex: NnueFeatureIndex.Index(them, themKing, us, PieceType.Rook, rookTo));
+                }
+
+                child.MoveFeature(_network, them,
+                    removeIndex: NnueFeatureIndex.Index(them, themKing, us, PieceType.King, move.From),
+                    addIndex: NnueFeatureIndex.Index(them, themKing, us, PieceType.King, move.To));
             }
             return;
         }
@@ -101,14 +117,12 @@ public sealed class NnueAccumulatorStack
                     NnueFeatureIndex.Index(perspective, kingSq, them, victim, move.To));
             }
 
-            // The mover leaves its square...
-            child.SubtractFeature(_network, perspective,
-                NnueFeatureIndex.Index(perspective, kingSq, us, mover, move.From));
-
-            // ...and lands (possibly transformed by promotion).
+            // The mover leaves its square and lands (possibly transformed by
+            // promotion) — fused into a single accumulator pass.
             PieceType landed = move.IsPromotion ? move.PromotionPiece : mover;
-            child.AddFeature(_network, perspective,
-                NnueFeatureIndex.Index(perspective, kingSq, us, landed, move.To));
+            child.MoveFeature(_network, perspective,
+                removeIndex: NnueFeatureIndex.Index(perspective, kingSq, us, mover, move.From),
+                addIndex: NnueFeatureIndex.Index(perspective, kingSq, us, landed, move.To));
         }
     }
 
@@ -133,26 +147,4 @@ public sealed class NnueAccumulatorStack
     }
 
     private static readonly Color[] Perspectives = [Color.White, Color.Black];
-
-    private void RemovePiece(NnueAccumulator acc, Color perspective, Board board,
-                             Color owner, PieceType type, int square)
-    {
-        if (!acc.Valid[(int)perspective])
-            return;
-        int kingSq = board.KingSquare(perspective);
-        acc.SubtractFeature(_network, perspective,
-            NnueFeatureIndex.Index(perspective, kingSq, owner, type, square));
-    }
-
-    private void MovePiece(NnueAccumulator acc, Color perspective, Board board,
-                           Color owner, PieceType type, int from, int to)
-    {
-        if (!acc.Valid[(int)perspective])
-            return;
-        int kingSq = board.KingSquare(perspective);
-        acc.SubtractFeature(_network, perspective,
-            NnueFeatureIndex.Index(perspective, kingSq, owner, type, from));
-        acc.AddFeature(_network, perspective,
-            NnueFeatureIndex.Index(perspective, kingSq, owner, type, to));
-    }
 }

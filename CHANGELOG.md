@@ -1,8 +1,128 @@
-﻿# CHANGELOG
+# CHANGELOG
+
+## 2026-07-25 (v3.0.0) — HalfKAv2_hm NNUE: the neural evaluation ships
+
+**Generational self-play net beats the classical evaluator: gen3 +4.5 ±11.4 Elo, 1002-968-680 [0.506] over 2650 games, LOS 77.8%, exhausted positive (tc=10+0.1, elo0=0, elo1=5). LTC gauntlet calibration pending.**
+
+The engine's own neural network now outevaluates the hand-tuned classical evaluation that took the project from v2.4.0 to v2.8.4. This is the milestone the whole classical/search campaign was banked for: the NNUE is trained end-to-end from self-play data the engine labels itself, quantized to integer weights, and run through a SIMD inference path fast enough to beat the classical eval at equal time. It is selectable at runtime (`UseNNUE`) and the shipped executable embeds the current net (`noa-gen3`) as a resource.
+
+### The network
+
+- **HalfKAv2_hm feature transformer (feature_schema_id 2).** InputSize 22528 per perspective: 32 king buckets × 704, where 704 = 11 piece planes × 64 squares. Kings ARE features (both share a plane). King-orientation mirroring folds files a-d onto e-h; Black's perspective is rank-flipped. Topology: FT 22528→128 ×2 perspectives → concatenated 256 → L1 32 → 1 output. Clipped-ReLU activations.
+- **Quantization contract.** Int16 feature-transformer weights, int32 accumulators, QA=255, QB=64, OutputScale=400. Trained in float, exported to integer with documented scales; C#↔Python inference verified bit-exact within the quantization error.
+- **Incremental accumulator.** A per-perspective accumulator pair is pushed and popped with the search stack; `AddFeature`/`SubtractFeature` are vectorized with `Vector<short>`, and a king move triggers a full refresh of the mover's perspective plus an opponent-side patch (kings are features on both sides). A parity gate asserts incremental == full recompute on every position in the suite.
+
+### SIMD inference
+
+- **AVX2 path** via `Vector<short>` VPMADDWD for the L1 matmul, with the clipped activation precomputed once per evaluation (was re-clipped per L1 output) and a fused single-pass `MoveFeature`. Measured **312k → 446k NPS** on the accumulator-hot path, taking NNUE from ~46% to ~66% of the classical evaluator's speed — fast enough that a wider net is counterproductive at real time controls, so the shipped net stays 128×32.
+
+### Datagen and training
+
+- **`NoaChess.DataGen`** self-plays node-limited searches and labels each position with `lambda·sigmoid(score/SCALE) + (1−lambda)·wdl(result)`. Resign (`--resign`) and draw (`--drawscore`/`--drawcount`) adjudication plus a ply cap (`--maxplies`) stop dead games instead of shuffling to the cap. Binary `.noadata` format with a magic header and schema validation. (Syzygy WDL relabeling of ≤6-man positions is planned but not yet wired into datagen.)
+- **Training pipeline** (`tools/training/nnue/`): `train_nnue.py` (cosine LR, weight decay, CUDA), `validate_nnue.py` (corr/slope/RMS/sign diagnostics), `export_model.py` (float → quantized `.noannue`). Net width is parametrized (`--ft-out`/`--l1-out`); the C# loader reads dimensions from the header, so architecture sweeps need zero C# changes.
+
+### Critical datagen bug fixed (AlphaBetaSearch.cs)
+
+`FindBestMove` returned `SearchResult.Score = 0` whenever a node-limited search hard-stopped during the first root move of an unfinished iteration, **zeroing 57% of all datagen labels** (a queen-up position could be labeled 0.0). The fix keeps the last completed iteration's result on a hard stop and uses the partial first-move score only when no iteration finished at all. Invisible to game play — UCI reports its score from completed-iteration progress callbacks and plays the same TT-first move; only the returned `.Score`, which datagen consumes directly, was wrong. Verified: **57.6% → 2.1% zero labels** on a fresh 2000-game dataset (the residual 2.1% are genuine repetition/dead-position draws), move selection provably unchanged.
+
+### Generational self-play
+
+A first-generation imitation net learns the classical eval well (corr 0.97) but still loses, because it plays its own games into positions it never trained on — classic distribution shift. The fix is generational: each promoted net teaches the next generation's datagen. **gen2: +1.9 Elo vs classical (H1). gen3: +4.5 ±11.4 Elo, exhausted positive at 2650 games (LOS 77.8%).** The pipeline is automated end to end (datagen → train → validate → export → embed → publish → SPRT → auto-promote).
+
+### Verification
+
+- **276/276 tests green**, including the incremental/full-recompute accumulator parity gate and the frozen golden feature indices. The datagen fix carries 205/205 engine tests with move selection unchanged.
+
+## 2026-07-23 (v2.8.4) — LMR ttCapture and ttPv adjusters on the fixed-point pipeline
+
+**SPRT vs v2.8.3 (tc=10+0.1, elo0=0, elo1=10): exhausted positive at 3000 games — 851-772-1377 [0.513], +9.2 ±9.1 Elo, LOS 97.5%, LLR 1.91. LTC gauntlet pending.**
+
+The v2.8.3 fixed-point LMR pipeline (1024ths of a ply, verified behaviour-neutral) created the precision needed to port individual reduction adjusters from reference engines without integer truncation swamping the signal. This release carries the two adjusters that survived individual screens at the real time control: **ttCapture** (reduce more when the TT move was a capture) and **ttPv** (reduce less at nodes that were on a previous PV). Each was screened individually against the running bundle (+7.1 and +7.5 Elo respectively at LOS >93%), then validated together against the shipped v2.8.3 baseline.
+
+### Changes
+
+- **ttCapture LMR adjuster.** When the TT move is a capture or promotion, late quiets are reduced by an additional ~1 ply (`r += 1079` in 1024ths): the position has a forcing continuation in the TT, so quiets on this node are relatively less interesting. Gated on `ttServed` so the flag is only set when the TT actually delivered the move. Screened +7.1 ±9.1 Elo, LOS 93.7%.
+- **ttPv LMR adjuster.** When the TT entry's `ttPv` flag is set (the node was on a previous search's principal variation), late quiets are reduced by ~1 ply less: `r -= 1024 + (nonPv ? 0 : 340)`, plus two small TT-hit sub-terms (`r -= 300` if the TT score beats alpha; `r -= 277` if the TT depth covers the current depth). Scaled ~×0.34 from the reference magnitude to keep the base at ~1 ply rather than ~3 (which would floor the milder reductions to zero). Screened +7.5 ±9.0 Elo, LOS 94.9%.
+- **cutNode threaded through Negamax (behaviour-neutral).** The expected-cut-node flag is now propagated correctly through all recursive calls (root, PV, LMR scout/re-search, null-move, ProbCut, singular). The isolated `cutNode` LMR adjuster was measured at both magnitudes on the fixed-point pipeline and rejected (−4.0 H0 at r+=4026; −7.1 H0 at r+=1536). Threading KEPT as a behaviour-neutral correctness change (consumed by ProbCut verification).
+- **ContinuationHistory MaxScore 8192 (correctness fix).** The continuation-history table's gravity bound was 2²⁰ (inert — measured flat +4.1 ±9.1). Correctly sized at 8192, matching the operating range of the table. Behaviour-neutral in practice.
+- **Dead LMR history term removed.** The `clamp(history/16384, -2, 2)` butterfly-history adjuster was always zero (butterfly is bounded at 7183, so `7183/16384 = 0` in integer division). Three variants of direct butterfly-history adjustment were measured and all rejected: statScore −18 Elo H0, symmetric clamp −4.8 ±11.4 H0, one-sided add-only +4.2 ±9.1 flat. The line is closed.
+
+### New lesson: signal quality predicts LMR adjuster success
+
+**Signal quality, not reduction direction, determines whether an LMR adjuster works.** Both winning adjusters use clean categorical signals (TT move IS a capture? node WAS on a PV?) and work regardless of whether they add or remove reduction. Both losing signals were noisy: our derived cut-node classification and raw butterfly-history magnitude (skewed distribution, mean +71.8 against median −8). Prefer future adjusters keyed on clean categorical facts.
+
+### Verification
+
+- **276/276 tests green** (71 Core + 205 Engine). The two pre-existing intermittent failures (Syzygy DTZ NullReferenceException and EvalSymmetry colour-symmetry assertion) are unchanged and pass in isolation.
+
+## 2026-07-23 (v2.8.3) — working history gravity, and the fixed-point LMR pipeline
+
+**SPRT vs v2.8.2 (tc=10+0.1, elo0=0, elo1=10): 241-183-411 [0.535] at 835 games, +24.4 ±17.5 Elo — the interval excludes zero, but read the caveat.** The run was stopped by hand at 840 games with **LLR 2.61 against an upper bound of 2.94**, so this is **NOT a formally accepted H1**: cutting a sequential test at a favourable moment is exactly what the stopping rule exists to prevent, and it inflates the false-positive rate by an amount this entry cannot quantify. It is reported as a strong point estimate backed by a second instrument, not as a passed test. **Calibrated LTC gauntlet: 624 games, 65.6%, +112 ±24 relative to the field** against v2.8.2's +94 ±23 — the same direction, though the +18 difference sits inside the ±33 the two gauntlets jointly carry.
+
+### The defect
+
+`ContinuationHistory` was given "bounded gravity updates" in v2.8.2 and the release notes credited part of its +28.0 Elo to them. **That update never did anything.** Its decay term is `score × |bonus| / MaxScore`; with `MaxScore = 2²⁰` against entries that live near 7 000 and depth² bonuses near 169, the expression evaluates to `6086 × 169 / 1048576 ≈ 0.98`, which integer-truncates to **zero** on every realistic update. Confirmed twice — by the arithmetic, and by applying the identical rule to the butterfly table at the same bound and watching its distribution fail to move (mean 71.7 against 71.8). **A gravity bound has to BE the operating range**, which is why the reference sizes its butterfly table at 7183 and its continuation tables at 30000, just above where the values actually sit.
+
+The consequence was visible in the data. `HistoryTable` grew with a global halving rescale on the positive rail while clamping individually on the negative one, so its signed distribution came out badly skewed: **mean +71.8 against a median of −8, only 25% of entries positive, and a tail reaching 6086**. Any consumer reading the raw value saw a handful of moves dominate everything.
+
+### Changes
+
+- **`HistoryTable` gravity, bound at 7183.** `score += bonus - score×|bonus|/MaxScore`, with the bonus clamped to the same rail exactly as the reference does. Remeasured after the change: **mean +71.8 → +13.5, p99 2840 → 1628, max 6086 → 3134** — the bias falls 5.3× and the tail halves. This is not only an LMR concern: `MovePicker` reads this table directly to order quiet moves, so the long positive tail was distorting the ordering too.
+- **LMR pipeline converted to fixed point (1024ths of a ply).** The reference keeps its whole reduction in fixed point and divides only at the point of use, because every one of its adjusters is a *fraction* of a ply; NoaChess accumulated in whole plies and its table truncated at build time, making each ±1 adjuster three to ten times too coarse. **Verified behaviour-neutral** — identical node counts to v2.8.2 across six positions, since `floor(a)+k == floor(a+k)` for integer k — so it contributes nothing to the measurement above and exists to let the adjuster suite be ported at native granularity later.
+
+### Measured and rejected on the way
+
+- **statScore as the LMR history term: 47.4%, LLR −1.85, about −18 Elo, H0.** This closes a real evidence gap: block 5C cut it on a 1000-game 5+0.05 match, a control this project's own golden lesson calls unable to predict the sign at 10+0.1 — V-b had already demonstrated the inversion, going +17.4 there and −10.8 at the real control. The cut now rests on valid evidence. **Root cause: the skew above.** Subtracting an uncentred statistic does not discriminate between good and bad quiet moves; it exempts a few moves from reduction over and over through the tree, which measured as 15-20% more nodes and, at a fixed time control, cost about the Elo observed.
+- **New golden lesson — formula fidelity is not semantic fidelity.** The reference consumes its statistic raw in LMR because its tables are gravity-bounded and symmetric, so it is centred near zero. Copying "use the raw value" onto a skewed table imports a bias the reference does not have. Before porting a consumer, measure the *distribution* of what it reads, not just its magnitude.
+- **Node counts cannot calibrate a pruning parameter.** A divisor sweep returned +19.2 / +1.2 / +24.9 / +23.7 / −1.2 percent with searches verified deterministic — genuine chaos, not measurement noise.
+
+### Also corrected in the documentation
+
+The v2.8.2 entry's gravity claim, the v2.8.1 field range (2680–3150, not 2680–3120), the block-5C summary that described all five candidates as measured at the real control when two were not, a `RookOnKingRing` row reading MISSING for a term implemented in v2.6.3, a stale `PARTIAL (v2.7.4)` on capture history that reached the main search in v2.8.1, a "check bonus pending" note for a bonus shipped in v2.8.1, a razoring row carrying no status at all, block 9's implementation section describing a Fathom P/Invoke that was never built, and the outdated statScore formula that nearly caused a bad port. **King Safety Phase B and KingProtector were moved behind block 6 (NNUE)** in all four documents.
+
+### Verification
+
+- **276/276 tests green** (71 Core + 205 Engine). `PartialQuietSort_OrdersOnlyMovesAboveDepthCutoff` needed updating: it drove the table with `depth: 100/200`, producing bonuses of 10 000 and 40 000 that now clamp to the same rail and tie. Rewritten with depths inside the bound; passes 5/5 in isolation.
+- **Known coupling, deliberately left alone** to keep this to one measured change: the partial quiet sort cutoff is `−3000×depth`, and with history bounded at ±7183 that cutoff is no longer reachable from history alone at depth 3 or more. Continuation history and the threat terms (up to ±20 000) still reach it, so the optimisation is not dead, but it fires less often.
+- **Two intermittent test failures remain**, unrelated to this release and both pre-existing: a `NullReferenceException` in the Syzygy DTZ probe and a colour-symmetry assertion, each firing roughly one run in five. Diagnosis points at shared static state observed across test classes that xUnit runs in parallel. In real play `Syzygy.Init` is called once from `UciLoop`, so this is a test-harness problem rather than a game risk.
+
+## 2026-07-22 (v2.8.2) — validated search audit, correction history, ProbCut verification, UCI log hardening
+
+**SPRT vs v2.8.1 (tc=10+0.1, elo0=0, elo1=10): H1 accepted at 834 games, 256-189-389 [54.0%], +28.0 ±17.2 Elo, LOS 99.9%, LLR 2.99. Calibrated LTC gauntlet: 296-131-197 [63.2%] over 624 games, +94 ±23 relative to the field, ~3013 ±30 CCRL.** Repeated 8-ply openings and reversed colors. The absolute estimate is 3010 from the literal engine labels and 3013 after applying the existing 2548-game field calibration. Component tests below are diagnostic and must not be added as if independent Elo gains.
+
+### Search and evaluation
+
+- **Pawn correction history:** a side-to-move × pawn-Zobrist table learns the residual between searched scores and the classical static evaluation. The corrected value feeds improving, forward pruning and quiescence stand-pat; the raw evaluator value remains in the TT so a learned local bias is never persisted as position truth. Updates are bounded, depth-weighted and restricted to quiet, bound-consistent, non-tablebase conclusions. It was introduced in two isolated steps: main-search correction **49-33-118, +27.9 ±30.8 Elo**, then quiescence correction **59-49-92, +17.4 ±35.5 Elo**. An isolation build with correction completely disabled trended worse (**96-119-181 [47.1%], approximately -20 ±25 Elo at 396 games**) and was stopped; correction therefore remains in the H1-winning final build.
+- **ProbCut rework:** entry from depth 3, improving-aware margin and verification depth, SEE threshold tied to the gap between static eval and `probBeta`, mandatory regular-search verification of at least one ply, lower-bound TT storage, fail-soft return outside mate/TB bands, and small ProbCut from a sufficiently deep TT lower bound. Isolated A/B: **59-51-90, 52.0%, +13.9 ±35.8 Elo, LOS 77.7%**. Queen promotions are explicitly exempt from the gap-based SEE gate because the simplified SEE does not model the promoted piece; a regression found in review is covered by quiet- and capture-promotion tests.
+- **Aspiration final form:** the SPRT winner retains the fixed profile half-window. The experimental adaptive initial window was removed after it increased re-search cost at 10+0.1. The fail-low beta recentering remains.
+- **Proven refutation bands retained:** the experiment that demoted killer and counter moves to small continuous bonuses was removed; the final H1 build keeps the 3.0M/2.9M bands.
+- **Continuation-history "gravity" — CORRECTION (2026-07-23).** This entry originally credited the H1 result in part to putting continuation history on bounded gravity updates instead of the ±2²⁰ clamp. **That claim is wrong: the update as shipped is numerically inert.** Its decay term is `score × |bonus| / MaxScore`, and with `MaxScore = 2²⁰` against values that live near 7 000 and depth² bonuses near 169, the expression is `6086 × 169 / 1048576 ≈ 0.98`, which integer-truncates to **zero** on every realistic update. Verified empirically as well: applying the identical rule to the butterfly table at the same bound left its distribution unchanged to one decimal (mean 71.7 against 71.8). The bound has to BE the operating range for gravity to act — the reference sizes its butterfly table at 7183 and its continuation tables at 30000, just above where the values actually sit. **The +28.0 Elo H1 therefore came from the rest of this bundle, not from gravity.** A candidate that fixes the bound is being measured separately.
+- **No unconditional check extension:** the speculative `inCheck => depth+1` experiment was removed. It was absent from the measured v2.8.1 artifact, cost depth at short time controls and had no significant isolated evidence.
+
+### UCI reliability and logging
+
+- `NOACHESS_DEBUG_LOG` no longer activates logging. This prevents an inherited user/machine variable from silently creating the same unbounded file in Arena, lichess-bot and test processes.
+- `Debug Log File` remains available explicitly. Opening is transactional; an invalid replacement path leaves the current writer intact. Setting it to `<empty>` closes and unlocks the file immediately. Quit/EOF close it in `finally`; write/dispose failures disable diagnostics instead of terminating the UCI loop.
+- Clean `quit` and unexpected stdin EOF are logged as distinct termination causes.
+
+### Rejected during the audit
+
+- The complete historical 5H package (adaptive aspiration plus razoring) scored **41-56-103, -26.1 ±33.6 Elo, LOS 6.4%**. Bisection showed aspiration positive, therefore razoring was removed.
+- The first all-features candidate (correction + adaptive initial aspiration + unconditional check extension + continuous killer/counter bonuses) failed the formal SPRT: **291-333-491 [48.12%], -13.1 ±15.2 Elo, H0 at 1115 games**. Short component A/B figures had all included zero and did not predict their interaction.
+- Removing correction alone did not rescue it (**47.1% at 396 games**). The successful RC2 kept correction while removing adaptive initial aspiration, unconditional check extension and continuous killer/counter ordering; it passed H1 as reported above.
+- Dynamic null-move R and multi-cut were not merged: their archived failures are structural, not missing syntax. The former needs the reference `cutNode`/eval-gate ecosystem; the latter repeatedly loses tactical accuracy. No NNUE, SMP or other future-roadmap work was introduced.
+
+### Verification
+
+- **276/276 tests green** (71 Core + 205 Engine), including 8 new cases: pawn-correction residual/clear and side-to-move separation, continuation-gravity bound-and-recover, three debug-log lifecycle regressions (`<empty>` closes and unlocks, invalid switch preserves the active log, clean `quit` differs from EOF), and quiet/capture queen promotions bypassing the ProbCut SEE gate. Counting basis: 276 is the full discovered suite with the local tablebase set present. Earlier entries are not on the same basis — v2.8.1's "193/193" counted only the tests that executed while the Syzygy files were absent and the gated cases skipped; the discovered suite at v2.8.1 was 268.
+- **Final RC2-corr SPRT vs frozen v2.8.1:** **256-189-389, 54.0%, +28.0 ±17.2 Elo, H1 accepted at 834 games**.
+- **Final LTC gauntlet (tc=60+0.6):** **296-131-197, 63.2%, +94 ±23 relative to the field, ~3013 ±30 CCRL**. The 13 fixed-label anchors give 3010 ±30; replacing their labels with the ratings inferred by the prior 2548-game all-play-all calibration gives 3013 ±30. The existing calibration confirms `Winter-3120`; all other field labels remain within normal uncertainty, with `Rubichess-3150` still only on watch (calibrated near 3108).
+- **Provenance of the measured binary.** The published executable answers `id name NoaChess 2.8.2-RC2-corr`, not `2.8.2`: it was built from the RC2 source before `EngineVersion` was set back. Both numbers above, and the copy deployed to the Lichess bot, describe that binary — byte-identical across `engines\NoaChess-2.8.2\` and the bot's engine folder, verified by hash. The difference from the committed tree is believed to be the version string alone, but it was never rebuilt from the commit, so the strict statement is that ~3013 CCRL measures the RC2-corr artifact. Recorded because the same class of gap — a published number describing a binary that is not the committed code — already cost an investigation with commit `5616060`.
+- Syzygy and ponder remain operational and independently verified in lichess-bot logs; this release does not alter their probe protocol.
 
 ## 2026-07-20 (v2.8.1) — Syzygy correctness fixes, capture-history main ordering, partial quiet sort, threat-aware quiet scoring, NNUE/tuner tools infrastructure
 
-**SPRT vs v2.7.4 (tc 10+0.1, elo0=0 elo1=10): +14.1 ±10.8 Elo, LOS 99.5%, H1 accepted at 2175 games [0.520], DrawRatio 45.3%. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3120): +75 ±23 relative to the field (+23 over v2.7.4's +52 on the same field). Strength: ~3000 ±25 CCRL.** Field audit (round-robin 2548 games, 14 engines, tc=60+0.6): **Winter-3200 renamed to 3120** (implied 3118, 2.4σ, confirmed in both gauntlet and round-robin equal to Rubichess-3150). **Rubichess-3150 on watch** (implied 3113, 1.1σ — one more run decides). **Meltdown-2817 cleared** (implied 2822, essentially correct). Tcheran-2917, Ethereal-2910, Colossus-2862 verified to within ≤3 Elo of their labels.
+**SPRT vs v2.7.4 (tc 10+0.1, elo0=0 elo1=10): +14.1 ±10.8 Elo, LOS 99.5%, H1 accepted at 2175 games [0.520], DrawRatio 45.3%. LTC gauntlet (tc=60+0.6, 624 games, 13 anchors 2680–3150): +75 ±23 relative to the field (+23 over v2.7.4's +52 on the same field). Strength: ~3000 ±25 CCRL.** Field audit (round-robin 2548 games, 14 engines, tc=60+0.6): **Winter-3200 renamed to 3120** (implied 3118, 2.4σ, confirmed in both gauntlet and round-robin equal to Rubichess-3150). **Rubichess-3150 on watch** (implied 3113, 1.1σ — one more run decides). **Meltdown-2817 cleared** (implied 2822, essentially correct). Tcheran-2917, Ethereal-2910, Colossus-2862 verified to within ≤3 Elo of their labels.
 
 Expert contributor review of the v2.8.0 Syzygy integration found two critical bugs that corrupted every tablebase-assisted game, plus several move-ordering improvements from block 5G that were left pending.
 
@@ -105,7 +225,7 @@ Pulled ahead of NNUE deliberately, following the reference's own order (Syzygy 2
 
 - **5F ProbCut** — reference shape (entry at depth 3, any node type) +16.3% nodes; with our validated conservative entry (non-PV, depth ≥ 5) +7.3%; with a flat depth−4 verification +11.2%, so the reference's improving-aware verification depth is genuinely better than ours; with the SEE threshold floored at 0, +5.0%. That last one is a real finding: the reference's threshold `probCutBeta − staticEval` goes NEGATIVE once the static eval already clears the bar, so every losing capture passes the filter and each one costs a quiescence plus a verification search. Even so, no variant beat the baseline, and WAC 269 vs 266 is inside the ±5 noise band, so there is no nodes-for-accuracy trade. The `probCutDepth` floor at 1 (no cutoff may rest on quiescence alone) is applied throughout and is the fix for the earlier −90 Elo.
 - **Multi-cut** — returning the verification score when it reaches beta with the TT move excluded. WAC 248 vs 266, eighteen points down. In 5E the same test measured 265 → 245; after the quiescence fix it is 266 → 248, essentially unchanged. Unsound on our search in its own right.
-- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated Stockfish**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
+- **NMP dynamic R** — two findings, and the first is an error worth recording. The formula was ported as `min((eval−beta)/81, 7) + depth/3 + 4` **from this project's own 5B notes, which quote an outdated revision of the reference engine**; the source on disk reads `Depth R = 7 + depth/3`, with no eval term at all. Second and more important: the reference gates its null move on `cutNode && staticEval >= beta − 13×depth − 47×improving + 365`. Its deep R is safe **because** it only fires at expected-cut nodes behind an eval gate, while ours fires everywhere ungated — deliberately, since 5B measured that gate inflating our tree ~30% (our classical eval is noisy relative to the search). So the blocker was the entry ecosystem, not the quiescence.
 - The bench signature was the usual trap: −11.9% nodes and −17% wall time meant **more pruning, not better search**, and WAC cannot see unsound prunes. Node counts falling is not by itself evidence of improvement.
 - Branches `exp-probcut`, `exp-multicut` and `exp-nmpr` keep the code and the numbers in their commit messages. Not merged.
 
@@ -146,7 +266,7 @@ Every capture that gives check lands the opponent in exactly that node, so the h
 
 ## 2026-07-19 (blocks 5E + 5G, the v2.7.3 campaign) — MEASURED AND CUT, NO RELEASE
 
-**The v2.7.3 slot closes with no release: both candidate blocks measured at the real time control and cut per the project decision rule. The engine stays at v2.7.2 exactly; the next release will be v2.7.4. Everything below is archived for the pre-NNUE review pass.**
+**The v2.7.3 slot closes with no release: both candidate blocks measured at the real time control and cut per the project decision rule. The engine stays at v2.7.2 exactly; the next release will be v2.7.4. Everything below is archived.**
 
 **5E — singular extensions upgrade: four SPRTs at 10+0.1, all negative.**
 
@@ -168,7 +288,7 @@ Root cause: the reference's extensions are only stable next to reference-grade r
 | 3 | + blend gated to depth ≥ 6 | [0.496] at ~1900g, stopped |
 | 4 | + gravity updates (`entry += bonus − entry·|bonus|/2^20`) | **−4.2 ± 10.9**, H0 at 2000g [0.494] |
 
-Real defects found and fixed along the way (the fixes are proven and stay in the archive, ready for the revisit):
+Real defects found and fixed along the way (the fixes are proven and stay in the archive):
 
 - A single shared table CORRUPTS the levels: a bonus written for "the move two plies ago" lands on the very key another node reads as "one ply ago". With separate tables, a control build reading only level 0 reproduces v2.7.2 **bit-for-bit**; with the shared table the same control diverged −52%/+17% per position.
 - The blend must never reach statScore: reverse futility's thresholds (offset 1250, divisor 180, the measured ×0.28 transfer) describe a one-level signal; feeding them the blend re-tunes the pruning silently (attempt 1's real failure mode).
@@ -207,7 +327,7 @@ After 5B and 5C proved that reference HEURISTIC constants do not transfer withou
 **Lessons (added to the golden rules):**
 
 - Depth benches and WAC CANNOT green-light a search change: the conservative rebuild had −23% nodes, WAC 263/300 (best profile ever measured) and equal NPS — and lost 25 Elo in play. Only games at the REAL time control validate search heuristics; hyperfast (5+0.05) matches can invert sign vs 10+0.1.
-- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle. → revisit only after the TT block (ttPv/static-eval — DONE as 5D/v2.7.2 hours later) and 5G (history rework), if at all.
+- The reference's LMR adjuster suite presupposes its ecosystem (reduce-from-move-2 including captures, TT static eval + ttPv flag, checking qsearch, its history-table dynamics). Ported onto our validated quiet-only LMR, every subset loses. Same class of failure as 5B's NMP bundle: the reference search suite does not transfer to this classical engine.
 - The ply−2/ply−4 continuation-history contexts genuinely never existed (single-parity keys — found by a probe reading exact zeros) and the fix is implemented and archived, but with our depth² tables feeding pruning margins it measures −10.8 at STC: parked with its measurements until 5G reworks the history update rule (reference-style bonus/gravity), which is what makes those reads trustworthy.
 - ttPv −2 via a PvNode proxy explodes the PV subtree +220% when stacked with the PvNode depth discount — the real thing needs the TT flag (5F).
 
@@ -229,7 +349,7 @@ What ships (on top of the untouched, validated NMP entry and R):
 - search: NMP verification search at depth >= 14 — a null cutoff at high depth is re-proven by a real reduced search on the same position, with null moves disabled for the verifying side until `nmpMinPly = ply + 3(depth−R)/4` (reference nmpMinPly/nmpColor); zugzwang-proof pinned on Fine 70.
 - search: NMP fail-soft — a passing null returns `nullScore` (bounded away from mate range) instead of the old hard `beta`; mate-range null scores still fall through to the real search (forced mates stay visible at their natural depth).
 - search: improvement value — per-ply eval delta with the reference's ply−4 fallback after checks; the cold default stays STRICT (not improving), see lessons.
-- eval: `Winnable.Apply` overload reports the position complexity (initiative magnitude, cp, >= 0) via `IComplexityEvaluator` — plumbing kept for the 5H time-management complexity factor and the eventual NMP revisit.
+- eval: `Winnable.Apply` overload reports the position complexity (initiative magnitude, cp, >= 0) via `IComplexityEvaluator` — plumbing kept for the 5H time-management complexity factor.
 
 **Deferred by measurement — the reference NMP presumes three ecosystem pieces we don't have yet.** The full reference bundle (entry gated on `staticEval >= beta − 10d − improvement/13 + 112 + complexity/25`, statScore skip, deep `R = min((eval−beta)/81,7) + depth/3 + 4`, capture futility, lmrDepth quiet futility) was implemented faithfully, unit-rescaled and bisected against WAC-300 + node benches across seven builds:
 
@@ -572,5 +692,3 @@ Time management (reference port, replaces the v2.6.4 scheduler):
 - infra: added CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md (bilingual).
 - infra: added .gitignore (Dotnet).
 - doc: initial roadmap and project structure defined in README.
-
-
