@@ -133,11 +133,14 @@ public class CaptureHistoryTests
         Move lowWorst = new(Sq("b2"), Sq("b3"), MoveFlag.Quiet);
         Move highest = new(Sq("c2"), Sq("c3"), MoveFlag.Quiet);
         Move lowBetter = new(Sq("d2"), Sq("d3"), MoveFlag.Quiet);
+        // Depths chosen so every bonus stays inside the table's gravity bound
+        // of 7183. The previous depths of 100/200 produced bonuses of 10,000
+        // and 40,000, which now both clamp to the same rail and tie.
         var history = new HistoryTable();
-        history.AddBonus(Color.White, high, depth: 100);       // +10,000
-        history.AddMalus(Color.White, lowWorst, depth: 200);   // -40,000
-        history.AddBonus(Color.White, highest, depth: 200);    // +40,000
-        history.AddMalus(Color.White, lowBetter, depth: 100);  // -10,000
+        history.AddBonus(Color.White, high, depth: 40);        // +1,600
+        history.AddMalus(Color.White, lowWorst, depth: 80);    // -6,400
+        history.AddBonus(Color.White, highest, depth: 70);     // +4,900
+        history.AddMalus(Color.White, lowBetter, depth: 60);   // -3,600
 
         var moves = new MoveList();
         moves.Add(high);
@@ -145,13 +148,17 @@ public class CaptureHistoryTests
         moves.Add(highest);
         moves.Add(lowBetter);
 
-        // At depth 3 the cutoff is -9,000. The two positive moves form a
-        // sorted prefix; the tail stays deliberately unsorted (-40k, -10k).
+        // At depth 1 the cutoff is -3,000. The two positive moves form a
+        // sorted prefix; the tail stays deliberately unsorted (-6,400, -3,600).
+        // Depth 3 no longer works here: its -9,000 cutoff sits outside the
+        // +/-7,183 the history table can now reach, so nothing from history
+        // alone can fall below it (continuation history and the threat terms
+        // still can, which is why the optimisation is not dead in real play).
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 0, sortFrom: 0, board,
             new KillerTable(1), history, ply: 0,
             contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
-            depth: 3);
+            depth: 1);
 
         Assert.Equal(highest, moves[0]);
         Assert.Equal(high, moves[1]);

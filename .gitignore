@@ -78,7 +78,18 @@ tools/training/nnue/checkpoints/
 /overnight_training_nnue_run4.bat
 /overnight_training.bat
 /models/nnue/
+/tools/training/nnue/__pycache__/
+# Embedded net copy: derived from models/nnue via the pipeline, regenerated
+# every run; the csproj embeds it only when present (Exists condition).
+/src/NoaChess.UCI/Resources/noa-embedded.noannue
 /ROADMAP.md
 /ROADMAP.html
 /out/NoaChess.UCI.exe
-/out/NoaChess.UCI.exe
+/tools/training/nnue/__pycache__/dataset.cpython-313.pyc
+/tools/training/nnue/__pycache__/export_model.cpython-313.pyc
+/tools/training/nnue/__pycache__/lambda_sweep_export.cpython-313.pyc
+/tools/training/nnue/__pycache__/lambda_sweep_match.cpython-313.pyc
+/tools/training/nnue/__pycache__/lambda_sweep_train.cpython-313.pyc
+/tools/training/nnue/__pycache__/model.cpython-313.pyc
+/tools/training/nnue/__pycache__/train_nnue.cpython-313.pyc
+/tools/training/nnue/__pycache__/validate_nnue.cpython-313.pyc

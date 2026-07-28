@@ -18,10 +18,8 @@ namespace NoaChess.Engine.Heuristics;
 //      but occasionally a sacrifice, so they cannot be skipped entirely here.
 public static class MovePicker
 {
-    // Score bands. They only need to keep the categories apart; the exact
-    // numbers are irrelevant as long as the bands never overlap. History is
-    // explicitly clamped below the counter-move band to guarantee that; its
-    // floor (two maluses of -2^20) stays above the losing-capture band.
+    // Score bands. History is explicitly clamped below the counter-move band;
+    // preserving these refutation stages won the final v2.8.2 SPRT.
     private const int TTMoveScore = 10_000_000;
     private const int GoodCaptureBase = 5_000_000;
     private const int PromotionBase = 4_000_000;
@@ -279,7 +277,6 @@ public static class MovePicker
 
         if (move == counterMove)
             return CounterMoveScore;
-
         int quietScore = history.Get(board.SideToMove, move);
         if (contHist is not null && prevPiece >= 0)
         {

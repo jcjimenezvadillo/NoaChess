@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine;
 using NoaChess.Engine.Profiles;
@@ -23,7 +23,7 @@ public sealed class UciLoop
 {
     // Single source of truth for the engine identity (banner + "id" reply).
     public const string EngineName = "NoaChess";
-    public const string EngineVersion = "2.8.1";
+    public const string EngineVersion = ChessEngine.Version;
     public const string EngineAuthor = "Juan Carlos Jimenez Vadillo";
 
     private readonly TextReader _input;
@@ -31,16 +31,17 @@ public sealed class UciLoop
     private readonly ChessEngine _engine = new();
     private readonly UciOptions _options = new();
 
-    // UCI traffic log ("Debug Log File" option or NOACHESS_DEBUG_LOG env
-    // var): every stdin line ("<<"), every stdout line (">>") and the stdin
-    // EOF, timestamped. The only way to see what a GUI actually sends when it
-    // misbehaves (Arena's engine-frozen-after-new-game reports).
+    // Optional UCI traffic log ("Debug Log File"): every stdin line ("<<"),
+    // every stdout line (">>") and the stdin EOF, timestamped. It is never
+    // enabled by an environment variable, so an inherited machine setting
+    // cannot silently create an unbounded log in Arena or lichess-bot.
     private StreamWriter? _log;
     private readonly Lock _logLock = new();
 
     private Board _board = new();
     private CancellationTokenSource? _searchCts;
     private Task? _searchTask;
+    private bool _embeddedNnueChecked;
 
     // Pondering state: while thinking on the opponent's time, the original
     // "go ponder ..." tokens are kept so a "ponderhit" can relaunch the same
@@ -60,40 +61,103 @@ public sealed class UciLoop
         _input = input;
         // The search task and the command loop both write here.
         _output = TextWriter.Synchronized(output);
-        if (Environment.GetEnvironmentVariable("NOACHESS_DEBUG_LOG") is string path
-            && path.Length > 0)
-            OpenLog(path);
+
     }
 
-    // Opens (or switches) the traffic log and tees stdout through it. Never
-    // throws: a bad path just reports and leaves logging off.
+    // Loads the .noannue model compiled into the exe as an embedded resource
+    // (LogicalName "noa-embedded.noannue"). Called on the first "isready" only
+    // when EvalFile has not been set by the GUI. If the resource is absent the
+    // method is a no-op (pre-training builds ship without a model).
+    private void TryLoadEmbeddedNnue()
+    {
+        using Stream? stream = typeof(UciLoop).Assembly
+                                              .GetManifestResourceStream("noa-embedded.noannue");
+        if (stream is null) return;
+
+        byte[] bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        if (_engine.TryLoadNnueModel(bytes.AsSpan(), out string error))
+        {
+            _output.WriteLine($"info string NNUE embedded model loaded ({_engine.NnueModelSha256})");
+            // Auto-enable unless the GUI sent "setoption name UseNNUE value false" first.
+            if (!_options.UseNnueExplicitlySet || _options.UseNnue)
+                _engine.SetUseNnue(true);
+        }
+        else
+        {
+            _output.WriteLine($"info string embedded NNUE model rejected: {error}");
+        }
+    }
+
+    // Opens (or switches) the traffic log and tees stdout through it. The new
+    // writer is opened before replacing the old one, so a bad path cannot leave
+    // _log pointing at a disposed writer.
     private void OpenLog(string path)
     {
+        StreamWriter? next = null;
         try
         {
+            next = new StreamWriter(File.Open(path, FileMode.Append, FileAccess.Write,
+                                              FileShare.ReadWrite))
+            { AutoFlush = true };
+            next.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] === log opened (pid {Environment.ProcessId}, {EngineName} {EngineVersion}) ===");
+
             lock (_logLock)
             {
-                _log?.Dispose();
-                _log = new StreamWriter(File.Open(path, FileMode.Append, FileAccess.Write,
-                                                  FileShare.ReadWrite))
-                { AutoFlush = true };
-                _log.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] === log opened (pid {Environment.ProcessId}, {EngineName} {EngineVersion}) ===");
+                StreamWriter? previous = _log;
+                _log = next;
+                next = null;
+                try { previous?.Dispose(); }
+                catch { /* Logging must never break the UCI loop. */ }
             }
+
             if (_output is not TeeWriter)
                 _output = new TeeWriter(_output, this);
         }
         catch (Exception ex)
         {
+            try { next?.Dispose(); }
+            catch { /* Best effort only. */ }
             _output.WriteLine($"info string debug log rejected: {ex.Message}");
         }
     }
 
+    private void CloseLog()
+    {
+        StreamWriter? current;
+        lock (_logLock)
+        {
+            current = _log;
+            _log = null;
+        }
+
+        if (current is null)
+            return;
+
+        try { current.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] === log closed ==="); }
+        catch { /* Best effort only. */ }
+        try { current.Dispose(); }
+        catch { /* Best effort only. */ }
+    }
     private void LogLine(string direction, string text)
     {
         lock (_logLock)
-            _log?.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {direction} {text}");
+        {
+            try
+            {
+                _log?.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {direction} {text}");
+            }
+            catch
+            {
+                // A full disk, disconnected drive or revoked permission must
+                // disable diagnostics, never terminate an engine game.
+                StreamWriter? failed = _log;
+                _log = null;
+                try { failed?.Dispose(); }
+                catch { /* Best effort only. */ }
+            }
+        }
     }
-
     // Tees every engine->GUI line into the traffic log.
     private sealed class TeeWriter(TextWriter main, UciLoop owner) : TextWriter
     {
@@ -107,29 +171,41 @@ public sealed class UciLoop
 
     public void Run()
     {
-        string? line;
-        while ((line = _input.ReadLine()) != null)
+        try
         {
-            LogLine("<<", line);
-            string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (tokens.Length == 0)
-                continue;
+            string? line;
+            bool quitReceived = false;
+            while ((line = _input.ReadLine()) != null)
+            {
+                LogLine("<<", line);
+                string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length == 0)
+                    continue;
 
-            // One bad command (e.g. a malformed FEN) must not kill the read
-            // loop: report it and keep serving the GUI.
-            try
-            {
-                if (!Dispatch(tokens))
-                    return;
+                // One bad command (e.g. a malformed FEN) must not kill the read
+                // loop: report it and keep serving the GUI.
+                try
+                {
+                    if (!Dispatch(tokens))
+                    {
+                        quitReceived = true;
+                        LogLine("--", "quit received — read loop ends");
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _output.WriteLine($"info string command error: {ex.GetType().Name}: {ex.Message}");
+                }
             }
-            catch (Exception ex)
-            {
-                _output.WriteLine($"info string command error: {ex.GetType().Name}: {ex.Message}");
-            }
+            if (!quitReceived)
+                LogLine("--", "stdin EOF — read loop ends");
         }
-        LogLine("--", "stdin EOF — read loop ends");
+        finally
+        {
+            CloseLog();
+        }
     }
-
     // Executes one UCI command. Returns false when the loop must exit (quit).
     private bool Dispatch(string[] tokens)
     {
@@ -146,6 +222,12 @@ public sealed class UciLoop
                 case "isready":
                     // Must answer even while a search runs — the GUI uses it
                     // as a heartbeat. The loop thread is free, so just reply.
+                    if (!_embeddedNnueChecked)
+                    {
+                        _embeddedNnueChecked = true;
+                        if (_options.EvalFile.Length == 0)
+                            TryLoadEmbeddedNnue();
+                    }
                     _output.WriteLine("readyok");
                     break;
 
@@ -273,8 +355,13 @@ public sealed class UciLoop
                 ? $"info string Syzygy: {NoaChess.Engine.Tablebases.Syzygy.Cardinality}-man tablebases loaded"
                 : "info string Syzygy: no tablebases found");
         }
-        if (changed == "Debug Log File" && _options.DebugLogFile.Length > 0)
-            OpenLog(_options.DebugLogFile);
+        if (changed == "Debug Log File")
+        {
+            if (_options.DebugLogFile.Length > 0)
+                OpenLog(_options.DebugLogFile);
+            else
+                CloseLog();
+        }
 
         // NNUE wiring: EvalFile loads/validates the model; UseNNUE switches
         // the evaluator. Failures are reported as "info string" (per UCI, a
