@@ -176,19 +176,32 @@ def batches(records, batch_size, rng, sample_limit=None, precomputed=None):
       result                float32 [batch] (+1/0/-1, side to move)
     Perspectives are ordered (side to move, opponent) as the network expects.
     Pass 'precomputed' (from precompute_features) for fast epochs.
+
+    When precomputed is given, the arrays are shuffled once per call and sliced
+    sequentially. Sequential access is 10-20x faster than random fancy-indexing
+    on large numpy arrays, which is the main GPU-starvation bottleneck.
     """
-    indices = rng.permutation(len(records) if precomputed is None else len(precomputed[0]))
+    if precomputed is not None:
+        stm_all, opp_all, scores_all, results_all = precomputed
+        n = len(stm_all)
+        if sample_limit:
+            n = min(n, sample_limit)
+        idx = rng.permutation(n)
+        stm_s    = stm_all[idx]
+        opp_s    = opp_all[idx]
+        scores_s = scores_all[idx]
+        results_s = results_all[idx]
+        for start in range(0, n - batch_size + 1, batch_size):
+            end = start + batch_size
+            yield stm_s[start:end], opp_s[start:end], scores_s[start:end], results_s[start:end]
+        return
+
+    indices = rng.permutation(len(records))
     if sample_limit:
         indices = indices[:sample_limit]
 
     for start in range(0, len(indices) - batch_size + 1, batch_size):
         batch = indices[start:start + batch_size]
-
-        if precomputed is not None:
-            stm_all, opp_all, scores_all, results_all = precomputed
-            yield stm_all[batch], opp_all[batch], scores_all[batch], results_all[batch]
-            continue
-
         stm_f = np.full((batch_size, MAX_ACTIVE), -1, dtype=np.int64)
         opp_f = np.full((batch_size, MAX_ACTIVE), -1, dtype=np.int64)
         scores = np.zeros(batch_size, dtype=np.float32)

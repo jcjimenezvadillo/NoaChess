@@ -56,12 +56,22 @@ public sealed class UciLoop
     private readonly Stopwatch _ponderTimer = new();
     private volatile bool _suppressBestmove;
 
+    private readonly QueuedWriter _queuedOutput;
+
     public UciLoop(TextReader input, TextWriter output)
     {
         _input = input;
-        // The search task and the command loop both write here.
-        _output = TextWriter.Synchronized(output);
-
+        // All output goes through ONE background writer thread via a queue.
+        // Both producers (the command loop AND the search task) only ENQUEUE,
+        // which never blocks. This is what prevents the classic UCI pipe
+        // deadlock: with a shared blocking writer, a full stdout pipe (GUI slow
+        // to read under fast TC / high concurrency) stalls whichever thread
+        // holds the write lock; if that is the command loop it stops reading
+        // stdin, the GUI then blocks writing its next command, and neither side
+        // ever drains the other. Queuing decouples the loop from the actual
+        // write so it keeps reading stdin no matter what.
+        _queuedOutput = new QueuedWriter(output, this);
+        _output = _queuedOutput;
     }
 
     // Loads the .noannue model compiled into the exe as an embedded resource
@@ -110,9 +120,8 @@ public sealed class UciLoop
                 try { previous?.Dispose(); }
                 catch { /* Logging must never break the UCI loop. */ }
             }
-
-            if (_output is not TeeWriter)
-                _output = new TeeWriter(_output, this);
+            // Output already flows through QueuedWriter, which logs ">>" lines
+            // as it enqueues them, so no extra tee is needed once _log is set.
         }
         catch (Exception ex)
         {
@@ -158,14 +167,55 @@ public sealed class UciLoop
             }
         }
     }
-    // Tees every engine->GUI line into the traffic log.
-    private sealed class TeeWriter(TextWriter main, UciLoop owner) : TextWriter
+    // Single-writer output queue. Every engine->GUI line is enqueued (a
+    // non-blocking operation) and logged; a dedicated background thread is the
+    // ONLY thing that ever writes to the real stdout, so no producer thread can
+    // ever block on a full pipe. Line order is preserved (FIFO, one consumer).
+    private sealed class QueuedWriter : TextWriter
     {
-        public override System.Text.Encoding Encoding => main.Encoding;
+        private readonly TextWriter _sink;
+        private readonly UciLoop _owner;
+        private readonly System.Collections.Concurrent.BlockingCollection<string> _queue = new();
+        private readonly Thread _pump;
+
+        public QueuedWriter(TextWriter sink, UciLoop owner)
+        {
+            _sink = sink;
+            _owner = owner;
+            _pump = new Thread(Pump) { IsBackground = true, Name = "NoaUciOutput" };
+            _pump.Start();
+        }
+
+        public override System.Text.Encoding Encoding => _sink.Encoding;
+
         public override void WriteLine(string? value)
         {
-            main.WriteLine(value);
-            owner.LogLine(">>", value ?? "");
+            string line = value ?? "";
+            _owner.LogLine(">>", line); // log at enqueue time (logical order, non-blocking)
+            try { _queue.Add(line); }
+            catch (InvalidOperationException) { /* queue completed at shutdown */ }
+        }
+
+        private void Pump()
+        {
+            try
+            {
+                foreach (string line in _queue.GetConsumingEnumerable())
+                {
+                    // The ONLY place a full stdout can block — and it blocks only
+                    // this pump thread, never a producer.
+                    try { _sink.WriteLine(line); _sink.Flush(); }
+                    catch { /* GUI gone: keep draining so producers never block */ }
+                }
+            }
+            catch { /* CompleteAdding raced with GetConsumingEnumerable */ }
+        }
+
+        // Flush remaining lines (e.g. the final bestmove) at shutdown.
+        public void CompleteAndDrain(int millis)
+        {
+            try { _queue.CompleteAdding(); } catch { }
+            try { _pump.Join(millis); } catch { }
         }
     }
 
@@ -203,6 +253,7 @@ public sealed class UciLoop
         }
         finally
         {
+            _queuedOutput.CompleteAndDrain(2000); // flush the final bestmove
             CloseLog();
         }
     }
@@ -339,6 +390,8 @@ public sealed class UciLoop
         // Options that require engine-side action.
         if (changed == "Hash")
             _engine.ResizeHash(_options.Hash);
+        if (changed == "Threads")
+            _engine.Threads = _options.Threads;
         if (changed == "Profile")
             _engine.Profile = EngineProfile.ByName(_options.Profile);
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
@@ -383,7 +436,12 @@ public sealed class UciLoop
         if (changed == "UseNNUE")
         {
             if (!_engine.SetUseNnue(_options.UseNnue) && _options.UseNnue)
-                _output.WriteLine("info string UseNNUE ignored: no valid model loaded (set EvalFile first)");
+            {
+                // Suppress the error when isready hasn't arrived yet: the embedded model
+                // loads on the first isready and will pick up _options.UseNnue automatically.
+                if (_embeddedNnueChecked)
+                    _output.WriteLine("info string UseNNUE ignored: no valid model loaded (set EvalFile first)");
+            }
         }
     }
 

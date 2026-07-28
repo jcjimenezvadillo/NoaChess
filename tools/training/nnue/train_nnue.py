@@ -122,9 +122,15 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
 
     # Feature arrays stay in host memory (too large for VRAM); each batch is
-    # copied to the GPU just before the forward pass.
+    # transferred to the GPU just before the forward pass. pin_memory=True on
+    # CUDA lets the DMA engine transfer without involving the CPU, so the GPU
+    # gets the data faster and the next batch can be prepared in parallel.
+    _use_pin = device.type == "cuda"
     def to_dev(a):
-        return torch.from_numpy(a).to(device, non_blocking=True)
+        t = torch.from_numpy(np.ascontiguousarray(a))
+        if _use_pin:
+            t = t.pin_memory()
+        return t.to(device, non_blocking=True)
 
     def evaluate_validation():
         if len(val_set[0]) == 0:

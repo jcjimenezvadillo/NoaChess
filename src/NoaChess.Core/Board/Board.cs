@@ -289,6 +289,34 @@ public sealed class Board
             PawnZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
     }
 
+    // Deep copy of the entire position. Used to give each parallel search
+    // thread (Lazy SMP) its OWN board: MakeMove/UnmakeMove mutate the board, so
+    // threads must never share one. The static tables (castling masks,
+    // repetition cuckoo) are read-only and stay shared.
+    public Board Clone()
+    {
+        var copy = new Board();
+        Array.Copy(_pieces, copy._pieces, _pieces.Length);
+        Array.Copy(_occupancy, copy._occupancy, _occupancy.Length);
+        Array.Copy(_mailbox, copy._mailbox, _mailbox.Length);
+
+        // Rebuild the undo/repetition history preserving bottom-to-top order:
+        // ToArray() yields top-first, so push from the bottom back up.
+        copy._history.Clear();
+        UndoInfo[] frames = _history.ToArray();
+        for (int i = frames.Length - 1; i >= 0; i--)
+            copy._history.Push(frames[i]);
+
+        copy.SideToMove = SideToMove;
+        copy.CastlingRights = CastlingRights;
+        copy.EnPassantSquare = EnPassantSquare;
+        copy.HalfmoveClock = HalfmoveClock;
+        copy.FullmoveNumber = FullmoveNumber;
+        copy.ZobristKey = ZobristKey;
+        copy.PawnZobristKey = PawnZobristKey;
+        return copy;
+    }
+
     // ---------- Make / Unmake ----------
 
     // Executes a move (which must be pseudo-legal: produced by MoveGenerator).
