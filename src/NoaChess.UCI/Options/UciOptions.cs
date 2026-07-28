@@ -3,8 +3,8 @@ namespace NoaChess.UCI.Options;
 // The engine options exposed over UCI ("setoption name X value Y").
 // v1.0 set, per the roadmap:
 // - Hash: transposition table size in MB.
-// - Threads: accepted for GUI compatibility, but only 1 is supported until
-//   Lazy SMP arrives in v3.0.
+// - Threads: number of parallel search threads (Lazy SMP). 1 keeps the exact
+//   single-threaded search; more threads share the transposition table.
 // - MoveOverhead: per-move milliseconds reserved for GUI/network latency.
 //   The time manager deducts it once per expected remaining move
 //   (overhead x horizon), so the default must stay small: 100 ms would
@@ -41,7 +41,7 @@ public sealed class UciOptions
     public void Print(TextWriter output)
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
-        output.WriteLine("option name Threads type spin default 1 min 1 max 1");
+        output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
         output.WriteLine("option name UseNNUE type check default false");
@@ -66,7 +66,7 @@ public sealed class UciOptions
                 return "Hash";
 
             case "threads" when int.TryParse(value, out int threads):
-                Threads = Math.Clamp(threads, 1, 1); // Single-threaded until v3.0.
+                Threads = Math.Clamp(threads, 1, 32); // Lazy SMP parallel search.
                 return "Threads";
 
             case "moveoverhead" when int.TryParse(value, out int overhead):

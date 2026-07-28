@@ -1,5 +1,45 @@
 # CHANGELOG
 
+## 2026-07-29 (v3.1.0) — Lazy SMP: parallel search + SMP time-management fix
+
+**Multi-threaded search, up to 32 threads. `Threads=1` is byte-identical to v3.0.0 (verified: 1,307,077 nodes across a 6-position fixed-depth suite, exact match against the single-threaded build). Node throughput scales ~7.6× at 8 threads. SMP self-comparison: `Threads=30` vs `Threads=1` measures +253 ±104 Elo (tc=20+0.2, 24-1-12 over 37 games, LOS 100%, SPRT H1 accepted); CCRL field / long-TC calibration pending. Ships with an SMP time-management fix that bounds a ponderhit clock spike — a forced queen recapture that took 22-37s at 30 threads now stays ≤~5s (measured max 5.2s over 10 runs) — with single-thread play byte-identical.**
+
+**First CCRL calibration of the NNUE line (measured 2026-07-28):** the embedded `noa-gen5` net scores **51.0% over 240 games** against a 12-engine field spanning 2862–3281 CCRL (20 games each, TC 60+0.6, single-threaded), for a maximum-likelihood performance rating of **~3050 ±40 CCRL** — it beats every opponent ≤3010 and loses to ≥3120, crossover ~3050. This lands only ~+15 over the ~3035 classical estimate, not the +42 the internal SPRT chain implied: the expected shrink of self-play gains against a diverse external field. It is the floor — deeper-node generations (gen6+) and the Lazy SMP multi-core gain add on top.
+
+The search was single-threaded through the entire classical and NNUE campaign. This release adds Lazy SMP: several worker threads search the same root position in parallel, sharing one transposition table so they cross-pollinate each other's best lines, and vote on the move at the end. It is the last big untapped lever before further net generations — and it stacks with them, since the speedup applies to whatever evaluator is loaded.
+
+### Design
+
+- **Shared table, private everything else.** All workers share ONE transposition table (that shared memory is the whole point of Lazy SMP); every other structure — search stack, killer/history/continuation/capture/pawn-correction tables, counter moves, the board, and the evaluator — is per-thread, so the threads never write the same memory except the TT. The main worker (calling thread) owns time management and reports `info`; helper threads run headless until stopped.
+- **Lock-free table by benign races.** The clustered table is read and written without locks. A torn 16-byte entry is caught by the 32-bit key verification and the existing pseudo-legality vetting of TT moves, so a corrupt read is discarded, never trusted or crashed on — the standard Lazy SMP contract. No locking overhead on the hot path.
+- **Per-thread cloning.** `Board.Clone()` deep-copies the position (including the undo/repetition history) so make/unmake never races. The NNUE evaluator clone shares the read-only network weights but gets its own accumulator stack; the classical evaluator clone is a fresh instance (its scratch buffers are per-call). The shared table is aged exactly once per search, not once per worker.
+- **Move voting.** After the main worker stops the helpers, the workers vote on the root move (score-weighted, with decisive-score/shortest-mate handling). Depth-limited and analysis searches take the main thread's line directly, as is conventional.
+
+### Interface
+
+- **UCI `Threads`** is now `spin default 1 min 1 max 32` (was pinned to 1). 1 preserves the exact historical search path; higher values enable Lazy SMP.
+
+### SMP time management
+
+Lazy SMP surfaced a time-management pathology: on a **ponderhit** relaunch over a warm transposition table with many threads, a trivial or forced move could burn far more than its share of the clock (a forced queen recapture measured 22-37s in a 3+2 blitz game, nearly flagging). Three fixes, all SMP-only — single-thread play is byte-identical:
+
+- **Instability factor normalized over the pool.** The per-iteration best-move-instability multiplier was computed from the main worker's root-move changes alone; under the shared-TT races that count is noisy and spiked the soft budget toward the hard maximum. It now averages best-move changes across all workers (peer sum ÷ thread count), matching the reference.
+- **Soft deadline capped at the optimum under SMP.** The dynamic factors (falling-eval, reduction, instability) can inflate at once; the extension is bounded at the optimum so a stable/forced move can no longer blow past it.
+- **Mid-iteration node-level cap.** The soft deadline was only enforced *between* root moves, so a single deep root move begun near the budget edge — a warm TT after a ponderhit reaches high depth almost instantly — could still coast to the loose hard maximum before the next check. A node-level guard now tightens the deadline under SMP to 1.5× the (dynamic) soft budget, so the stop-check aborts the runaway move mid-iteration and the search keeps the last completed iteration's move. **Verified at 30 threads (10 runs): the forced-recapture spike drops from a 15-37s tail to a hard ceiling of ~5s (max 5.2s).** A non-regression match confirms the cap does not cost strength in normal play (drawish, decisives 3-1 for the capped build).
+
+### Verification
+
+- **`Threads=1` proven byte-identical** to the v3.0.0 base branch: the fixed-depth node-count harness produces the same total (1,307,077) and the same per-position counts. A single-threaded game is unaffected by this release.
+- **Concurrency stress**: Classical and NNUE, `Threads` 1→32, repeated timed searches on six positions — no crashes, every returned move legal. NNUE exercises the per-thread accumulator cloning specifically.
+- **Node scaling** (NNUE, fixed time): 1.00× / 2.02× / 4.14× / 7.60× at 1/2/4/8 threads — helpers do real work; at ≥4 threads the deeper aggregate search already changes the chosen move.
+- **205/205 engine tests green.**
+
+### UCI robustness fixes (both pre-existing, present since at least v3.0.0)
+
+- **Output-pipe deadlock fixed — this is why the engine could go silent under lichess-bot and fast-TC/high-concurrency cutechess matches.** The command loop and the search task shared one blocking output writer. When the GUI was momentarily slow to drain stdout (common at fast TC with many concurrent games), a search-thread write blocked while holding the writer lock; the command loop then blocked trying to answer an `isready` keepalive, stopped reading stdin, and the GUI in turn blocked writing its next command — a classic pipe deadlock, both threads idle, no `bestmove` ever sent. All output now flows through a single-consumer queue: producers only ENQUEUE (never blocks), and one dedicated writer thread is the only thing that touches stdout, so the command loop can never stall on output. **Reproduced deterministically** (a stress match hung at ~24/60 games on both v3.0.0 and this build before the fix) and **verified fixed** (80/80 games complete, and again at Threads=8 vs Threads=1). Move/line order is preserved (FIFO, one consumer).
+- **Startup banner suppressed for automated drivers.** The human-friendly banner was printed to stdout before the UCI handshake. It is now emitted only when stdin is a real console (`Console.IsInputRedirected` is false), so a GUI or bot sees nothing before `uci` — a strict UCI reader can desync on text before the first `id`/`uciok`.
+- **Spurious `UseNNUE ignored` message removed.** When a GUI (e.g. Arena) sent `setoption UseNNUE true` before the first `isready` — before the embedded net had loaded — the engine printed `UseNNUE ignored: no valid model loaded`, which looked like the net had failed. The embedded net loads on that first `isready` and now applies the requested `UseNNUE` state, with no bogus warning.
+
 ## 2026-07-25 (v3.0.0) — HalfKAv2_hm NNUE: the neural evaluation ships
 
 **Generational self-play net beats the classical evaluator: gen3 +4.5 ±11.4 Elo, 1002-968-680 [0.506] over 2650 games, LOS 77.8%, exhausted positive (tc=10+0.1, elo0=0, elo1=5). LTC gauntlet calibration pending.**
