@@ -46,4 +46,9 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     public void PushMove(Board board, Move move) => _accumulators.PushMove(board, move);
     public void PushNull() => _accumulators.PushNull();
     public void Pop() => _accumulators.Pop();
+
+    // Shares the read-only network (weights never change after load) but gives
+    // the clone its OWN accumulator stack, so a helper search thread updates
+    // its accumulators independently of every other thread.
+    public IPositionEvaluator Clone() => new NnueEvaluator(_network);
 }

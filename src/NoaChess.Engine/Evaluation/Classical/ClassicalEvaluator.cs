@@ -176,6 +176,11 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
         return blockers;
     }
 
+    // A fresh evaluator for another search thread. Every field is per-call
+    // scratch or a private cache, so a helper thread simply gets its own; there
+    // is no shared read-only state worth carrying over.
+    public IPositionEvaluator Clone() => new ClassicalEvaluator();
+
     public int Evaluate(Board board)
     {
         ulong whitePawns = board.Pieces(Color.White, PieceType.Pawn);

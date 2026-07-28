@@ -36,6 +36,7 @@ public class QuiescenceTests
     private sealed class ConstantEvaluator(int value) : IPositionEvaluator
     {
         public int Evaluate(Board board) => value;
+        public IPositionEvaluator Clone() => new ConstantEvaluator(value);
     }
 
     [Fact]
