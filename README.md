@@ -40,10 +40,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v3.0.0** — **HalfKAv2_hm NNUE: the neural evaluation ships and beats the classical evaluator. gen3 +4.5 ±11.4 Elo vs classical (1002-968-680 [0.506] over 2650 games, LOS 77.8%, exhausted positive); LTC gauntlet calibration pending.** Feature transformer (schema 2, InputSize 22528 = 32 king buckets × 704, kings as features), topology FT 22528→128 ×2 → L1 32 → 1, quantized QA=255/QB=64/OutputScale=400. AVX2 SIMD inference (VPMADDWD, precomputed clipped activation, fused MoveFeature): 312k → 446k NPS. Incremental accumulator verified by a parity gate. `NoaChess.DataGen` self-play with `lambda·sigmoid(score) + (1−lambda)·wdl` labels and resign/draw adjudication. **Critical bug fixed:** a node-limit hard stop on the first root move returned Score 0, zeroing 57% of datagen labels (57.6% → 2.1%; invisible to game play, only the returned `.Score` was wrong). Generational self-play closes the first-gen distribution shift: gen2 +1.9 Elo, gen3 +4.5 Elo vs classical. The `noa-gen3` net is embedded in the executable. 276/276 tests.
@@ -134,10 +136,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v3.0.0** — **NNUE HalfKAv2_hm: la evaluación neuronal embarca y supera a la clásica. gen3 +4.5 ±11.4 Elo vs clásico (1002-968-680 [0.506] en 2650 partidas, LOS 77.8%, positivo agotado); calibración del gauntlet LTC pendiente.** Feature transformer (schema 2, InputSize 22528 = 32 buckets de rey × 704, reyes como features), topología FT 22528→128 ×2 → L1 32 → 1, cuantización QA=255/QB=64/OutputScale=400. Inferencia SIMD AVX2 (VPMADDWD, activación clipped precomputada, MoveFeature fusionado): 312k → 446k NPS. Acumulador incremental verificado por paridad. `NoaChess.DataGen` de self-play con etiquetas `lambda·sigmoid(score) + (1−lambda)·wdl` y adjudicación por resign/tablas. **Bug crítico corregido:** el hard-stop por límite de nodos en la primera jugada de raíz devolvía Score 0, poniendo a cero el 57% de las etiquetas (57.6% → 2.1%; invisible al juego, sólo el `.Score` devuelto estaba mal). El self-play generacional cierra el distribution shift de 1ª generación: gen2 +1.9 Elo, gen3 +4.5 Elo vs clásico. La red `noa-gen3` va embebida en el ejecutable. 276/276 tests.
