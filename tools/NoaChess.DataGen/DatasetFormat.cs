@@ -9,7 +9,7 @@ namespace NoaChess.DataGen;
 // File header (64 bytes, little-endian):
 //   0   8  magic "NOADATA1"
 //   8   4  format version (u32) = 1
-//   12  4  feature schema id (u32) = 1 (see NnueFeatureIndex)
+//   12  4  feature schema id (u32) = 2 (see NnueFeatureIndex)
 //   16  4  score scale (u32) = 1 (scores are plain centipawns)
 //   20  4  record size (u32) = 40
 //   24  8  record count (u64) — patched on close
@@ -33,7 +33,7 @@ public static class DatasetFormat
 {
     public const string Magic = "NOADATA1";
     public const uint FormatVersion = 1;
-    public const uint FeatureSchemaId = 1;
+    public const uint FeatureSchemaId = 2;
     public const uint ScoreScale = 1;
     public const int HeaderSize = 64;
     public const int RecordSize = 40;

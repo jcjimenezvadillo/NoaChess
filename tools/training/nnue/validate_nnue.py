@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 import dataset
-from model import NoaNnue, OUTPUT_SCALE, QA, QB
+from model import NoaNnue, OUTPUT_SCALE, QA, QB, FT_OUT, L1_OUT
 from train_nnue import wdl_target
 
 
@@ -44,10 +44,13 @@ def main():
     parser.add_argument("--data", required=True)
     parser.add_argument("--batch", type=int, default=4096)
     parser.add_argument("--samples", type=int, default=20000)
+    # Exclude the datagen's spurious score==0 labels from the diagnostics.
+    parser.add_argument("--nonzero-only", action="store_true")
     args = parser.parse_args()
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model = NoaNnue()
+    ckpt_args = checkpoint.get("args", {})
+    model = NoaNnue(ckpt_args.get("ft_out", FT_OUT), ckpt_args.get("l1_out", L1_OUT))
     model.load_state_dict(checkpoint["model"])
     model.eval()
     lam = checkpoint["args"].get("lam", 0.7)
@@ -56,6 +59,7 @@ def main():
     rng = np.random.default_rng(0)
 
     losses, quant_errors = [], []
+    all_net_cp, all_label_cp = [], []
     with torch.no_grad():
         for stm, opp, scores, results in dataset.batches(
                 records, args.batch, rng, sample_limit=args.samples):
@@ -68,9 +72,29 @@ def main():
             quant_cp = quantized_eval(model, stm, opp)
             quant_errors.append(np.abs(float_cp - quant_cp).mean())
 
+            if args.nonzero_only:
+                m = scores != 0
+                float_cp, scores = float_cp[m], scores[m]
+            all_net_cp.append(float_cp)
+            all_label_cp.append(scores)
+
+    net_cp = np.concatenate(all_net_cp).astype(np.float64)
+    label_cp = np.concatenate(all_label_cp).astype(np.float64)
+    corr = np.corrcoef(net_cp, label_cp)[0, 1]
+    slope = np.polyfit(label_cp, net_cp, 1)[0]  # net = slope*label + b
+    rms = float(np.sqrt(np.mean((net_cp - label_cp) ** 2)))
+    sign_agree = float(np.mean(np.sign(net_cp) == np.sign(label_cp)))
+
     print(f"records evaluated : {min(args.samples, len(records)):,}")
     print(f"validation loss   : {np.mean(losses):.6f}")
     print(f"quantization error: {np.mean(quant_errors):.2f} cp (mean abs, float vs int)")
+    print("--- net eval vs teacher label (both cp, side to move) ---")
+    print(f"pearson corr      : {corr:.4f}   (negative => sign/perspective bug)")
+    print(f"regression slope  : {slope:.3f}   (1.0 = same scale; <1 = compressed)")
+    print(f"RMS error         : {rms:.1f} cp")
+    print(f"sign agreement    : {sign_agree*100:.1f}%")
+    print(f"mean |net|        : {np.mean(np.abs(net_cp)):.1f} cp")
+    print(f"mean |label|      : {np.mean(np.abs(label_cp)):.1f} cp")
 
 
 if __name__ == "__main__":

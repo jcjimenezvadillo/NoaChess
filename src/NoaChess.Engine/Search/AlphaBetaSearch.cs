@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using NoaChess.Core;
 using NoaChess.Engine.Evaluation;
 using NoaChess.Engine.Heuristics;
@@ -21,8 +21,6 @@ namespace NoaChess.Engine.Search;
 //   so good that the branch can be pruned. Disabled in check (passing is
 //   illegal), in pawn endgames (zugzwang breaks the assumption) and twice in
 //   a row (the position must be re-anchored to reality between passes).
-// - Check extension: positions in check are searched one ply deeper — forced
-//   sequences are cheap (few legal moves) and hide most tactics.
 // - SEE pruning: losing captures (per static exchange evaluation) are skipped
 //   near the horizon and ordered last elsewhere.
 // - Repetition detection: a single repetition already scores as a draw inside
@@ -58,7 +56,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // for certain wins/losses and outcomes affected by the fifty-move rule.
     private const int MaxDtz = 1 << 18;
 
-    /// Set from the UCI SyzygyProbeLimit / SyzygyProbeDepth options.
+    // Set from the UCI SyzygyProbeLimit / SyzygyProbeDepth options.
     public int SyzygyProbeLimit
     {
         get => _syzygyProbeLimit;
@@ -71,7 +69,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private int _tbMaxMen;
     private int _tbMinProbeDepth = 1;
 
-    /// Recomputed after the tablebases are (re)loaded or the limit changes.
+    // Recomputed after the tablebases are (re)loaded or the limit changes.
     public void RefreshTbLimit()
     {
         if (!Tablebases.Syzygy.Available)
@@ -83,7 +81,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
         _tbMaxMen = Math.Min(_syzygyProbeLimit, Tablebases.Syzygy.Cardinality);
 
-        // Matching Stockfish: if the requested limit exceeds the largest
+        // Matching reference: if the requested limit exceeds the largest
         // installed table, that installed cardinality is effectively a
         // sub-cardinality table and is therefore probed at every depth.
         _tbMinProbeDepth = _syzygyProbeLimit > Tablebases.Syzygy.Cardinality
@@ -98,7 +96,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private int _syzygyProbeDepth = 1;
     public bool Syzygy50MoveRule { get; set; } = true;
 
-    /// Number of positions this search resolved from tablebases.
+    // Number of positions this search resolved from tablebases.
     public long TbHits { get; private set; }
 
     private const int MaxPly = 128;
@@ -123,6 +121,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
     private readonly CaptureHistory _captureHistory = new();
+    private readonly PawnCorrectionHistory _pawnCorrectionHistory = new();
     private readonly Stopwatch _timer = new();
 
     // ---- Quiescence pruning constants (reference Step 6) ----
@@ -167,6 +166,12 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     private const int StatScoreOffset = 1250; // reference  4433 x 0.28
     private const int StatScoreRfpDiv = 180;  // reference 303 / 0.48 x 0.28
 
+    // ProbCut safety margins. As in the reference search, an improving node
+    // gets both a cheaper bar and a shallower verification: the static trend
+    // is treated as extra confidence, reducing ProbCut's cost.
+    private const int ProbCutMargin = 150;
+    private const int ProbCutImprovingMargin = 40;
+    private const int SmallProbCutMargin = 428;
     // NMP verification-search state (reference nmpMinPly/nmpColor): while the
     // verification search runs, null moves stay disabled for the verifying
     // side below this ply, so a false null-move cutoff cannot verify itself.
@@ -197,12 +202,40 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // re-searched at full depth if it surprisingly beats alpha.
     private static readonly int[,] LmrReductions = BuildLmrTable();
 
+    // Reductions are accumulated in 1024ths of a ply and truncated once, at the
+    // point of use. The reference keeps its whole reduction pipeline in fixed
+    // point for a reason: every one of its adjusters is a FRACTION of a ply.
+    // Truncating per term — which an integer table forces — makes each adjuster
+    // three to ten times too coarse, and eight of them stack into swings the
+    // reference never applies. That granularity is the unnamed "ecosystem" the
+    // 5C adjuster suite kept measuring against.
+    private const int LmrScale = 1024;
+
+    // NO history-informed LMR adjustment, on measured evidence — the line is
+    // closed, not merely unimplemented. Three variants of "let LMR read the
+    // butterfly history" were tested against v2.8.3-class baselines and land on
+    // a monotone curve by how much reduction they remove:
+    //     statScore, continuous, biased to LESS reduction   -18 Elo (H0)
+    //     clamp(hist/384, -2, +2), symmetric                -4.8 +/-11.4, LLR -2.89 (H0)
+    //     clamp(hist/256, -2,  0), one-sided add-only        +4.2 +/-9.1  flat, 3000 games
+    // Every version that clawed moves out of reduction lost, in proportion to how
+    // aggressively it did so; the add-only version merely returned to noise. Our
+    // base reductions are milder than the reference's, so a history term here is
+    // redundant with the killer/counter shallowing already applied and only costs
+    // nodes. (For most of the engine's life this line shipped as
+    // clamp(hist/16384, -2, 2) and was arithmetically DEAD — the butterfly table
+    // is bounded at 7183 so it returned 0 at every node — which is the third
+    // inert-threshold bug of that family and is why it was investigated at all.)
+    // Do not re-add without a new mechanism; the direct form is settled.
+
+
     private static int[,] BuildLmrTable()
     {
         var table = new int[64, 64];
         for (int depth = 1; depth < 64; depth++)
             for (int move = 1; move < 64; move++)
-                table[depth, move] = (int)(0.75 + Math.Log(depth) * Math.Log(move) / 2.25);
+                table[depth, move] =
+                    (int)((0.75 + Math.Log(depth) * Math.Log(move) / 2.25) * LmrScale);
         return table;
     }
 
@@ -261,6 +294,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         _history.Clear();
         _contHist.Clear();
         _captureHistory.Clear();
+        _pawnCorrectionHistory.Clear();
         Array.Clear(_counterMoves);
         _bestPreviousScore = ScoreNone;
         _bestPreviousAverageScore = ScoreNone;
@@ -391,6 +425,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // DOUBLED, instead of jumping straight to a full-width re-search:
             // most fails land just outside the window, so the progressive
             // widening usually resolves them in one cheap retry.
+            // The fixed profile window won the final v2.8.2 SPRT. Adaptive
+            // narrowing increased re-search cost at short time controls.
             int window = Profile.AspirationWindow;
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
@@ -404,9 +440,16 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                     break;
 
                 if (score <= alpha)
+                {
+                    // Keep the upper edge near the failed window instead of
+                    // carrying a needlessly high beta into the re-search.
+                    beta = alpha + (beta - alpha) / 2;
                     alpha = Math.Max(score - window, -Infinity);
+                }
                 else
+                {
                     beta = Math.Min(score + window, Infinity);
+                }
 
                 window *= 2;
                 if (window > 1000) // Give up widening: full window.
@@ -418,11 +461,20 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             if (_stopped || _softStopped)
             {
-                // Interrupted mid-iteration. The moves searched so far
-                // (starting with the previous iteration's best, thanks to TT
-                // ordering) were searched completely — their best is at least
-                // as good as the previous iteration's answer. Use it and stop.
-                if (bestMove != Move.None)
+                // Interrupted mid-iteration. A SOFT stop lands on a root-move
+                // boundary, so every move searched so far (the previous best
+                // first, thanks to TT ordering) is complete and the partial
+                // result is reliable — use it. A HARD stop aborts mid-node:
+                // the interrupted Negamax returns 0, so if it hit during the
+                // first root move, SearchRoot reports that move with score 0.
+                // Trusting that 0 silently zeroed the returned score of ~half
+                // of all node-limited searches (harmless to game play, which
+                // reports its score from completed-iteration progress and plays
+                // the same TT-first move — but it wrecked datagen labels, which
+                // take the returned score). On a hard stop keep the last
+                // completed iteration's result; fall back to the partial only
+                // when no iteration has finished yet.
+                if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
                     best = new SearchResult(bestMove, score, _nodes);
                 break;
             }
@@ -573,13 +625,18 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             int score;
             if (searched == 0)
             {
-                score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+                // The root is a PV node; its first child stays on the PV.
+                score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
+                                 cutNode: false);
             }
             else
             {
-                score = -Negamax(board, depth - 1, -alpha - 1, -alpha, ply: 1, allowNull: true);
+                // Scout children of the PV root are expected cut nodes.
+                score = -Negamax(board, depth - 1, -alpha - 1, -alpha, ply: 1, allowNull: true,
+                                 cutNode: true);
                 if (score > alpha && !_stopped)
-                    score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true);
+                    score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
+                                     cutNode: false);
             }
 
             board.UnmakeMove();
@@ -727,7 +784,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         return true;
     }
 
-    // Stockfish's root_probe_wdl fallback. It deliberately keeps cursed wins
+    // Reference root_probe_wdl fallback. It deliberately keeps cursed wins
     // and blessed losses in distinct bands, so missing .rtbz files cost only
     // DTZ precision rather than the game-theoretic safety of the root choice.
     private bool TryRankRootMovesByWdl(Board board, Span<int> ranks,
@@ -760,7 +817,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 return false;
 
             // Do not collapse cursed wins or blessed losses to draws here.
-            // Stockfish deliberately gives them the bands immediately above
+            // Reference deliberately gives them the bands immediately above
             // and below a draw, retaining their practical preference while
             // still distinguishing them from unconditional wins and losses.
             int rank = rootWdl switch
@@ -797,15 +854,14 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // search WITH the move) nor store its result (it describes a different,
     // move-less position). Move.None means a normal search.
     private int Negamax(Board board, int depth, int alpha, int beta, int ply, bool allowNull,
-                        Move excluded = default)
+                        bool cutNode, Move excluded = default)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
         if (_stopped)
             return 0;
 
-        // Ply overflow guard (check extensions could otherwise push past the
-        // per-ply structures in pathological positions).
+        // Ply overflow guard for recursive and singular-extension searches.
         if (ply >= MaxPly)
             return _evaluator.Evaluate(board);
 
@@ -945,21 +1001,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         // (the big 5F speedup: revisits pay one cluster read, not a full
         // evaluation); a miss caches what we compute in an eval-only entry so
         // the NEXT visit — often via IIR or a re-search — skips it too.
+        int rawStaticEval;
         int staticEval;
         if (inCheck)
         {
+            rawStaticEval = 0;
             staticEval = 0;
-        }
-        else if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
-        {
-            staticEval = entry.StaticEval;
         }
         else
         {
-            staticEval = _evaluator.Evaluate(board);
-            if (excluded == Move.None)
-                _tt.Store(board.ZobristKey, 0, 0, staticEval,
-                          BoundType.None, Move.None, ttPv);
+            if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
+            {
+                rawStaticEval = entry.StaticEval;
+            }
+            else
+            {
+                rawStaticEval = _evaluator.Evaluate(board);
+                if (excluded == Move.None)
+                    _tt.Store(board.ZobristKey, 0, 0, rawStaticEval,
+                              BoundType.None, Move.None, ttPv);
+            }
+
+            staticEval = _pawnCorrectionHistory.Correct(board, rawStaticEval);
         }
 
         // ---- Improvement / improving ----
@@ -1033,7 +1096,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             _incremental?.PushNull();
             board.MakeNullMove();
             int nullScore = -Negamax(board, depth - r, -beta, -beta + 1,
-                                     ply + 1, allowNull: false);
+                                     ply + 1, allowNull: false, cutNode: false);
             board.UnmakeNullMove();
 
             if (_stopped)
@@ -1056,7 +1119,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 // position, null moves disabled for us until past nmpMinPly.
                 _nmpMinPly = ply + 3 * (depth - r) / 4;
                 _nmpColor = board.SideToMove;
-                int v = Negamax(board, depth - r, beta - 1, beta, ply, allowNull: false);
+                int v = Negamax(board, depth - r, beta - 1, beta, ply, allowNull: false,
+                                cutNode: cutNode);
                 _nmpMinPly = 0;
 
                 if (_stopped)
@@ -1067,14 +1131,17 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         }
 
         // ---- ProbCut ----
-        // When the position is SO good that a shallow search of a promising
-        // capture already lands well above beta (with a safety margin), the
-        // full-depth search would almost certainly fail high too — cut now.
-        // Non-PV only, never in singular verification, away from mate scores.
-        if (nonPv && !inCheck && depth >= 5 && excluded == Move.None
-            && Math.Abs(beta) < MateBound)
+        // A promising capture may prune this node only after passing both a
+        // qsearch filter and a regular reduced search. The depth floor is the
+        // critical correction: no cutoff may rest on qsearch alone.
+        int probBeta = beta + ProbCutMargin
+                     - ProbCutImprovingMargin * (improving ? 1 : 0);
+        if (!inCheck && depth >= 3 && excluded == Move.None
+            && Math.Abs(beta) < MateBound
+            && !(ttHit && entry.Bound != BoundType.None
+                 && FromTT(entry.Score, ply) < probBeta))
         {
-            int probBeta = beta + 150;
+            int probCutDepth = Math.Max(depth - (improving ? 5 : 3), 1);
             MoveList captures = _moveLists[ply];
             MoveGenerator.GeneratePseudoLegalMoves(board, captures, capturesOnly: true);
             MovePicker.OrderCaptures(captures, board, _captureHistory);
@@ -1084,13 +1151,15 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 Move move = captures[i];
 
-                // Only captures that do not clearly lose material can beat
-                // beta by a margin; skip the rest (and the odd non-queen
-                // promotion the captures-only generator also emits).
                 if (move.IsPromotion && move.Flag is not (MoveFlag.PromoQueen or MoveFlag.PromoQueenCapture))
                     continue;
-                if (move.IsCapture && !move.IsPromotion
-                    && StaticExchangeEvaluator.LosesAtLeast(board, move))
+
+                // The exchange must be capable of bridging the gap between the
+                // static evaluation and the deliberately higher ProbCut bar.
+                // The simplified SEE intentionally cannot model the material
+                // gain of promotion. Queen promotions are therefore always
+                // admitted, as they were before the gap-based SEE gate.
+                if (!PassesProbCutSeeGate(board, move, probBeta - staticEval))
                     continue;
 
                 _incremental?.PushMove(board, move);
@@ -1099,17 +1168,16 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 {
                     board.UnmakeMove();
                     _incremental?.Pop();
-                    continue; // Pseudo-legal move left the king in check.
+                    continue;
                 }
                 _stackPiece[ply] = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.To));
                 _stackTo[ply] = move.To;
-                _stackStatScore[ply] = 0; // Captures carry no history signal.
+                _stackStatScore[ply] = 0;
 
-                // Cheap filter first (quiescence), real verification second.
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
                 if (score >= probBeta)
-                    score = -Negamax(board, depth - 4, -probBeta, -probBeta + 1,
-                                     ply + 1, allowNull: false);
+                    score = -Negamax(board, probCutDepth, -probBeta, -probBeta + 1,
+                                     ply + 1, allowNull: false, cutNode: !cutNode);
 
                 board.UnmakeMove();
                 _incremental?.Pop();
@@ -1117,10 +1185,28 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 if (_stopped)
                     return 0;
                 if (score >= probBeta)
-                    return probBeta;
+                {
+                    _tt.Store(board.ZobristKey, probCutDepth + 1, ToTT(score, ply),
+                              rawStaticEval, BoundType.LowerBound, move, ttPv);
+
+                    // Reduced searches do not establish mate/TB scores.
+                    if (Math.Abs(score) < MateBound)
+                        return score - (probBeta - beta);
+                }
             }
         }
 
+        // A sufficiently deep TT lower bound far above beta can provide the
+        // same evidence without repeating the capture probe.
+        int smallProbBeta = beta + SmallProbCutMargin;
+        if (!inCheck && excluded == Move.None && ttHit
+            && entry.Bound == BoundType.LowerBound
+            && entry.Depth >= depth - 4 && Math.Abs(beta) < MateBound)
+        {
+            int ttScore = FromTT(entry.Score, ply);
+            if (ttScore >= smallProbBeta && Math.Abs(ttScore) < MateBound)
+                return smallProbBeta;
+        }
         // ---- Singular extension detection ----
         // A TT move whose stored score is trustworthy gets a verification
         // search: all OTHER moves are searched shallower against a lowered
@@ -1137,7 +1223,7 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             {
                 int singularBeta = ttScore - 2 * depth;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
-                                    ply, allowNull: false, excluded: ttMove);
+                                    ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
                     return 0;
                 if (score < singularBeta)
@@ -1159,6 +1245,13 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
         bool ttServed = ttMove != Move.None && MoveGenerator.IsPseudoLegal(board, ttMove);
         if (ttServed)
             moves.Add(ttMove);
+
+        // If the TT's best move is itself a capture, quiet alternatives are less
+        // likely to be the refutation, so late quiets are reduced one extra ply
+        // in the LMR block below. Gated on ttServed so the flag is known coherent
+        // with this position (pseudo-legality already validated), matching the
+        // reference's capture_stage(ttMove) rather than a stale stored flag.
+        bool ttCapture = ttServed && (ttMove.IsCapture || ttMove.IsPromotion);
 
         // Previous-move context for counter moves and continuation history
         // (absent at the root or right after a null move).
@@ -1233,10 +1326,11 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             int lmrDepth = depth - 1;
             if (searched > 0)
             {
+                // In 1024ths like the reduction proper, truncated once here.
                 int rEst = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
-                if (nonPv) rEst++;
-                if (!improving) rEst++;
-                lmrDepth = Math.Max(depth - 1 - rEst, 0);
+                if (nonPv) rEst += LmrScale;
+                if (!improving) rEst += LmrScale;
+                lmrDepth = Math.Max(depth - 1 - rEst / LmrScale, 0);
             }
 
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
@@ -1306,8 +1400,10 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
 
             if (searched == 0)
             {
-                // PVS: the first (best-ordered) move gets the full window.
-                score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true);
+                // PVS: the first (best-ordered) move gets the full window and,
+                // as a PV child, is never a cut node.
+                score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true,
+                                 cutNode: false);
             }
             else
             {
@@ -1323,39 +1419,86 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                 if (isQuiet && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
-                    reduction = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
-                    if (nonPv) reduction++;              // Reduce harder off the PV.
+                    // Everything below is in 1024ths. Every adjuster here is a
+                    // whole number of plies, so the single truncation at the
+                    // end reproduces the previous per-term integer arithmetic
+                    // exactly: floor(a) + k == floor(a + k) for integer k.
+                    int r = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
+                    if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
-                    // History-informed adjustment: a quiet move the history
-                    // tables like is reduced less (it keeps refuting things
-                    // elsewhere); a disliked one is reduced more. Killers and
-                    // the counter move also earn a shallower reduction.
-                    reduction -= Math.Clamp(_history.Get(stm, move) / 16384, -2, 2);
+                    // No butterfly-history term here — three variants were tested
+                    // and rejected; see the LmrReductions block above. "This move
+                    // is good" is expressed only through the killer/counter
+                    // shallowing below, which is measured net positive.
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
-                        reduction--;
+                        r -= LmrScale;
+
+                    // 5C adjuster (shipped, +7.1 Elo): reduce quiet moves one
+                    // extra ply when the TT best move is a capture. Reference
+                    // value 1079 in 1024ths (~1.05 plies); a reduction is measured
+                    // in plies so neither the value-unit nor history-unit scaling
+                    // applies.
+                    if (ttCapture) r += 1079;
+
+                    // NO cutNode reduction term. The reference's largest LMR
+                    // adjuster (r += 4026 at cut nodes) was measured at two
+                    // magnitudes and rejected both times: 4026 (~3.9 plies) at
+                    // −4.0 ±10.8 H0, 1536 (~1.5 plies) at −7.1 ±12.5 H0 — losing
+                    // ~5 Elo regardless of strength, the two intervals overlapping.
+                    // Most likely our cut-node classification is noisier than the
+                    // reference's (no IIR, thinner node-type discipline), so the
+                    // adjuster reduces the wrong nodes at any magnitude. cutNode
+                    // stays THREADED (behaviour-neutral) because allNode/cutoffCnt
+                    // adjusters need it, but it drives no reduction directly.
+
+                    // 5C adjuster under test: reduce LESS at ttPv nodes (a node
+                    // that was on a previous search's principal variation is worth
+                    // searching more carefully). Reference removes 3023 + 1004*PV
+                    // + 885*(ttValue>alpha) + 816*(ttDepth>=depth) [+940*cutNode].
+                    // Scaled ×0.34 so the base is ~1 ply instead of ~3: at 3 plies
+                    // it would floor our milder reductions to zero at every ttPv
+                    // node and the conditionals would stop modulating. The cutNode
+                    // sub-term is dropped — our cut-node signal is too noisy to
+                    // trust (see above). Conditionals gated on ttHit so ttValue and
+                    // ttDepth are real.
+                    if (ttPv)
+                    {
+                        r -= 1024 + (nonPv ? 0 : 340);
+                        if (ttHit)
+                        {
+                            if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
+                                r -= 300;
+                            if (entry.Depth >= depth) r -= 277;
+                        }
+                    }
 
                     // Position is worsening: the remaining moves are even less
                     // likely to be good — reduce them one extra ply.
-                    if (!improving) reduction++;
+                    if (!improving) r += LmrScale;
 
+                    reduction = r / LmrScale;
                     if (reduction < 0) reduction = 0;
                     if (reduction > newDepth - 1) reduction = newDepth - 1;
                 }
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
+                // A reduced LMR probe is searched as an expected cut node; an
+                // unreduced scout mirrors the reference's non-LMR path (!cutNode).
                 score = -Negamax(board, newDepth - reduction, -alpha - 1, -alpha,
-                                 ply + 1, allowNull: true);
+                                 ply + 1, allowNull: true,
+                                 cutNode: reduction > 0 ? true : !cutNode);
 
-                // The reduced probe beat alpha: verify at full depth first.
+                // The reduced probe beat alpha: verify at full depth first
+                // (reference re-search flips the parent's node type).
                 if (score > alpha && reduction > 0 && !_stopped)
                     score = -Negamax(board, newDepth, -alpha - 1, -alpha,
-                                     ply + 1, allowNull: true);
+                                     ply + 1, allowNull: true, cutNode: !cutNode);
 
                 // Still inside the window: it is a genuine PV candidate,
-                // re-search with the real window.
+                // re-search with the real window as a PV (non-cut) child.
                 if (score > alpha && score < beta && !_stopped)
                     score = -Negamax(board, newDepth, -beta, -alpha,
-                                     ply + 1, allowNull: true);
+                                     ply + 1, allowNull: true, cutNode: false);
             }
 
             board.UnmakeMove();
@@ -1465,11 +1608,27 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
                             : bestScore >= beta ? BoundType.LowerBound
                             : BoundType.Exact;
             _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply),
-                      inCheck ? TTEntry.NoStaticEval : staticEval, bound, bestMove, ttPv);
+                      inCheck ? TTEntry.NoStaticEval : rawStaticEval, bound, bestMove, ttPv);
+
+            // Learn only from quiet conclusions whose bound points in the same
+            // direction as the evaluation error. Captures/promotions change the
+            // material picture too abruptly to teach a pawn-structure bias.
+            bool quietBest = bestMove != Move.None && !bestMove.IsCapture && !bestMove.IsPromotion;
+            bool boundAgrees = bestScore >= beta ? bestScore > staticEval
+                              : bestScore <= originalAlpha ? bestScore < staticEval
+                              : true;
+            if (!inCheck && quietBest && boundAgrees && Math.Abs(bestScore) < TbScoreBound)
+                _pawnCorrectionHistory.Update(board, bestScore - staticEval, depth);
         }
 
         return bestScore;
     }
+
+    // Promotions are deliberately exempt: the current SEE does not model the
+    // promoted piece and reports only the captured victim (or one pawn for a
+    // quiet promotion), grossly understating their material gain.
+    private static bool PassesProbCutSeeGate(Board board, Move move, int threshold)
+        => move.IsPromotion || StaticExchangeEvaluator.Evaluate(board, move) >= threshold;
 
     // Quiescence search: at the horizon, keep searching forcing moves until the
     // position is quiet, then evaluate. This removes the horizon effect: a
@@ -1561,7 +1720,8 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
             // "Stand pat": the side to move is never forced to capture, so the
             // static evaluation is a floor for its score. If even doing nothing
             // beats beta, the opponent will avoid this line — cut immediately.
-            bestScore = _evaluator.Evaluate(board);
+            int rawEval = _evaluator.Evaluate(board);
+            bestScore = _pawnCorrectionHistory.Correct(board, rawEval);
             if (bestScore >= beta)
                 return bestScore;
             if (bestScore > alpha)
@@ -1747,4 +1907,5 @@ public sealed class AlphaBetaSearch(IPositionEvaluator evaluator)
     // ordering, but conservatively refuse its bound until the counter resets.
     private static bool CanReuseTtScore(int score, int halfmoveClock)
         => halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound);
+
 }
