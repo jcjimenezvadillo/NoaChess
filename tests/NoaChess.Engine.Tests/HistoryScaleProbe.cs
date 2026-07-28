@@ -61,8 +61,43 @@ public class HistoryScaleProbe
             return $"n={vals.Count} p50={P(0.50)} p90={P(0.90)} p99={P(0.99)} max={vals[^1]}";
         }
 
+        // SIGNED distribution. The reference's LMR subtracts this statistic
+        // raw, which is only safe if it is centred on zero; its tables are
+        // gravity-bounded with symmetric bonus/malus, ours are not (butterfly
+        // rescales on the positive rail but clamps on the negative one). A
+        // non-zero mean turns "reduce good moves less" into "reduce
+        // everything less", i.e. tree inflation.
+        static string Signed(List<int> vals)
+        {
+            if (vals.Count == 0) return "EMPTY";
+            vals.Sort();
+            long sum = 0;
+            int pos = 0;
+            foreach (int v in vals)
+            {
+                sum += v;
+                if (v > 0) pos++;
+            }
+            int P(double p) => vals[(int)(p * (vals.Count - 1))];
+            return $"n={vals.Count} mean={sum / (double)vals.Count:F1} "
+                 + $"median={P(0.50)} p10={P(0.10)} p90={P(0.90)} positive={100.0 * pos / vals.Count:F1}%";
+        }
+
+        var histSigned = new List<int>();
+        foreach (int v in histScores)
+            if (v != 0) histSigned.Add(v);
+
+        var contSigned = new List<int>();
+        foreach (int v in contScores)
+            if (v != 0) contSigned.Add(v);
+
+        string outDir = Path.Combine(Path.GetTempPath(), "noachess-probe");
+        Directory.CreateDirectory(outDir);
         File.WriteAllText(
-            @"C:\Users\Juanqui\AppData\Local\Temp\claude\F--Works-Programacion---Repos-NoaChess\695841a1-e58f-4219-9192-defa9520b1d2\scratchpad\history_scale.txt",
-            $"butterfly: {Stats(histVals)}\ncontHist:  {Stats(contVals)}\n");
+            Path.Combine(outDir, "history_scale.txt"),
+            $"butterfly ABS: {Stats(histVals)}\n"
+          + $"contHist  ABS: {Stats(contVals)}\n\n"
+          + $"butterfly SGN: {Signed(histSigned)}\n"
+          + $"contHist  SGN: {Signed(contSigned)}\n");
     }
 }

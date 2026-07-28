@@ -29,6 +29,16 @@
        friendly: no DLLs to carry around and no .NET runtime required on the
        target machine, like native C/C++ engines). Regular dotnet build/run
        and the test/GUI projects are unaffected. -->
+  <!-- Embed the NNUE model into the exe so the engine distributes as a single
+       file with no external assets. The file is optional at build time: builds
+       without a trained model skip this item and the engine falls back to the
+       classical evaluator. To embed a model, place the .noannue file at this
+       path and rebuild/republish. -->
+  <ItemGroup Condition="Exists('Resources/noa-embedded.noannue')">
+    <EmbeddedResource Include="Resources/noa-embedded.noannue"
+                      LogicalName="noa-embedded.noannue" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>

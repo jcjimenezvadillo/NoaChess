@@ -1,5 +1,5 @@
 # Reads NOADATA1 datasets (written by tools/NoaChess.DataGen) and converts
-# records into sparse HalfKP feature indices for training.
+# records into sparse HalfKAv2_hm feature indices for training.
 #
 # The binary layouts and the feature schema are contracts shared with the C#
 # side (DatasetFormat.cs and NnueFeatureIndex.cs); any change there requires
@@ -12,12 +12,39 @@ import numpy as np
 HEADER_SIZE = 64
 RECORD_SIZE = 40
 MAGIC = b"NOADATA1"
-FEATURE_SCHEMA_ID = 1
+FEATURE_SCHEMA_ID = 2
 
-# HalfKP dimensions (must match NnueFeatureIndex.cs).
-FEATURES_PER_KSQ = 10 * 64
-INPUT_SIZE = 64 * FEATURES_PER_KSQ  # 40,960 per perspective
-MAX_ACTIVE = 30
+# HalfKAv2_hm dimensions (must match NnueFeatureIndex.cs).
+PS_NB = 11 * 64                          # 704: 5x2 piece planes + shared king plane (10)
+KING_BUCKET_COUNT = 32                   # 64 king squares mirrored to 32
+INPUT_SIZE = KING_BUCKET_COUNT * PS_NB   # 22,528 per perspective
+MAX_ACTIVE = 32                          # all pieces, kings included
+
+# KingBuckets[sq] (0..31), A1 = index 0; files a-d mirror e-h within each rank.
+# Mirror of NnueFeatureIndex.BuildKingBuckets (stored here unscaled).
+_KING_BUCKETS = [
+    28, 29, 30, 31, 31, 30, 29, 28,
+    24, 25, 26, 27, 27, 26, 25, 24,
+    20, 21, 22, 23, 23, 22, 21, 20,
+    16, 17, 18, 19, 19, 18, 17, 16,
+    12, 13, 14, 15, 15, 14, 13, 12,
+     8,  9, 10, 11, 11, 10,  9,  8,
+     4,  5,  6,  7,  7,  6,  5,  4,
+     0,  1,  2,  3,  3,  2,  1,  0,
+]
+
+
+def _make_index(perspective, king_sq, ptype, color, sq):
+    """Mirror of NnueFeatureIndex.Index (HalfKAv2_hm). Raw squares in."""
+    vflip = 0 if perspective == 0 else 56
+    orient = 7 if (king_sq & 7) < 4 else 0
+    oriented = sq ^ orient ^ vflip
+    if ptype == 5:                       # king -> shared plane 10
+        plane = 10 * 64
+    else:
+        enemy = 0 if color == perspective else 1
+        plane = (ptype * 2 + enemy) * 64
+    return oriented + plane + _KING_BUCKETS[king_sq ^ vflip] * PS_NB
 
 RECORD_DTYPE = np.dtype([
     ("occupancy", "<u8"),
@@ -69,31 +96,29 @@ def record_to_features(rec):
     """
     Decodes one record into (white_features, black_features, stm, score, result).
 
-    Feature index (mirror of NnueFeatureIndex.Index):
-      index = kingSq * 640 + (pieceType*2 + (0 own | 1 enemy)) * 64 + pieceSq
-    with both squares vertically flipped (sq ^ 56) for the black perspective.
+    Features are HalfKAv2_hm (mirror of NnueFeatureIndex.Index): kings ARE
+    features (shared plane 10); the perspective king's raw square drives the
+    horizontal mirror and the bucket. The vertical flip is applied inside
+    _make_index, so raw squares are passed through.
     """
     squares = _unpack_squares(rec["occupancy"])
     nibbles = rec["pieces"]
 
-    pieces = []          # (square, piece_type 0..5, color 0 white / 1 black)
+    pieces = []          # (square, piece_type 0..5 incl king, color 0 white / 1 black)
     kings = [None, None]
     for i, sq in enumerate(squares):
         # int() casts break out of numpy uint8 arithmetic (which overflows).
         code = (int(nibbles[i // 2]) >> (4 * (i % 2))) & 0xF
         ptype, color = code % 6, code // 6
+        pieces.append((sq, ptype, color))
         if ptype == 5:
             kings[color] = sq
-        else:
-            pieces.append((sq, ptype, color))
 
     feats = [[], []]
     for perspective in (0, 1):  # 0 white, 1 black
-        ksq = kings[perspective] if perspective == 0 else kings[perspective] ^ 56
+        ksq = kings[perspective]
         for sq, ptype, color in pieces:
-            psq = sq if perspective == 0 else sq ^ 56
-            side = 0 if color == perspective else 1
-            feats[perspective].append(ksq * FEATURES_PER_KSQ + (ptype * 2 + side) * 64 + psq)
+            feats[perspective].append(_make_index(perspective, ksq, ptype, color, sq))
 
     return feats[0], feats[1], int(rec["stm"]), int(rec["score"]), int(rec["result"])
 
@@ -102,18 +127,28 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     """
     Decodes ALL records into dense arrays once (the per-record Python loop is
     the bottleneck; done once, epochs afterwards are pure array slicing):
-      stm_feats, opp_feats  int64 [n, MAX_ACTIVE] (-1 = padding)
+      stm_feats, opp_feats  int16 [n, MAX_ACTIVE] (-1 = padding)
       scores, results       float32 [n]
     Optionally cached to an .npz next to the dataset.
+
+    Feature indices span [0, INPUT_SIZE-1] = [0, 22527] and the padding sentinel
+    is -1, so int16 holds them exactly at 1/4 the RAM of int64. That 4x is what
+    lets the whole combined dataset (all generations) fit in memory without
+    subsampling. EmbeddingBag needs Long indices, so model.forward casts per
+    batch (cheap: batch*32 values).
     """
     if cache_path and os.path.exists(cache_path):
         data = np.load(cache_path)
         print(f"feature cache loaded: {cache_path}")
-        return data["stm"], data["opp"], data["scores"], data["results"]
+        # Legacy caches were saved as int64; cast down to int16 (lossless, the
+        # values fit in [-1, 22527]). No-op if the cache is already int16.
+        return (data["stm"].astype(np.int16, copy=False),
+                data["opp"].astype(np.int16, copy=False),
+                data["scores"], data["results"])
 
     n = len(records)
-    stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int64)
-    opp_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int64)
+    stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
+    opp_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
     scores = np.zeros(n, dtype=np.float32)
     results = np.zeros(n, dtype=np.float32)
 

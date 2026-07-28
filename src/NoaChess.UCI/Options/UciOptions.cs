@@ -18,6 +18,7 @@ public sealed class UciOptions
     public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
     public bool UseNnue { get; private set; }
+    public bool UseNnueExplicitlySet { get; private set; }
     public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
     public string DebugLogFile { get; private set; } = "";
@@ -77,7 +78,8 @@ public sealed class UciOptions
                 return "Ponder";
 
             case "usennue" when bool.TryParse(value, out bool useNnue):
-                UseNnue = false && useNnue; // No NNUE until v2.0.
+                UseNnue = useNnue;
+                UseNnueExplicitlySet = true;
                 return "UseNNUE";
 
             case "evalfile":
