@@ -41,10 +41,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v3.1.0** — **Lazy SMP parallel search (up to 32 threads). `Threads=1` byte-identical to v3.0.0 (1,307,077 nodes exact on a fixed-depth suite); node throughput ~7.6× at 8 threads; `Threads=30` vs `Threads=1` measures +253 Elo (20+0.2, LOS 100%), CCRL field calibration pending.** Worker threads search the same root sharing ONE transposition table (lock-free by benign races: a torn 16-byte entry is discarded by the 32-bit key check and the existing pseudo-legality vetting) and vote on the move; the board (`Board.Clone()`), search stack, killer/history/continuation/capture/pawn-correction tables and evaluator (NNUE accumulators own per thread, network weights shared) are all per-thread. The main worker owns time management and reports `info`; helpers run headless until stopped. UCI `Threads` opened to `spin default 1 min 1 max 32`. Verified: no crashes, all moves legal across 1→32 threads with Classical and NNUE; node scaling 1.00/2.02/4.14/7.60× at 1/2/4/8. Ships an **SMP time-management fix** (instability averaged over the pool + soft deadline capped + a node-level mid-iteration cap at 1.5× the soft budget) that bounds a ponderhit clock spike — a forced recapture measured 22-37s at 30 threads now stays ≤~5s (max 5.2s/10 runs), single-thread byte-identical. Also fixes a **pre-existing UCI output-pipe deadlock** (present since ≥v3.0.0) that could make the engine go silent under lichess-bot and fast-TC/high-concurrency matches: output now flows through a single-consumer queue so the command loop never blocks on stdout (stress: hung ~24/60 games before, 80/80 + Threads-8 clean after). Startup banner suppressed for piped stdin; a spurious `UseNNUE ignored` message on an early `setoption` removed. 205/205 tests.
@@ -137,10 +139,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v3.1.0** — **Búsqueda paralela Lazy SMP (hasta 32 hilos). `Threads=1` byte-idéntico a v3.0.0 (1.307.077 nodos exactos en batería a profundidad fija); rendimiento en nodos ~7,6× a 8 hilos; `Threads=30` vs `Threads=1` mide +253 Elo (20+0.2, LOS 100%), calibración CCRL de campo pendiente.** Los hilos worker buscan la misma raíz compartiendo UNA tabla de transposición (lock-free por carreras benignas: una entrada de 16 bytes rota se descarta por la verificación de clave de 32 bits y el veto de pseudo-legalidad ya existente) y votan la jugada; el tablero (`Board.Clone()`), la pila de búsqueda, las tablas killer/history/continuation/capture/pawn-correction y el evaluador (acumuladores NNUE propios por hilo, pesos de la red compartidos) son todos por hilo. El worker principal gestiona el tiempo y reporta `info`; los ayudantes van sin cabeza hasta el stop. UCI `Threads` abierto a `spin default 1 min 1 max 32`. Verificado: sin crashes, todas las jugadas legales de 1 a 32 hilos con clásico y NNUE; escalado de nodos 1.00/2.02/4.14/7.60× a 1/2/4/8. Incluye un **arreglo de gestión de tiempo SMP** (instabilidad promediada sobre el pool + deadline soft acotado + cap a nivel de nodo a media iteración a 1,5× el presupuesto soft) que acota un pico de reloj en ponderhit — una recaptura forzada medía 22-37s a 30 hilos y ahora se queda ≤~5s (max 5.2s/10 corridas), un hilo byte-idéntico. Además corrige un **deadlock de pipe de salida UCI pre-existente** (desde ≥v3.0.0) que podía dejar mudo al motor bajo lichess-bot y partidas con TC rápido / concurrencia alta: la salida va por una cola de un solo consumidor, así el loop de comandos nunca se bloquea en stdout (stress: colgaba a ~24/60 antes, 80/80 + Threads-8 limpio después). Banner de inicio suprimido con stdin canalizado; eliminado un mensaje espurio `UseNNUE ignored` en un `setoption` temprano. 205/205 tests.
