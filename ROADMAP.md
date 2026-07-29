@@ -826,6 +826,7 @@ El libro de NoaChess **no busca variedad — busca ganar**. Si una variante punt
 | 2.8.0 | **Syzygy tablebases (ADELANTADO — orden de la referencia: TB antes que NNUE)** — eval perfecta en juego + adjudicación y re-etiquetado del datagen | TBD | +juego finales |
 | 3.0.0 | NNUE producción (HalfKP-256; datagen con libro semilla de posiciones + re-etiquetado Syzygy) | TBD | ~3150+ |
 | **3.1.0** | **Lazy SMP (16 hilos) — ✅ HECHO** — `Threads=1` byte-idéntico, escalado de nodos ~7,6× a 8 hilos | gauntlet LTC pendiente | ~3150+ esperado |
+| **3.1.1** | **Cold-start patch — ✅ HECHO** — `PublishReadyToRun` AOT: arranque ~25 s → ~7 s; warmup NNUE depth 6 → 1. Sin cambio de fuerza | — | = **~3050 CCRL** |
 | 3.2.0 | NNUE con posiciones humanas Lichess/FIDE (bloque 6E de datos) | TBD | — |
 | 3.3.0 | NNUE self-play RL | TBD | — |
 | 4.0.0 | Libro de aperturas de competición (opcional — la referencia no tiene libro propio; los torneos usan libros neutrales) | — | torneo |

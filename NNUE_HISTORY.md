@@ -30,7 +30,7 @@ and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050
 This is the first CCRL number for the NNUE line. Note it lands only ~+15 over the
 classical estimate (~3035), NOT the +42 the internal SPRT chain suggested — the
 expected shrink of self-play gains against a diverse external field. It is the
-FLOOR: Lazy SMP (v3.1.0, measured +253 Elo Threads=30 vs Threads=1 at 20+0.2, LOS 100%; CCRL field gauntlet pending)
+FLOOR: Lazy SMP (v3.1.0, measured +253 Elo Threads=30 vs Threads=1 at 20+0.2, LOS 100%; CCRL field gauntlet pending); cold-start fix (v3.1.1, no Elo change)
 and deeper-node generations (gen7+ at 28000+ nodes) add on top. This 3050 is
 single-threaded.
 
