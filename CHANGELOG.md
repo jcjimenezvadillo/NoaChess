@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2026-07-29 (v3.1.2) — time management: decisive-position clock waste + easy-move
+
+**SPRT vs v3.1.1 (tc=30+0.3, elo0=0, elo1=6, Threads=1): [SPRT pending].**
+
+Hot-patch over v3.1.1. No evaluation or search-correctness change. Fixes a measurable clock-bleeding defect present in all prior versions: at 5+5 rapid the engine spent **8.5 s on an obvious recapture** whose forced mate-in-8 it had already found at depth 15, banking nothing while the opponent banked time.
+
+**Root causes (two, both in `AlphaBetaSearch.cs`, clock-mode only — fixed-depth is byte-identical):**
+
+1. **Mid-iteration node-level cap now applies to single-thread.** The soft deadline is enforced only at root-move boundaries; in a won position with a warm TT a single deep root move can overshoot to the loose hard maximum before the next boundary check. A node-level cap `_maxTimeMs = min(hardTime, 1.5 × totalTime)` already existed for SMP (introduced in v3.1.0 for the ponderhit spike); it now applies to single-thread too. Constant renamed `SmpOvershootFactor` → `OvershootFactor`.
+
+2. **Easy-move detection.** When `|score| ≥ 700 cp` (a large material lead or near-mate, well above any ambiguous position) AND the best move has been stable for ≥ 6 iterations AND `depth ≥ 12`, the remaining budget is capped to 12 % of the time optimum. Equal and complex positions are unaffected — measured: opening 13 s, midgame 24 s, Kiwipete 5.8 s, all identical.
+
+**Measured effect:** decisive endgame recapture at 5+5: **8.5 s → 1.68 s**; at 60 s clock: 3.1 s → 0.68 s. Equal/complex positions unchanged. 210/210 tests.
+
+All five constants are SPRT-tunable: `EasyMoveMargin` 700, `EasyMoveMinDepth` 12, `EasyMoveStableDepth` 6, `EasyMoveFraction` 0.12, `OvershootFactor` 1.5.
+
 ## 2026-07-29 (v3.1.1) — Engine cold-start fix (ReadyToRun AOT)
 
 Hot-patch over v3.1.0. No search, eval, or Elo change. Pure startup-latency fix for the Lichess bot (lichess-bot spawns a fresh engine process per game; the cold JIT cost was ~25 s per launch, causing opponents to abort before Noa could move).

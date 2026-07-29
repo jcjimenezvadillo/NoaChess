@@ -12,6 +12,8 @@
 
 | Versión | Elo CCRL | Estado |
 |---------|----------|--------|
+| **3.1.2** | **[SPRT pendiente vs v3.1.1, tc=30+0.3]** | **Fix de tiempo + easy-move (candidato).** Cap a media iteración extendido a un hilo; easy-move dispara a `\|score\|≥700` estable ≥6 iteraciones. Medido: 8.5s→1.68s en final decisivo a 5+5, posiciones iguales sin cambio. 210/210 tests. `sprt_easymove.bat` corriendo. |
+| **3.1.1** | **~3050 CCRL (sin cambio de Elo)** | **Cold-start fix (ReadyToRun AOT).** `PublishReadyToRun=true` elimina el JIT frío por proceso: arranque ~25 s → ~7 s (ciclo uci+isready ~13 s frío / ~8 s caliente). Warmup NNUE depth 6 → 1. Sin cambio en búsqueda, eval ni Elo — corrección de latencia para lichess-bot. |
 | **3.1.0** | **Red gen5 embebida mide ~3050 ±40 CCRL (gauntlet 51.0% en 240p vs campo 2862–3281, a 1 hilo — 1ª calibración CCRL de la NNUE). Lazy SMP: `Threads=1` byte-idéntico a 3.0.0 (1.307.077 nodos exactos); escalado de nodos ~7,6× a 8 hilos; el SMP mide +253 Elo `Threads=30` vs `Threads=1` (20+0.2, LOS 100%, gauntlet CCRL de campo pendiente)** | **Búsqueda paralela Lazy SMP.** N workers buscan la misma raíz compartiendo UNA sola TT (lock-free por carreras benignas: verificación de clave de 32 bits + veto de pseudo-legalidad descartan lecturas rotas); pila de búsqueda, historias, tablero (`Board.Clone()`) y evaluador son por hilo (NNUE comparte la red read-only con acumuladores propios; clásico instancia nueva). El worker principal gestiona el tiempo y reporta `info`; al final los workers votan la jugada (ponderada por score, con manejo de mates). UCI `Threads` 1–32. **Arreglo de tiempo SMP** (instabilidad promediada sobre el pool + deadline soft acotado + cap a nivel de nodo a media iteración a 1,5× el soft): acota un pico de reloj en ponderhit sobre TT caliente (recaptura forzada 22-37s → ≤~5s, max 5.2s/10 corridas). Verificado: sin crashes y jugadas legales a 1–32 hilos con Classical y NNUE. 205/205 tests |
 | **3.0.0** | **gen3 +4.5 ±11.4 vs clásico (1002-968-680 [0.506] 2650p, LOS 77.8%, positivo agotado); gauntlet LTC pendiente** | **NNUE HalfKAv2_hm: la evaluación neuronal supera a la clásica.** Feature transformer schema 2 (InputSize 22528, reyes como features, 32 buckets), topología FT 22528→128 ×2 → L1 32 → 1, cuantización QA=255/QB=64/OutputScale=400. Inferencia SIMD AVX2 (VPMADDWD, activación clipped precomputada, MoveFeature fusionado): 312k→446k NPS. Acumulador incremental verificado por paridad. `NoaChess.DataGen` con mezcla WDL + adjudicación Syzygy/resign/tablas. **Bug crítico corregido:** el hard-stop por límite de nodos devolvía Score 0 en la primera jugada de raíz, poniendo a cero el 57% de las etiquetas (57.6%→2.1%). Self-play generacional: gen2 +1.9 Elo, gen3 +4.5 Elo vs clásico. Red `noa-gen3` embebida en el exe. 276/276 tests |
 | **2.8.4** | **+9.2 ±9.1 vs 2.8.3 (3000p exhausted positive, LOS 97.5%, LLR 1.91); gauntlet LTC pendiente** | **Ajustadores LMR ttCapture y ttPv sobre el pipeline de punto fijo.** ttCapture `r += 1079`: cuando la jugada TT es una captura, las quietas tardías se reducen ~1 ply más. ttPv `r -= 1024 + ajustes`: nodos que estuvieron en la PV anterior se reducen ~1 ply menos. Cada uno escrutado individualmente (>93% LOS) y validados juntos vs v2.8.3 en el checkpoint SPRT. cutNode hilado a través de Negamax como infraestructura (término aislado CUT a 4026 y 1536). Cota ContinuationHistory corregida a 8192. Término muerto de historia LMR eliminado. 276/276 tests |
@@ -49,6 +51,7 @@
 | 2.8.0 | ❌ nunca validado | Bloque 9: Syzygy HECHO — bugs de raíz/DTZ corregidos en 2.8.1 |
 | **3.0.0+NNUE** | **HECHO — gen3 +4.5 Elo vs clásico; gauntlet LTC pendiente** | **Bloque 6: NNUE HalfKAv2_hm en producción.** Feature transformer + acumulador incremental, red cuantizada, inferencia SIMD, datagen con adjudicación Syzygy, self-play generacional. La red neuronal supera al evaluador clásico. Siguiente: iterar generaciones (gen4+) y calibrar el absoluto CCRL con gauntlet |
 | **3.1.0+SMP** | **HECHO (implementación) — ~3150+ esperado con 16 núcleos, gauntlet LTC pendiente** | **Lazy SMP multihilo (v3.1.0).** `Threads=1` byte-idéntico a 3.0.0, escalado de nodos ~7,6× a 8 hilos. Calibración CCRL absoluta con gauntlet a TC largo pendiente |
+| **3.1.2 — gestión de tiempo (candidato, `sprt_easymove.bat`)** | **HECHO (implementación) — SPRT pendiente** | **Fix de tiempo en posiciones decisivas + "easy move" (2026-07-29).** BUG medido: a 5+5, Noa gastaba **8.5s en una recaptura obvia cuyo mate en 8 ya había visto** (llega a d1), sangrando el reloj mientras el rival banca. Causa raíz doble: (1) el soft-deadline solo se comprueba en fronteras de jugada raíz, así que una iteración profunda en posición ganada se atasca en su 1ª jugada y desborda hasta el límite duro — el cap a media iteración `_maxTimeMs` (que existía solo para SMP) **ahora también a un hilo**; (2) faltaba **easy-move**: cuando `\|score\|≥700` y la mejor jugada lleva ≥6 iteraciones estable (a partir de depth 12), juega en el 12% del optimum. Medido: final +pieza a 5+5 **8.5s→1.68s**; las posiciones que requieren cálculo piensan igual (apertura 13s, medio juego 24s sin cambio). Clock-mode only → profundidad-fija byte-idéntico. 210/210 tests. Constantes tunables por SPRT (`EasyMoveMargin/MinDepth/StableDepth/Fraction`, `OvershootFactor`) |
 
 **Nota de calibración (2026-07-11):** la cifra ~2870 que se manejó para la 2.6.1 era una extrapolación del SPRT STC (tc 10+0.1) sobre un gauntlet con campo mal etiquetado. Las ganancias de eval encogen a LTC. La referencia sólida a partir de ahora son los gauntlets con campos verificados; el ~2780 actual está doblemente confirmado.
 
@@ -687,7 +690,7 @@ Antes de generar datos, verificar que el código de inferencia es completo:
 
 ## BLOQUE 8 — NNUE con posiciones de partidas humanas de alto nivel (v3.2.0)
 
-**Estado: PENDIENTE · Después del bloque 7**
+**Estado: EN CURSO (infraestructura lista 2026-07-29) · Esperando descargas de PGN**
 
 Este bloque añade **diversidad de posiciones** al entrenamiento sin cambiar la fuente de etiquetas.
 
@@ -708,6 +711,26 @@ La debilidad del self-play puro es que el engine tiende a explorar siempre los m
 - ⚠️ Jugar contra un motor fuerte NO funciona: las partidas son desequilibradas (posiciones con ventaja enorme) y las etiquetas siguen siendo malas porque la búsqueda etiqueta en un tablero ya decidido.
 - **Mezcla de datos:** ~70% self-play + ~30% posiciones humanas (ratio a calibrar con SPRT).
 - El entrenamiento con mezcla debería converger más rápido y producir una red más robusta en posiciones poco frecuentes en el self-play.
+
+### Infraestructura (lista 2026-07-29)
+
+- **`San.cs`** (`NoaChess.Core/Notation/`) — parser SAN que resuelve notación algebraica estándar contra `MoveGenerator.GenerateLegalMoves`, incluye enroque (O-O/0-0), promoción (=Q o bare e8Q) y desambiguación. Verificado con una partida completa real de chess.com + casos de borde. 5/5 tests.
+- **`PgnReader.cs`** (`NoaChess.DataGen/`) — lector PGN que extrae la línea principal de SAN descartando comentarios `{}`, variantes `()`, NAGs `$` y números de movimiento.
+- **`PgnBook.cs`** (`NoaChess.DataGen/`) — subcomando `pgnbook`: lee carpetas/ficheros/glob de PGNs, reproduce cada partida y extrae una posición FEN aleatoria en el rango `[--min-ply, --max-ply]` (por defecto ply 12–20). Opciones: `--dedup`, `--append`, `--per-game`, `--max`, `--seed`. Reanudable (salta ficheros ya procesados con `--append`).
+- **`Program.cs`** (`NoaChess.DataGen/`) — arranque `pgnbook` + flag `--book <fens>` en el datagen: si se especifica, cada partida parte de un FEN del libro (en vez de posición inicial + 8-9 movimientos aleatorios).
+
+### Flujo de ejecución (cuando lleguen los PGNs)
+
+```
+# Por cada carpeta de PGNs (Lichess elite, chess.com GMs):
+dotnet run --project tools/NoaChess.DataGen -- pgnbook --in <carpeta> --out books/human.fens --append --dedup
+
+# Datagen con el libro:
+dotnet run --project tools/NoaChess.DataGen -- --book books/human.fens --games 500000 --out data/gen6_human.noadata
+
+# Entrenar y comparar con gauntlet de campo (no SPRT de self-play):
+python tools/training/nnue/train_nnue.py --data data/gen6_human.noadata ...
+```
 
 ---
 
@@ -827,7 +850,8 @@ El libro de NoaChess **no busca variedad — busca ganar**. Si una variante punt
 | 3.0.0 | NNUE producción (HalfKP-256; datagen con libro semilla de posiciones + re-etiquetado Syzygy) | TBD | ~3150+ |
 | **3.1.0** | **Lazy SMP (16 hilos) — ✅ HECHO** — `Threads=1` byte-idéntico, escalado de nodos ~7,6× a 8 hilos | gauntlet LTC pendiente | ~3150+ esperado |
 | **3.1.1** | **Cold-start patch — ✅ HECHO** — `PublishReadyToRun` AOT: arranque ~25 s → ~7 s; warmup NNUE depth 6 → 1. Sin cambio de fuerza | — | = **~3050 CCRL** |
-| 3.2.0 | NNUE con posiciones humanas Lichess/FIDE (bloque 6E de datos) | TBD | — |
+| **3.1.2** | **Fix de tiempo — candidato (`sprt_easymove.bat`)** — cap a media iteración a 1 hilo + easy-move a \|score\|≥700cp; 8.5s→1.68s en final decisivo a 5+5 | SPRT pendiente | — |
+| 3.2.0 | NNUE con posiciones humanas Lichess/chess.com GMs (bloque 8) — infra `pgnbook`+`San.cs`+`--book` lista; pendiente PGNs → datagen → entrenamiento | TBD | — |
 | 3.3.0 | NNUE self-play RL | TBD | — |
 | 4.0.0 | Libro de aperturas de competición (opcional — la referencia no tiene libro propio; los torneos usan libros neutrales) | — | torneo |
 | 4.5.0+ | Extras de fuerza | — | — |
