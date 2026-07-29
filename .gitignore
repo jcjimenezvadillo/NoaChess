@@ -91,3 +91,6 @@ tools/training/nnue/checkpoints/
 /tools/training/nnue/__pycache__/model.cpython-313.pyc
 /tools/training/nnue/__pycache__/train_nnue.cpython-313.pyc
 /tools/training/nnue/__pycache__/validate_nnue.cpython-313.pyc
+
+# Engines
+engines/
