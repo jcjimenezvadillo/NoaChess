@@ -43,6 +43,10 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
+    <!-- Pre-compile managed code to native R2R format at publish time.
+         Eliminates the ~25-second cold-start JIT delay that occurs when
+         lichess-bot spawns a fresh engine process for each game. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
     <!-- No debug symbols in the distributed build: the published folder
          contains exactly one file, the exe. Crash stack traces lose source
          line numbers, which is fine for distribution — debugging happens on
