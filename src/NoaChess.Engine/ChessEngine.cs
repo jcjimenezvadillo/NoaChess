@@ -1,4 +1,4 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 using NoaChess.Engine.Evaluation.Classical;
 using NoaChess.Engine.Evaluation.Nnue;
 using NoaChess.Engine.Search;
@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "3.1.0";
+    public const string Version = "3.1.1";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -309,15 +309,13 @@ public sealed class ChessEngine
         _search.SetEvaluator(useNnue ? _nnue! : new ClassicalEvaluator());
         _helpersStale = true; // helpers must clone the newly active evaluator
 
-        // JIT warm-up: the first calls into NNUE's SIMD inference path and
-        // the accumulator update code trigger tiered-compilation recompiles
-        // (Tier0 -> Tier1) the first few dozen times they run. Left alone,
-        // that recompilation happens whenever it happens — possibly deep
-        // into a real timed game, where a stall eats into the clock. Doing a
-        // short, throwaway search right here (setoption time, before any
-        // clock is running) pays that one-time cost up front instead.
+        // NNUE accumulator warm-up: a depth-1 search initialises the lazy
+        // accumulator for the start position and exercises the SIMD inference
+        // path so any residual JIT cost is paid before the clock starts.
+        // (Depth 6 was the original value; with PublishReadyToRun the native
+        // code is already compiled at publish time so depth 1 is enough.)
         if (useNnue)
-            _search.FindBestMove(new Board(), SearchLimits.Depth(6));
+            _search.FindBestMove(new Board(), SearchLimits.Depth(1));
 
         return true;
     }
