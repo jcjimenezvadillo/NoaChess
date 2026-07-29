@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NoaChess.Core;
 
 namespace NoaChess.DataGen;
@@ -18,6 +19,7 @@ public static class PgnBook
         int minPly = 12, maxPly = 20, perGame = 1, seed = Environment.TickCount;
         long max = 0;
         bool dedup = false;
+        bool append = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -31,6 +33,7 @@ public static class PgnBook
                 case "--max": max = long.Parse(args[++i]); break;
                 case "--seed": seed = int.Parse(args[++i]); break;
                 case "--dedup": dedup = true; break;
+                case "--append": append = true; break;
                 default: Console.WriteLine($"pgnbook: unknown option '{args[i]}'"); return 1;
             }
         }
@@ -53,14 +56,18 @@ public static class PgnBook
             return 1;
         }
 
+        long totalBytes = files.Sum(f => new FileInfo(f).Length);
+
         var rng = new Random(seed);
         var seen = dedup ? new HashSet<string>() : null;
         long games = 0, written = 0, failed = 0, tooShort = 0;
+        long bytesCompleted = 0;
+        var sw = Stopwatch.StartNew();
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-        using var writer = new StreamWriter(output);
+        using var writer = new StreamWriter(output, append);
 
-        Console.WriteLine($"pgnbook: {files.Length} file(s), ply=[{minPly},{maxPly}], per-game={perGame}, seed={seed}, dedup={dedup}");
+        Console.WriteLine($"pgnbook: {files.Length} file(s), {totalBytes / 1_048_576:N0} MB, ply=[{minPly},{maxPly}], per-game={perGame}, seed={seed}, dedup={dedup}, append={append}");
 
         foreach (string file in files)
         {
@@ -81,7 +88,7 @@ public static class PgnBook
                         if (!San.TryParse(board, moves[p], out Move move)) { ok = false; break; }
                         board.MakeMove(move);
                     }
-                    if (!ok) { failed++; break; } // a bad token voids the whole game
+                    if (!ok) { failed++; break; }
 
                     string fen = Fen.Save(board);
                     if (seen != null && !seen.Add(fen)) continue;
@@ -91,8 +98,17 @@ public static class PgnBook
                 }
 
                 if (games % 100000 == 0)
-                    Console.WriteLine($"  {games} games, {written} positions...");
+                {
+                    double secs = sw.Elapsed.TotalSeconds;
+                    double rate = secs > 0 ? games / secs : 0;
+                    long bytesRead = bytesCompleted + reader.BaseStream.Position;
+                    double pct = totalBytes > 0 ? 100.0 * bytesRead / totalBytes : 0;
+                    double etaSecs = pct > 0 ? secs * (100.0 - pct) / pct : 0;
+                    var eta = TimeSpan.FromSeconds(etaSecs);
+                    Console.WriteLine($"  {games:N0} games, {written:N0} pos, {rate:N0} g/s, {pct:F1}% done, ETA {eta:hh\\:mm\\:ss}");
+                }
             }
+            bytesCompleted += new FileInfo(file).Length;
         }
 
         Report(games, written, failed, tooShort);
