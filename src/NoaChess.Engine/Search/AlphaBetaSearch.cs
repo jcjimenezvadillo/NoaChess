@@ -109,10 +109,24 @@ public sealed class AlphaBetaSearch
     // mask makes the check nearly free.
     private const int StopCheckInterval = 2048;
 
-    // SMP mid-iteration overshoot guard: bound how far a single deep root move
-    // may run past the (dynamic) soft budget before the node-level stop fires.
-    // See the _maxTimeMs update in FindBestMove.
-    private const double SmpOvershootFactor = 1.5;
+    // "Easy move" time control (clock mode). A decisively winning or losing
+    // score that has held for several iterations is not going to change, so the
+    // engine plays it on a small fraction of the optimum instead of burning the
+    // whole budget. Without this it spent 8.5 s at 5+5 on an obvious recapture
+    // whose forced mate it had already seen — bleeding the clock while an
+    // instant-moving opponent banked time. Tunable by SPRT.
+    private const int EasyMoveMargin = 700;       // |score| (cp) that counts as decisive
+    private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
+    private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
+    private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
+
+    // Mid-iteration overshoot guard: bound how far a single deep root move may
+    // run past the (dynamic) soft budget before the node-level stop fires. The
+    // soft deadline is only enforced at root-move boundaries, so a deep
+    // iteration whose first root move takes seconds (a won/decisive position
+    // reached over a warm TT) otherwise runs to the loose hard maximum. Applies
+    // to single-thread AND SMP. See the _maxTimeMs update in FindBestMove.
+    private const double OvershootFactor = 1.5;
 
     private IPositionEvaluator _evaluator;
 
@@ -637,26 +651,37 @@ public sealed class AlphaBetaSearch
                 if (SearchThreadCount > 1 && totalTime > _softTimeMs)
                     totalTime = _softTimeMs;
 
+                // Easy move: a decisively winning/losing score (including a
+                // found mate/tablebase result, whose magnitude is far above the
+                // margin) that has not changed the best move for several
+                // iterations will not change. Play it on a fraction of the
+                // budget and bank the clock rather than spend the full optimum
+                // on an obvious move. Only after a trustworthy depth.
+                if (depth >= EasyMoveMinDepth
+                    && Math.Abs(score) >= EasyMoveMargin
+                    && lastBestMoveDepth + EasyMoveStableDepth <= depth)
+                    totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
+
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
                 if (ElapsedMs > totalTime)
                     break;
                 _softDeadlineMs = (long)totalTime;
 
-                // SMP mid-iteration overshoot guard. The root-boundary soft-stop
+                // Mid-iteration overshoot guard. The root-boundary soft-stop
                 // (SearchRoot) only fires BETWEEN root moves, so a single deep
                 // root move begun near the budget edge can run for many seconds
-                // to the loose hard maximum before the next check — a warm TT
-                // after a ponderhit reaches high depth almost instantly, so this
-                // hits trivial/forced moves (measured 22-37s on a forced recapture
-                // at 30 threads). Tighten the NODE-level deadline to a small
-                // multiple of the (dynamic) soft budget: CheckStop then aborts the
-                // runaway move mid-iteration and the hard-stop keeps the last
-                // completed iteration's move. Never above the hard maximum, and
-                // single-thread keeps the loose hard limit (byte-identical).
-                _maxTimeMs = SearchThreadCount > 1
-                    ? Math.Min(_hardTimeMs, (long)(totalTime * SmpOvershootFactor))
-                    : _hardTimeMs;
+                // to the loose hard maximum before the next check — a won
+                // position reaches high depth almost instantly, so this burned
+                // 8.5 s at 5+5 on an obvious recapture whose mate was already
+                // seen (and 22-37 s on a ponderhit at 30 threads). Tighten the
+                // NODE-level deadline to a small multiple of the (dynamic) soft
+                // budget: CheckStop then aborts the runaway move mid-iteration
+                // and the hard-stop keeps the last completed iteration's move.
+                // Never above the hard maximum; applies to single-thread and SMP.
+                // Fixed-depth/analysis is unaffected (this whole block is clock
+                // mode only), so those node counts stay byte-identical.
+                _maxTimeMs = Math.Min(_hardTimeMs, (long)(totalTime * OvershootFactor));
             }
 
             _iterValue[iterIdx] = score;
