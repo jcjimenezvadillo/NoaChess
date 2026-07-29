@@ -35,12 +35,27 @@ if (args.Length >= 3 && args[0] == "--nnueprobe")
     return 0;
 }
 
+// `pgnbook` subcommand: build an opening-seed FEN book from human PGN databases.
+if (args.Length >= 1 && args[0] == "pgnbook")
+    return PgnBook.Run(args[1..]);
+
 var options = ParseArgs(args);
 Console.WriteLine($"datagen: games={options.Games} nodes={options.Nodes} threads={options.Threads} seed={options.Seed}");
 Console.WriteLine($"output : {options.Output}");
 Console.WriteLine($"limits : resign>=|{options.Resign}|cp/6plies, draw<=|{options.DrawScore}|cp/{options.DrawCount}plies(after ply 60), maxPlies={options.MaxPlies}");
 if (options.Model is not null)
     Console.WriteLine($"model  : {options.Model} (self-play uses NNUE instead of the classical evaluator)");
+
+// Optional human-opening seed book (from the pgnbook subcommand): each game
+// starts from a random position in it instead of 8-9 random legal plies.
+string[]? book = null;
+if (options.Book is not null)
+{
+    book = File.ReadAllLines(options.Book).Where(l => l.Trim().Length > 0).ToArray();
+    if (book.Length == 0)
+        throw new InvalidOperationException($"Opening book '{options.Book}' is empty.");
+    Console.WriteLine($"book   : {options.Book} ({book.Length} seed positions; random openings disabled)");
+}
 
 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.Output))!);
 
@@ -74,24 +89,37 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
             engine.NewGame();
             buffer.Clear();
 
-            var board = new Board();
-
-            // Random opening: 8-9 uniformly random legal plies give opening
-            // variety without a book (standard practice for datagen).
-            int openingPlies = 8 + rng.Next(2);
-            bool aborted = false;
-            for (int i = 0; i < openingPlies; i++)
+            // Opening seed. With --book: start from a random HUMAN position
+            // (realistic and diverse; see the pgnbook subcommand). Without it:
+            // 8-9 uniformly random legal plies — variety without a book, but they
+            // over-sample junk/unbalanced positions.
+            Board board;
+            int ply;
+            if (book is not null)
             {
-                var legal = MoveGenerator.GenerateLegalMoves(board);
-                if (legal.Count == 0) { aborted = true; break; }
-                board.MakeMove(legal[rng.Next(legal.Count)]);
+                board = new Board(book[rng.Next(book.Length)]);
+                if (GameState.GetResult(board) != GameResult.Ongoing)
+                    continue;
+                ply = 2 * (board.FullmoveNumber - 1) + (board.SideToMove == Color.Black ? 1 : 0);
             }
-            if (aborted || GameState.GetResult(board) != GameResult.Ongoing)
-                continue;
+            else
+            {
+                board = new Board();
+                int openingPlies = 8 + rng.Next(2);
+                bool aborted = false;
+                for (int i = 0; i < openingPlies; i++)
+                {
+                    var legal = MoveGenerator.GenerateLegalMoves(board);
+                    if (legal.Count == 0) { aborted = true; break; }
+                    board.MakeMove(legal[rng.Next(legal.Count)]);
+                }
+                if (aborted || GameState.GetResult(board) != GameResult.Ongoing)
+                    continue;
+                ply = openingPlies;
+            }
 
             // Self-play with a fixed node budget per move.
             int whiteResult = 0; // +1 white wins, -1 black wins, 0 draw.
-            int ply = openingPlies;
             int decisiveStreak = 0;
             int drawStreak = 0;
 
@@ -207,11 +235,12 @@ Console.WriteLine($"done: {gamesDone} games, {totalRecords:N0} positions in {sto
 Console.WriteLine($"manifest: {manifestPath}");
 return 0;
 
-static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
     string? model = null;
+    string? book = null;
     int resign = int.MinValue; // Sentinel: auto-pick from the evaluator scale below.
     int maxPlies = 400;
     int drawScore = 10;        // Draw adjudication threshold in centipawns.
@@ -227,6 +256,7 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
             case "--seed": seed = int.Parse(args[i + 1]); break;
             case "--out": output = args[i + 1]; break;
             case "--model": model = args[i + 1]; break;
+            case "--book": book = args[i + 1]; break;
             case "--resign": resign = int.Parse(args[i + 1]); break;
             case "--maxplies": maxPlies = int.Parse(args[i + 1]); break;
             case "--drawscore": drawScore = int.Parse(args[i + 1]); break;
@@ -244,5 +274,5 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
     if (resign == int.MinValue)
         resign = model is null ? 1500 : 700;
 
-    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount);
+    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount, book);
 }
