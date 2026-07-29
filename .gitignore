@@ -82,8 +82,6 @@ tools/training/nnue/checkpoints/
 # Embedded net copy: derived from models/nnue via the pipeline, regenerated
 # every run; the csproj embeds it only when present (Exists condition).
 /src/NoaChess.UCI/Resources/noa-embedded.noannue
-/ROADMAP.md
-/ROADMAP.html
 /out/NoaChess.UCI.exe
 /tools/training/nnue/__pycache__/dataset.cpython-313.pyc
 /tools/training/nnue/__pycache__/export_model.cpython-313.pyc
