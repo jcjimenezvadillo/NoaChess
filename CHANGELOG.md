@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-29 (v3.1.1) — Engine cold-start fix (ReadyToRun AOT)
+
+Hot-patch over v3.1.0. No search, eval, or Elo change. Pure startup-latency fix for the Lichess bot (lichess-bot spawns a fresh engine process per game; the cold JIT cost was ~25 s per launch, causing opponents to abort before Noa could move).
+
+- Added `PublishReadyToRun=true` to the publish pipeline: the managed code is now compiled to native R2R format at publish time, eliminating the per-process JIT cost. Cold-start time: ~25 s → ~7 s (measured; full uci + isready cycle ~13 s cold, ~8 s warm).
+- Reduced NNUE warmup search from depth 6 to depth 1. With R2R the managed code is already native at launch; depth 1 is sufficient to initialise the lazy accumulator before the clock starts.
+
 ## 2026-07-29 (v3.1.0) — Lazy SMP: parallel search + SMP time-management fix
 
 **Multi-threaded search, up to 32 threads. `Threads=1` is byte-identical to v3.0.0 (verified: 1,307,077 nodes across a 6-position fixed-depth suite, exact match against the single-threaded build). Node throughput scales ~7.6× at 8 threads. SMP self-comparison: `Threads=30` vs `Threads=1` measures +253 ±104 Elo (tc=20+0.2, 24-1-12 over 37 games, LOS 100%, SPRT H1 accepted); CCRL field / long-TC calibration pending. Ships with an SMP time-management fix that bounds a ponderhit clock spike — a forced queen recapture that took 22-37s at 30 threads now stays ≤~5s (measured max 5.2s over 10 runs) — with single-thread play byte-identical.**
