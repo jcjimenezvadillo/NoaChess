@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using NoaChess.Engine;
 using NoaChess.GUI.Wpf.ViewModels;
 using NoaChess.GUI.Wpf.Views;
 
@@ -16,6 +17,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Window title carries the live engine version (single source of truth:
+        // ChessEngine.Version, the same constant the UCI "id name" uses), so it
+        // always shows the current version after a rebuild — no manual editing.
+        Title = $"NoaChess {ChessEngine.Version}";
         // The promotion selector is injected as a service so the ViewModel
         // does not depend on WPF windows.
         _viewModel = new BoardViewModel(new PromotionDialog.Service());
