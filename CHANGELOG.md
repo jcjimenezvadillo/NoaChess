@@ -1,8 +1,20 @@
 # CHANGELOG
 
+## 2026-07-30 (v3.2.0) — NNUE gen7 (NNUE-0.7) + human-opening datagen pipeline
+
+**SPRT gen7 vs gen5 (the previous embedded net, tc=10+0.1): +3.7 ±10.2, LOS 76.2%, [0.505] over 3000 games — marginal (parity; not a formal H1). SPRT gen7 vs classical: +28.5 ±13.0, LOS 100%, H1 accepted over 2176 games — the total accumulated NNUE value over the classical evaluator. CCRL gauntlet (240 games, 60+0.6, single-thread, 12-engine field 2862–3281): 57.9%, ~3080 ±40 CCRL, up from gen5's 51.0% (~3050) but within combined gauntlet noise.**
+
+Promotes the gen7 net under the generational rule (Elo > 0 and LOS ≥ 75% — the same rule that promoted gen3/gen4). Honest read: the human-opening seeding did **not** produce a strength jump over gen5 — the net change is neutral-to-slightly-positive. The value of the release is elsewhere:
+
+- **Human-opening datagen.** Self-play datagen now seeds openings from a human elite game book (chess.com >2800 + Lichess elite; 3.04M unique FENs deduped via the new `pgnbook` subcommand) instead of 8–9 random legal plies, which oversampled junk positions. This is the correct data foundation for the next step (elite-human-data training).
+- **NNUE-over-classical pinned at +28.5 ±13.** The direct gen7-vs-classical SPRT (LOS 100%) supersedes the old cascade-sum estimate (~+46 by transitivity), which over-counted: self-play Elo deltas are **not additive** (draw compression across similar nets, plus an inflated gen5-vs-gen4 link measured over only 1495 games).
+- Includes the **v3.1.2 time-management fix** (decisive-position clock waste + easy-move).
+
+**CPU note (pre-existing, reconfirmed):** the magic-bitboard path auto-selects PEXT/BMI2 only on Zen3+/Intel at runtime (`Magics.UsePext`, via CPUID family gate); Zen1/Zen+/Zen2 keep the multiply-shift magics, where PEXT is microcoded and slower. One binary, no per-CPU builds. 210/210 tests.
+
 ## 2026-07-29 (v3.1.2) — time management: decisive-position clock waste + easy-move
 
-**SPRT vs v3.1.1 (tc=30+0.3, elo0=0, elo1=6, Threads=1): [SPRT pending].**
+**SPRT vs v3.1.1: −5.0 ±27.7, LOS 36.3%, [0.496] over 283 games (tc=5+0.05, Threads=1) — strength-neutral at this TC. The fix is justified by the direct clock-waste measurement (8.5 s → 1.68 s at 5+5), which matters most in bullet/hyperbullet where the bot bleeds time and can flag.**
 
 Hot-patch over v3.1.1. No evaluation or search-correctness change. Fixes a measurable clock-bleeding defect present in all prior versions: at 5+5 rapid the engine spent **8.5 s on an obvious recapture** whose forced mate-in-8 it had already found at depth 15, banking nothing while the opponent banked time.
 
