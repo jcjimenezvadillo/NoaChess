@@ -507,7 +507,17 @@ public sealed class AlphaBetaSearch
 
         _bestMoveChangesTotal = 0; // monotonic; coordinator reads deltas of it
 
-        for (int depth = 1; depth <= limits.MaxDepth; depth++)
+        // Cap the iteration depth at the search stack's own limit. Without it,
+        // an unlimited search (ponder/infinite) in a position where every
+        // iteration returns instantly from the transposition table — a
+        // repetition dance with a warm TT — spins the loop through ever-higher
+        // depths that can no longer search anything, burning a core for the
+        // whole of the opponent's thinking time. Observed in a bot game: depths
+        // 22->26 completed in 30 ms with the node count barely moving. Beyond
+        // MaxPly the stack cannot go deeper anyway, so this only removes the
+        // degenerate spin; no real search ever reaches it.
+        int maxIterationDepth = Math.Min(limits.MaxDepth, MaxPly);
+        for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
             CheckStop();
             if (_stopped)

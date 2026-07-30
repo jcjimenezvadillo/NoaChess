@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-07-31 (v3.2.1) — bot stability: unbounded ponder spin + invisible stalls
+
+**Hot-patch over v3.2.0. No evaluation change and no strength claim: this is a robustness release, born from diagnosing a Lichess bot that "stopped playing after a few games" and had to be restarted by hand.**
+
+**The diagnosis first, because it was not what it looked like.** The engine was not hanging: the running session played 47+ games straight at 9-13 games/hour with no long silences and no `EngineTerminatedError`. The bot logs pointed elsewhere — **550 `TimeoutError` raised inside `asyncio.wait_for(protocol.initialize(), timeout)` on 2026-07-29** (lichess-bot passes `timeout=60.`, so the engine needed over a MINUTE to answer `uci` + `isready`), and **210 dropped lichess connections on 2026-07-30**, against zero such errors on 22-29 July. Root cause: lichess-bot spawns a fresh engine process per game, and with `Threads: 30` that process actually carries **~70-74 OS threads** (measured live) because ServerGC adds roughly one GC thread per core on top of the search threads. On a 16-core/32-thread machine nothing is left for the bot's Python/network thread or for the next game's engine startup. With `challenge.concurrency: 1`, one failed game is enough for the bot to look dead. **That part is fixed in the bot config (`Threads` 30 → 24), not in the engine.**
+
+**Two genuine engine defects surfaced during the investigation, and those are what this version ships:**
+
+- **Unbounded iteration depth in unlimited searches.** The iterative-deepening loop ran to `limits.MaxDepth`, which is `int.MaxValue` for ponder/infinite. In a repetition position with a warm transposition table every iteration returns instantly, so the loop spun through ever-higher depths that could no longer search anything — caught in a live bot game as **depths 22→26 completing in 30 ms** with the node count barely moving, burning a core for the whole of the opponent's thinking time. The loop is now capped at `MaxPly`, which the search stack could never exceed anyway, so only the degenerate spin is removed.
+- **Stalls were invisible.** `WaitForSearchToFinish` waits for the search task without a timeout. That wait is correct — proceeding would break `ChessEngine`'s one-search-at-a-time contract — but a search that ignored cancellation would freeze the command loop with no trace at all, which under lichess-bot silently ends the night. It now emits `info string search still stopping after Ns` once per stalled second, so the failure is diagnosable from the GUI or bot log instead of looking like a freeze.
+
+Matchmaking time controls were left unchanged, bullet included: on Lichess a player's clock does not start until AFTER their first move, so the engine's 2.5-7 s process startup costs no game time, and bullet is what maximises games per day. 281/281 tests.
+
 ## 2026-07-30 (v3.2.0) — NNUE gen7 (NNUE-0.7) + human-opening datagen pipeline
 
 **SPRT gen7 vs gen5 (the previous embedded net, tc=10+0.1): +3.7 ±10.2, LOS 76.2%, [0.505] over 3000 games — marginal (parity; not a formal H1). SPRT gen7 vs classical: +28.5 ±13.0, LOS 100%, H1 accepted over 2176 games — the total accumulated NNUE value over the classical evaluator. CCRL gauntlet (240 games, 60+0.6, single-thread, 12-engine field 2862–3281): 57.9%, ~3080 ±40 CCRL, up from gen5's 51.0% (~3050) but within combined gauntlet noise.**
