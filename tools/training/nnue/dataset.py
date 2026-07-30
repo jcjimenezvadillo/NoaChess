@@ -137,14 +137,25 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     subsampling. EmbeddingBag needs Long indices, so model.forward casts per
     batch (cheap: batch*32 values).
     """
+    # The cache is valid ONLY if it is at least as new as the .noadata it was
+    # derived from. Keying on existence alone silently trains on stale features
+    # when a dataset is regenerated under the same name (e.g. a re-run with a
+    # different opening book): the old .npz survives and the fresh .noadata is
+    # ignored. Compare mtimes and recompute when the source dataset is newer.
     if cache_path and os.path.exists(cache_path):
-        data = np.load(cache_path)
-        print(f"feature cache loaded: {cache_path}")
-        # Legacy caches were saved as int64; cast down to int16 (lossless, the
-        # values fit in [-1, 22527]). No-op if the cache is already int16.
-        return (data["stm"].astype(np.int16, copy=False),
-                data["opp"].astype(np.int16, copy=False),
-                data["scores"], data["results"])
+        source = cache_path[:-len(".features.npz")] if cache_path.endswith(".features.npz") else None
+        fresh = (source is None or not os.path.exists(source)
+                 or os.path.getmtime(cache_path) >= os.path.getmtime(source))
+        if not fresh:
+            print(f"feature cache STALE (source .noadata is newer), recomputing: {cache_path}")
+        else:
+            data = np.load(cache_path)
+            print(f"feature cache loaded: {cache_path}")
+            # Legacy caches were saved as int64; cast down to int16 (lossless, the
+            # values fit in [-1, 22527]). No-op if the cache is already int16.
+            return (data["stm"].astype(np.int16, copy=False),
+                    data["opp"].astype(np.int16, copy=False),
+                    data["scores"], data["results"])
 
     n = len(records)
     stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)

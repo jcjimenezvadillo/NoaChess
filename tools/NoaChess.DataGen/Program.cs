@@ -213,7 +213,7 @@ var manifest = new
     records = totalRecords,
     nodesPerMove = options.Nodes,
     seed = options.Seed,
-    openingPlies = "8-9 random legal",
+    openingPlies = options.Book is null ? "8-9 random legal" : $"book:{options.Book}",
     maxPlies = options.MaxPlies,
     filters = "no in-check, no tactical best move, |score| < 20000",
     resignAdjudication = $"|score| >= {options.Resign} for 6 plies",
