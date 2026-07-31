@@ -45,10 +45,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v3.4.0 (in progress — tooling only, no engine change)** — **Elite-data infrastructure.** Two data levers, after self-play depth, net size, lambda and search-threshold recalibration were all measured out. **Middlegame seeds** needed no code (`pgnbook` already had `--min-ply`/`--max-ply`): seeding self-play from ply 20-40 instead of 12-20, because the middlegame is where evaluation decides games. **Elite WDL anchoring** is new: `pgnbook --with-result` writes `FEN;R`, and `NoaChess.DataGen --label-book` labels positions real players reached with **(our own deep search score, their actual game result)** — no self-play. That outcome is the only signal in the pipeline the engine cannot manufacture for itself; self-play WDL is just its own evaluation played out, which is why the lambda sweep found it harmful. **Not imitation learning:** the human supplies neither an evaluation nor a move. Also `--skip-bots`, which drops games with `[WhiteTitle "BOT"]`/`[BlackTitle "BOT"]` — measured at **2.80%** of the corpus (151,328 of 5,397,639 games), and it matters because a bot game's result is another engine's opinion, not external information. The dataset format was unchanged (byte 32 already held the result); the manifest now records `mode` and `wdlSource` so an elite-labelled set can never be mistaken for self-play. 281/281 tests.
@@ -146,10 +148,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v3.2.0** — **NNUE gen7 (NNUE-0.7) + pipeline de datagen con aperturas humanas.** El datagen de self-play siembra ahora las aperturas desde un libro de partidas humanas de élite (chess.com >2800 + Lichess élite; 3,04M FENs únicos deduplicados con el nuevo subcomando `pgnbook`) en vez de 8–9 plies legales aleatorios. gen7 promociona como generación **marginal**: **vs gen5 +3.7 ±10.2, LOS 76.2%** (10+0.1, 3000 partidas — paridad, no un H1 formal); **vs clásico +28.5 ±13.0, LOS 100%** (2176 partidas — el valor NNUE acumulado total sobre el eval clásico). Gauntlet CCRL (240 partidas, 60+0.6, un hilo, campo 2862–3281): **57.9%, ~3080 ±40 CCRL**, frente al 51.0% de gen5 (~3050) pero dentro del ruido combinado del gauntlet. Lectura honesta: sembrar con aperturas humanas **no** dio un salto de fuerza sobre gen5 (cambio neutro-a-ligeramente-positivo); el valor está en el pipeline de datos migrado (base correcta para entrenar con datos de élite) y en fijar el delta NNUE-vs-clásico en +28.5 (el viejo sumatorio de cascada ~+46 sobrecontaba — el Elo de self-play no es aditivo). Incluye el fix de gestión de tiempo de v3.1.2. 210/210 tests.
