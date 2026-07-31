@@ -58,7 +58,7 @@ nunit-*.xml
 
 # IDE and Editor Configuration - Rider / JetBrains
 .idea/
-.claude
+.claude/
 
 # Environment and Configuration
 .env
