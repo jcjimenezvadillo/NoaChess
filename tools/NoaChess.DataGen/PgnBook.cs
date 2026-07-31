@@ -11,6 +11,11 @@ namespace NoaChess.DataGen;
 //
 //   NoaChess.DataGen pgnbook --in games\ --out books\human.fens [--min-ply 12]
 //       [--max-ply 20] [--per-game 1] [--max 0] [--seed N] [--dedup]
+//       [--with-result] [--skip-bots]
+//
+// --with-result writes "FEN;R" (R = +1/0/-1 from White) instead of a bare FEN,
+// which is what the datagen's --label-book mode needs for elite-game WDL
+// anchoring. Games with no outcome ("*") are skipped in that mode.
 public static class PgnBook
 {
     public static int Run(string[] args)
@@ -19,6 +24,18 @@ public static class PgnBook
         int minPly = 12, maxPly = 20, perGame = 1, seed = Environment.TickCount;
         long max = 0;
         bool dedup = false;
+        // --with-result appends the game's final result to each line ("FEN;R",
+        // R = +1/0/-1 from White). That is what the datagen's --label-book mode
+        // consumes for elite-game WDL anchoring; games still in progress ("*")
+        // are skipped because they carry no outcome to anchor to.
+        bool withResult = false;
+        // --skip-bots drops games where either side is an engine account
+        // ([WhiteTitle "BOT"] / [BlackTitle "BOT"]). Measured on the 2023-03
+        // Lichess elite file: ~20k BOT tags per 400 MB, so a few percent of the
+        // corpus. It matters most for --with-result, where the entire value of
+        // the label is that a HUMAN game's outcome is information the engine
+        // cannot generate for itself.
+        bool skipBots = false;
         bool append = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -33,6 +50,8 @@ public static class PgnBook
                 case "--max": max = long.Parse(args[++i]); break;
                 case "--seed": seed = int.Parse(args[++i]); break;
                 case "--dedup": dedup = true; break;
+                case "--with-result": withResult = true; break;
+                case "--skip-bots": skipBots = true; break;
                 case "--append": append = true; break;
                 default: Console.WriteLine($"pgnbook: unknown option '{args[i]}'"); return 1;
             }
@@ -60,22 +79,26 @@ public static class PgnBook
 
         var rng = new Random(seed);
         var seen = dedup ? new HashSet<string>() : null;
-        long games = 0, written = 0, failed = 0, tooShort = 0;
+        long games = 0, written = 0, failed = 0, tooShort = 0, noResult = 0, botGames = 0;
         long bytesCompleted = 0;
         var sw = Stopwatch.StartNew();
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
         using var writer = new StreamWriter(output, append);
 
-        Console.WriteLine($"pgnbook: {files.Length} file(s), {totalBytes / 1_048_576:N0} MB, ply=[{minPly},{maxPly}], per-game={perGame}, seed={seed}, dedup={dedup}, append={append}");
+        Console.WriteLine($"pgnbook: {files.Length} file(s), {totalBytes / 1_048_576:N0} MB, ply=[{minPly},{maxPly}], per-game={perGame}, seed={seed}, dedup={dedup}, append={append}, with-result={withResult}, skip-bots={skipBots}");
 
         foreach (string file in files)
         {
             using var reader = new StreamReader(file);
-            foreach (List<string> moves in PgnReader.ReadGames(reader))
+            foreach (PgnGame game in PgnReader.ReadGames(reader))
             {
                 games++;
+                if (skipBots && game.HasBot) { botGames++; continue; }
+                List<string> moves = game.Moves;
                 if (moves.Count < minPly) { tooShort++; continue; }
+                // WDL anchoring needs an actual outcome; an unfinished game has none.
+                if (withResult && !game.HasResult) { noResult++; continue; }
                 int hi = Math.Min(maxPly, moves.Count);
 
                 for (int k = 0; k < perGame; k++)
@@ -92,9 +115,9 @@ public static class PgnBook
 
                     string fen = Fen.Save(board);
                     if (seen != null && !seen.Add(fen)) continue;
-                    writer.WriteLine(fen);
+                    writer.WriteLine(withResult ? $"{fen};{game.Result}" : fen);
                     written++;
-                    if (max > 0 && written >= max) { Report(games, written, failed, tooShort); return 0; }
+                    if (max > 0 && written >= max) { Report(games, written, failed, tooShort, noResult, botGames); return 0; }
                 }
 
                 if (games % 100000 == 0)
@@ -111,12 +134,13 @@ public static class PgnBook
             bytesCompleted += new FileInfo(file).Length;
         }
 
-        Report(games, written, failed, tooShort);
+        Report(games, written, failed, tooShort, noResult, botGames);
         return 0;
     }
 
-    private static void Report(long games, long written, long failed, long tooShort) =>
-        Console.WriteLine($"pgnbook done: games={games} written={written} failed={failed} tooShort={tooShort}");
+    private static void Report(long games, long written, long failed, long tooShort, long noResult, long botGames) =>
+        Console.WriteLine($"pgnbook done: games={games} written={written} failed={failed} "
+                        + $"tooShort={tooShort} noResult={noResult} botGames={botGames}");
 
     private static string[] ResolveInputs(string pattern)
     {
