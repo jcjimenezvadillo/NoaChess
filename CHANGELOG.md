@@ -1,5 +1,51 @@
 # CHANGELOG
 
+## 2026-07-31 (v4.1.0) — BLOCK 12 data scale: the pipeline that makes 300-500M positions possible
+
+**Infrastructure release. The embedded net is still gen7 and strength is unchanged from v4.0.0.** The Elo this version targets (+80 to +150) comes from *running* the campaign, which is 2-3 days of datagen; what ships here is everything needed to run it safely, plus a cheap experiment that tests the campaign's core assumption before those days are spent.
+
+### The wall that had to come down first
+
+Decoding records into features ran at **13,816 records/s** in a per-record Python loop. For the corpus BLOCK 12 targets that is **6 hours for 300M positions and 10 for 500M** — before training could even begin, and again on every change to the data mix. That is not slow, it is prohibitive.
+
+`decode_block` does the same bit twiddling with numpy over whole blocks: **169,366 records/s, a 12× speedup — 300M positions in 29 minutes instead of 6 hours.** The per-record `record_to_features` stays as the readable definition of correctness, and the vectorised path is asserted equal to it over 50,000 real records (0 mismatches), because a decoder that is fast and subtly wrong would poison every net trained afterwards.
+
+### Sharded, crash-safe, resumable datagen
+
+A NOADATA file only becomes usable when its header is patched at the end of the run. Fine for 13 hours; unacceptable for 2-3 days, where a crash at hour 40 destroys everything — the pipeline even documents this ("the datagen did not reach 'done:' → the file is useless").
+
+`--shard-size N` closes each shard properly as it fills: header patched, manifest written, SHA recorded. An interrupted run now loses at most the shard in flight, and every completed shard is immediately trainable (the streaming loader already takes many files). `--resume` counts finished shards and continues numbering after them, so a long campaign can be run in sessions instead of one uninterruptible block. Shards roll **between games**, never inside one, because records are ordered by game and the train/validation tail cut depends on that.
+
+Also `--positions N`: corpus size is what is actually being specified, and `--games` only approximates it — game length varies with node budget and opening source. **`--positions` counts what is already on disk**, so resuming a 20M target that stopped at 12M tops it up to 20M rather than producing 32M; a run already at its target generates nothing and says so. Verified by killing a datagen mid-run: completed shards survive, the orphaned shard is flagged by `corpus` as INTERRUPTED, and `--resume` recovers to a clean corpus.
+
+### `corpus` — audit what you are about to train on
+
+```
+NoaChess.DataGen corpus --in data\datascale
+```
+
+Reports composition by source (mode, opening provenance, node budget, evaluator, WDL signal), verifies every shard off disk (header count against derived count, schema, record size, manifest presence), and samples the label distribution. Run against the existing corpus it prints, at a glance, the fact that took five generations to discover:
+
+```
+84,697,234 positions across 7 datasets — every one "openings=8-9 random legal"
+```
+
+It also flags a shard whose header says zero records as INTERRUPTED, and warns when over 20% of scores are exactly zero — the signature of the label bug that zeroed 57% of gen1-era labels. It opens files with `FileShare.ReadWrite` so a corpus can be audited *while* a datagen is still writing it, which is the main reason to want the tool.
+
+### The campaign, and the experiment that gates it
+
+`Noa-DataScale.ps1` runs it in phases: **0 calibrate → 1 generate → 2 audit → 3 train → 4 publish**.
+
+Phase 0 is the important one. The whole premise of v4.1.0 is that at ft=128 **volume beats label depth**, which is why the node budget drops from gen7's 28,000 to ~6,000. That premise is an assumption, and this project has already paid for one of those. So phase 0 builds two matched 20M-position corpora — one at 6k nodes, one at 28k — trains both at identical width and plays them off, in about four hours. Parity already favours the cheap arm, since it costs ~5× less machine time per position; a clear loss says build the corpus deeper.
+
+Phase 1 mixes three sources deliberately (45% bulk self-play, 20% human opening seeds, 35% human middlegame seeds) and passes **`--require-book`** on every book-seeded arm, so the block-8 failure cannot repeat silently. Phase 3 trains at **ft=128, width unchanged**: keeping width fixed is what isolates the data axis, and changing both at once is precisely the mistake that made block 8 uninterpretable.
+
+`sprt_datascale.bat` measures the result against v4.0.0; `sprt_datascale_calib.bat` runs the phase-0 arms against each other.
+
+293 tests pass. Verified end to end on a real corpus: sharded datagen → resume → audit → streaming training over 8 shards → export → engine loads and plays.
+
+---
+
 ## 2026-07-31 (v4.0.0) — BLOCK 12 foundation: NNUE cost profile, int8 L1, accumulator cache, streaming dataset
 
 **No Elo claim, and the shipped net is unchanged.** This release exists to remove three ceilings that make the rest of BLOCK 12 possible, and to replace an assumption with a measurement. Strength is identical to v3.3.0: the embedded net is still the arch-1 gen7 net, byte-identical, and node counts on a fixed-depth suite are unchanged (193,746 exactly, before and after).

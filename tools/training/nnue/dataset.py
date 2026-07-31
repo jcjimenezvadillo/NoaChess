@@ -7,6 +7,7 @@
 
 import json
 import os
+import time
 
 import numpy as np
 
@@ -124,6 +125,86 @@ def record_to_features(rec):
     return feats[0], feats[1], int(rec["stm"]), int(rec["score"]), int(rec["result"])
 
 
+# ---------------------------------------------------------------------------
+# v4.1.0 VECTORISED DECODER
+#
+# record_to_features above is the readable reference and stays the definition of
+# correctness. It is also a per-record Python loop running at ~14k records/s,
+# which is 6 hours for 300M positions and 10 for 500M — the volume BLOCK 12
+# needs. That is not a tuning problem, it is a wall: every change to the data
+# mix would cost most of a day before training could even start.
+#
+# This decodes whole blocks with numpy instead. The bit twiddling is identical;
+# only the loop moves from Python into vectorised operations. decode_block is
+# asserted equal to record_to_features over random records by the parity test —
+# a decoder that is fast and subtly wrong would poison every net trained after
+# it, exactly the class of failure that cost gen7.
+# ---------------------------------------------------------------------------
+
+_KING_BUCKETS_ARR = np.array(_KING_BUCKETS, dtype=np.int32)
+
+
+def decode_block(records):
+    """
+    Vectorised equivalent of record_to_features over a block of records.
+    Returns (stm_feats, opp_feats, scores, results) with -1 padding, already
+    ordered (side to move, opponent).
+    """
+    n = len(records)
+    if n == 0:
+        return (np.full((0, MAX_ACTIVE), -1, np.int16), np.full((0, MAX_ACTIVE), -1, np.int16),
+                np.zeros(0, np.float32), np.zeros(0, np.float32))
+
+    occupancy = np.ascontiguousarray(records["occupancy"])
+    # Bit i of the occupancy is square i, so little bit order gives squares in
+    # ascending order — the same order the nibbles were written in.
+    bits = np.unpackbits(occupancy.view(np.uint8).reshape(n, 8), axis=1, bitorder="little")
+    row_idx, square = np.nonzero(bits)          # row-major: rows in order, squares ascending
+    row_idx = row_idx.astype(np.int64)
+    square = square.astype(np.int32)
+
+    counts = bits.sum(axis=1).astype(np.int64)  # pieces per record
+    # Ordinal of each piece within its own record: 0,1,2,... restarting per row.
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    ordinal = (np.arange(len(row_idx), dtype=np.int64) - np.repeat(starts, counts)).astype(np.int32)
+
+    # Nibble j of the 16-byte piece array: low nibble for even j, high for odd.
+    pieces = np.ascontiguousarray(records["pieces"]).reshape(n, 16)
+    packed = pieces[row_idx, ordinal >> 1]
+    code = ((packed >> ((ordinal & 1) * 4).astype(np.uint8)) & 0xF).astype(np.int32)
+    ptype = code % 6
+    color = code // 6
+
+    # King square per (record, colour). Every record has exactly two kings.
+    kings = np.zeros((n, 2), dtype=np.int32)
+    is_king = ptype == 5
+    kings[row_idx[is_king], color[is_king]] = square[is_king]
+
+    out = []
+    for perspective in (0, 1):
+        vflip = 0 if perspective == 0 else 56
+        king_sq = kings[row_idx, perspective]
+        orient = np.where((king_sq & 7) < 4, 7, 0).astype(np.int32)
+        oriented = square ^ orient ^ vflip
+        enemy = (color != perspective).astype(np.int32)
+        plane = np.where(is_king, 10 * 64, (ptype * 2 + enemy) * 64)
+        index = oriented + plane + _KING_BUCKETS_ARR[king_sq ^ vflip] * PS_NB
+
+        feats = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
+        feats[row_idx, ordinal] = index.astype(np.int16)
+        out.append(feats)
+
+    white_f, black_f = out
+    stm = np.ascontiguousarray(records["stm"]).astype(np.int32)
+    white_to_move = (stm == 0)[:, None]
+    stm_f = np.where(white_to_move, white_f, black_f)
+    opp_f = np.where(white_to_move, black_f, white_f)
+
+    scores = np.ascontiguousarray(records["score"]).astype(np.float32)
+    results = np.ascontiguousarray(records["result"]).astype(np.float32)
+    return stm_f, opp_f, scores, results
+
+
 def precompute_features(records, cache_path=None, log_every=250_000):
     """
     Decodes ALL records into dense arrays once (the per-record Python loop is
@@ -164,15 +245,14 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     scores = np.zeros(n, dtype=np.float32)
     results = np.zeros(n, dtype=np.float32)
 
-    for i in range(n):
-        white, black, stm, score, result = record_to_features(records[i])
-        own, other = (white, black) if stm == 0 else (black, white)
-        stm_f[i, :len(own)] = own
-        opp_f[i, :len(other)] = other
-        scores[i] = score
-        results[i] = result
-        if log_every and (i + 1) % log_every == 0:
-            print(f"  decoded {i + 1:,}/{n:,} records", flush=True)
+    # Same vectorised decoder as the streaming path (v4.1.0).
+    block = 1_000_000
+    for begin in range(0, n, block):
+        end = min(begin + block, n)
+        stm_f[begin:end], opp_f[begin:end], scores[begin:end], results[begin:end] = \
+            decode_block(np.array(records[begin:end]))
+        if log_every:
+            print(f"  decoded {end:,}/{n:,} records", flush=True)
 
     if cache_path:
         np.savez_compressed(cache_path, stm=stm_f, opp=opp_f, scores=scores, results=results)
@@ -251,19 +331,26 @@ def build_feature_shards(path, log_every=250_000, force=False):
     scores = np.lib.format.open_memmap(paths["scores"], mode="w+", dtype=np.float32, shape=(n,))
     results = np.lib.format.open_memmap(paths["results"], mode="w+", dtype=np.float32, shape=(n,))
 
-    stm_f[:] = -1
-    opp_f[:] = -1
-
+    # Block-decoded with numpy (v4.1.0): ~170k records/s against ~14k for the
+    # per-record Python loop, i.e. 30 minutes for 300M positions instead of 6
+    # hours. Blocks are bounded so peak memory stays flat regardless of dataset
+    # size — the whole point of the streaming path.
+    block = 1_000_000
     print(f"decoding {n:,} records -> {directory}", flush=True)
-    for i in range(n):
-        white, black, stm, score, result = record_to_features(records[i])
-        own, other = (white, black) if stm == 0 else (black, white)
-        stm_f[i, :len(own)] = own
-        opp_f[i, :len(other)] = other
-        scores[i] = score
-        results[i] = result
-        if log_every and (i + 1) % log_every == 0:
-            print(f"  decoded {i + 1:,}/{n:,} records", flush=True)
+    start_time = time.time()
+    for begin in range(0, n, block):
+        end = min(begin + block, n)
+        chunk_stm, chunk_opp, chunk_scores, chunk_results = decode_block(
+            np.array(records[begin:end]))
+        stm_f[begin:end] = chunk_stm
+        opp_f[begin:end] = chunk_opp
+        scores[begin:end] = chunk_scores
+        results[begin:end] = chunk_results
+        elapsed = time.time() - start_time
+        rate = end / elapsed if elapsed > 0 else 0
+        eta = (n - end) / rate / 60 if rate > 0 else 0
+        print(f"  decoded {end:,}/{n:,} records "
+              f"({rate:,.0f} rec/s, ETA {eta:.1f} min)", flush=True)
 
     for array in (stm_f, opp_f, scores, results):
         array.flush()
@@ -301,6 +388,15 @@ class FeatureStore:
             scores = np.load(shards["scores"], mmap_mode="r")
             results = np.load(shards["results"], mmap_mode="r")
             count = len(stm)
+            if count == 0:
+                # A shard whose header still says zero records was never
+                # finalized — the datagen was interrupted while writing it. It
+                # reads as empty rather than corrupt, so it would silently
+                # contribute nothing; say so instead of letting it look fine.
+                print(f"WARNING: {path} holds 0 records (interrupted shard, never "
+                      f"finalized). It contributes nothing — re-run the datagen "
+                      f"with --resume, or drop the file.")
+                continue
             train_count = count - int(count * val_fraction)
             self.files.append({
                 "path": path, "stm": stm, "opp": opp,
