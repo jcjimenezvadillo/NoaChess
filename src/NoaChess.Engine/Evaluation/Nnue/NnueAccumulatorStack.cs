@@ -23,6 +23,10 @@ public sealed class NnueAccumulatorStack
 
     private readonly NnueNetwork _network;
     private readonly NnueAccumulator[] _stack;
+    // Per-stack (therefore per-thread) finny table: king-move refreshes become
+    // a diff against the last accumulator built for that king square instead of
+    // a full rebuild from the bias. See NnueAccumulatorCache.
+    private readonly NnueAccumulatorCache _cache;
     private int _top;
 
     public NnueAccumulatorStack(NnueNetwork network)
@@ -31,6 +35,7 @@ public sealed class NnueAccumulatorStack
         _stack = new NnueAccumulator[MaxPly];
         for (int i = 0; i < MaxPly; i++)
             _stack[i] = new NnueAccumulator(network.FtOutputs);
+        _cache = new NnueAccumulatorCache(network);
     }
 
     public NnueAccumulator Top => _stack[_top];
@@ -39,8 +44,8 @@ public sealed class NnueAccumulatorStack
     public void Reset(Board board)
     {
         _top = 0;
-        _stack[0].Refresh(_network, board, Color.White);
-        _stack[0].Refresh(_network, board, Color.Black);
+        _cache.Refresh(_stack[0], board, Color.White);
+        _cache.Refresh(_stack[0], board, Color.Black);
     }
 
     // Prepares the child accumulator for 'move'. MUST be called with the
@@ -142,7 +147,7 @@ public sealed class NnueAccumulatorStack
     {
         NnueAccumulator acc = _stack[_top];
         if (!acc.Valid[(int)perspective])
-            acc.Refresh(_network, board, perspective);
+            _cache.Refresh(acc, board, perspective);
         return acc.Values[(int)perspective];
     }
 

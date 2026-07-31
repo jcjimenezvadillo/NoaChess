@@ -1,5 +1,107 @@
 # CHANGELOG
 
+## 2026-07-31 (v4.0.0) — BLOCK 12 foundation: NNUE cost profile, int8 L1, accumulator cache, streaming dataset
+
+**No Elo claim, and the shipped net is unchanged.** This release exists to remove three ceilings that make the rest of BLOCK 12 possible, and to replace an assumption with a measurement. Strength is identical to v3.3.0: the embedded net is still the arch-1 gen7 net, byte-identical, and node counts on a fixed-depth suite are unchanged (193,746 exactly, before and after).
+
+### The measurement that motivated everything (`nnueprofile`)
+
+A new non-UCI command reports where NNUE time actually goes: isolated per-primitive costs multiplied by real call counts from an instrumented fixed-depth search. First run, gen7 at ft=128/l1=32:
+
+| | share |
+|---|---|
+| L1 dot product | **26.2%** |
+| Feature-transformer row traffic | **73.8%** |
+
+`NnueInference.cs` had asserted for two versions that the L1 dot product was *"THE cost of NNUE eval"*. It is roughly a quarter. That assertion is what justified keeping the network narrow ("a wider net is counterproductive at real TC", v3.2.0), so **the decision not to widen rested on a cost model that does not survive arithmetic**: at ft=128 the dot product is 32 × 256 = 8,192 int16 MACs, about 512 AVX2 instructions per evaluation — far too small to dominate anything at 446k NPS.
+
+Those are the numbers from the FIRST run, before the accumulator work below. The shipped build measures **43.4% / 56.6%**, because making the feature-transformer primitives cheaper naturally raised the dot product's share. Both readings are correct at their own point in time; anyone running `nnueprofile` today should expect the second pair.
+
+### Accumulator updates: profile-driven fix, and an honest negative result
+
+The profile showed `MoveFeature` at 387 ns for what is 8 vector additions. Cause: `new Vector<short>(array, index)` bounds-checks every iteration and the JIT does not reliably hoist it. Rewritten with `Vector256.LoadUnsafe` over a ref taken once, the same idiom the inference kernel already used:
+
+| primitive | before | after |
+|---|---|---|
+| `MoveFeature` (fused) | 387.2 ns | **154.9 ns** (2.5×) |
+| `Add`/`SubtractFeature` | 270.9 ns | **145.0 ns** (1.9×) |
+| `CopyFrom` | 138.2 ns | **62.2 ns** (2.2×) |
+| attributed NNUE total | 427.8 ms | **255.2 ms** (−40%) |
+
+**End-to-end wall time did not move** — 730-767 ms across six alternating runs of both builds, fully overlapping, node counts byte-identical. The reason is that feature-transformer rows come from a 5.5 MB table indexed by feature, i.e. near-random access that misses L2: the bottleneck is **memory latency, not instruction count**, and removing bounds checks does not make DRAM faster. Reported as it measured. The profiler now prints this caveat itself, so the attribution table is never read as a promise of what an optimisation will return.
+
+### int8 L1 (architecture 2)
+
+L1 weights move from int16 to int8, with activations packed to unsigned bytes and the dot product running on `VPMADDUBSW` + `VPMADDWD` — the AVX2 path, because the target CPU is Zen+ and `VPDPBUSD` is not available. Measured on gen7 re-exported: **evaluation 1039.9 → 774.7 ns (−25%)**, NPS 243.7k → 268.7k.
+
+Moving the weights costs nothing: export already clipped them to ±127 while storing them as int16. The one real change is that **QA must drop from 255 to 127**, and that is a correctness constraint rather than tuning. `VPMADDUBSW` sums two products into an int16 lane, which saturates:
+
+```
+QA=255 -> |255*127 + 255*127| = 64,770  > 32,767  -> saturates, WRONG
+QA=127 -> |127*127 + 127*127| = 32,258  < 32,767  -> exact, always
+```
+
+The loader refuses any arch-2 model with QA > 127, and the exporter re-checks the bound against the actual exported weights (gen7 uses 65.9% of the headroom). Arch 1 remains fully supported — a format change that stranded the net currently playing would be a regression, not an upgrade. Verified: re-exporting gen7 as arch 1 reproduces the shipped payload **byte-identically** (sha `3c7e94a9…`).
+
+**The embedded net stays arch 1 for this release.** Dropping QA to 127 changes evaluation values enough to change search: the same fixed-depth suite goes from 193,746 to 140,008 nodes. That is a strength-relevant change and it belongs behind an SPRT, in v4.2.0, where the net is retrained at QA=127 from the start rather than re-quantised after the fact.
+
+### Accumulator cache ("finny table")
+
+King moves invalidate a whole perspective because every HalfKAv2_hm feature is king-relative. The old path rebuilt it from the bias by adding ~32 rows. A per-thread cache now keeps, for each (perspective, king square), the accumulator it last produced and the piece placement that produced it, so a refresh applies only the difference: **4407 ns → 110 ns per refresh (40-52× cheaper), 99.6% of refreshes served from cache, 5.5 rows touched instead of ~32.**
+
+Keyed by king SQUARE, not by bucket: two squares sharing a bucket are horizontal mirrors whose `Orient()` differs, so every feature index differs, and a bucket-keyed cache would blend two different feature spaces. At ft=128 refreshes are only ~6-7% of NNUE work, so this is insurance for v4.2.0 rather than a speedup today — at ft=1024 the same rebuild is 8× more expensive.
+
+### Streaming dataset — the RAM ceiling is gone
+
+`precompute_features` built dense in-RAM arrays at ~136 bytes per record, which is why `train_nnue.py` carried a `--max-records 120,000,000` cap. That cap was an **architectural ceiling**, not a safety valve: BLOCK 12 targets 300-500M positions, which is 40-136 GB.
+
+Features are now decoded once into memory-mappable `.npy` shards and streamed. Chunk order is shuffled globally, then buffers of chunks are shuffled internally, keeping reads sequential while mixing across the whole file. Leftover rows are **carried into the next buffer** rather than dropped — discarding a partial batch per buffer silently loses training data every epoch (measured at 0.29% with a small buffer). Verified against the in-RAM decode of the same file: **0 duplicated records, exact subset of the training range, only the final tail dropped (< one batch), 0 validation leakage.** Training equivalence: streaming val 0.052585 vs in-RAM 0.052003 over 4 epochs, ~1% apart, which is shuffle-order trajectory noise.
+
+Shards are rebuilt when older than their `.noadata`, and the completion marker is written last so an interrupted decode cannot be mistaken for a finished one.
+
+### Provenance gate — the failure that cost gen7
+
+Every dataset manifest on disk records `"openingPlies": "8-9 random legal"`. The human-opening seeding credited to v3.2.0 **never ran**: the pipeline was correct and `books/human.fens` existed, but `-Book` was never passed and nothing complained, so "pure self-play is exhausted" entered the ROADMAP, README and release notes as established fact.
+
+The datagen now prints an unmissable `PROVENANCE:` line on every run, and `--require-book` turns operator intent into a checked precondition — a run that would have produced random openings while the pipeline reported book seeding exits with code 2 immediately, instead of 13 hours later.
+
+### Also fixed (pre-existing, would have destroyed a training run)
+
+When the validation split is smaller than one batch, no validation batches are produced, the loss is `nan`, no epoch counts as an improvement, and the checkpoint was written with `"model": None` — losing the entire run and only failing at export time. Now warned about explicitly and backed by a fall-back to the final epoch's weights.
+
+222/222 tests, including new parity gates: cache vs direct refresh over random games and across the king-mirror boundary, int8 scalar vs SIMD over random games, and an explicit worst-case saturation test at maximum activation against maximum weight of both signs.
+
+---
+
+## (planned, v4.1.0 → v4.3.0) — BLOCK 12: remaining campaign
+
+**Branch `4.0.0`. Supersedes blocks 7 and 8 and the "more generations" strategy entirely.** The v4.0.0 foundation above has shipped; what follows is the rest of the campaign.
+
+### Diagnosis driving the campaign
+
+Five consecutive generations landed flat (gen3 +4.5, gen4 +1.9, gen5 +34 over an inflated 1495-game link, gen6 no promotion, gen7 +3.7 parity), and deepening labels 24k → 28k nodes bought +3.7 Elo. That is a **saturated network**, not exhausted data. Against reference-class nets: feature transformer **128 wide vs 1024**, **1 output bucket vs 8**, **13.1 M positions per generation vs billions**, ~550 M samples seen per run vs tens of billions, 5.7 MB net vs 45–70 MB.
+
+The prior conclusion that self-play was exhausted is void in any case: the human-opening seeding it rested on never ran (see the v4.0.0 provenance gate above).
+
+### Versions
+
+- **v4.1.0 — Data scale.** Labelling depth cut to 5–8k nodes; 300–500 M positions mixing bulk self-play, book-seeded openings, middlegame seeds and the elite WDL-anchored set; a 128-wide control net to isolate the data axis. *Expected +80 to +150.*
+- **v4.2.0 — Capacity.** FT 128→512→1024 measured stepwise with NPS reported alongside Elo; 8 output buckets by piece count; deeper head. *Expected +150 to +300 — the largest single gain in the project.*
+- **v4.3.0 — Search.** Complete the correction histories (only pawn exists today); re-enter statScore, cutNode, double extensions and multi-level continuation history **as a bundle**. *Expected +60 to +110.*
+
+### Two permanent rules added
+
+1. **Provenance must be machine-checked, never asserted.** If the manifest does not prove it, it did not happen. *(Enforced in code as of v4.0.0.)*
+2. **"One term = one SPRT" is correct for evaluation terms and wrong for tightly coupled search features.** A feature worth +2–5 Elo alone is below the resolution of an 8,000-game SPRT, and search features are worth more together than apart. This is why 5C, 5E and the multi-level history all read as failures.
+
+### Retired
+
+More self-play generations at 13 M positions · lambda sweeps · NNUE eval-scale recalibration (measured −61.7) · competition opening book (deferred to v4.9.0) · **C++ interop for hot blocks** — the single-exe requirement is a standing decision, the NNUE hot path already emits the same AVX2 instructions MSVC would, a managed→native transition per leaf costs more than it saves, and ~+50–70 Elo per *doubling* of NPS makes a generous 15% gain worth ~+10 Elo. NativeAOT is the constraint-preserving version of that idea.
+
+**Expected destination: ~3080 → 3300–3450 CCRL.**
+
+---
+
 ## (unreleased, v3.4.0) — elite-data infrastructure: middlegame seeds + WDL anchoring
 
 **Tooling only so far — no engine change, no net change, no strength claim.** Groundwork for the two data levers left after self-play, node depth, net size, lambda and search-threshold recalibration were all measured out.
