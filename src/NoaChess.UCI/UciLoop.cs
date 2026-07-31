@@ -366,7 +366,25 @@ public sealed class UciLoop
         // thread — which would kill the read loop and leave a zombie process
         // (alive but deaf; Arena's Ctrl+N new game shows exactly this). The
         // search already reported the failure; the loop must survive it.
-        try { _searchTask?.Wait(); }
+        //
+        // The wait is UNBOUNDED by design (proceeding while a search still runs
+        // would break ChessEngine's "one search at a time" contract), but a
+        // search that ignored cancellation would hang the command loop with no
+        // trace at all — under lichess-bot, with concurrency 1, that silently
+        // ends the bot's night. Report every stalled second so the failure is
+        // diagnosable from the GUI/bot log instead of looking like a freeze.
+        try
+        {
+            if (_searchTask is { } task)
+            {
+                for (int waitedSeconds = 0; !task.Wait(TimeSpan.FromSeconds(1)); waitedSeconds++)
+                {
+                    _output.WriteLine("info string search still stopping after "
+                                    + $"{waitedSeconds + 1}s — cancellation not honoured");
+                    LogLine("--", $"STALL: search task not finishing after {waitedSeconds + 1}s");
+                }
+            }
+        }
         catch (AggregateException) { }
         _searchTask = null;
         _suppressBestmove = false;
