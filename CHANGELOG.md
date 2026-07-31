@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## (unreleased, v3.4.0) — elite-data infrastructure: middlegame seeds + WDL anchoring
+
+**Tooling only so far — no engine change, no net change, no strength claim.** Groundwork for the two data levers left after self-play, node depth, net size, lambda and search-threshold recalibration were all measured out.
+
+**Middlegame seeds (needed no code).** `pgnbook` already exposed `--min-ply`/`--max-ply`, so seeding self-play from **ply 20-40** instead of 12-20 is a flag change. The point: gen7 seeded openings from elite games and landed at parity, and openings are the part of the game where an engine is least likely to be lost — the middlegame is where evaluation decides games.
+
+**Elite WDL anchoring (new).** Two additions:
+
+- `pgnbook --with-result` writes `FEN;R` (R = +1/0/-1 from White) instead of a bare FEN. `PgnReader` now captures the result token it previously discarded, and games still in progress (`*`) are skipped in this mode.
+- `NoaChess.DataGen --label-book <file>` is a new data source that does **not** play games: it takes positions real strong players reached and labels each with **(our own deep search score, their actual game result)**. It reuses the self-play path's quiet-position filter (no in-check, no tactical best move, |score| < 20000) so the two datasets stay comparable.
+
+**Why this is the one lever that adds information.** Every other signal in the pipeline is the engine's own opinion fed back to itself — self-play WDL is just its evaluation played out, which is why the gen3-era lambda sweep found it actively harmful (lambda 0.750 → score 0.338). A real game's outcome is external. **This is not imitation learning:** the human supplies neither an evaluation nor a move, only the position and who eventually won — the label's score still comes from NoaChess's own search. Training on human move choices is a known way to make a net *weaker* (distribution shift) and is deliberately not done here.
+
+The dataset format needed no change: byte 32 of each record already carried "game result from the side to move". The manifest now records `mode` and `wdlSource` explicitly, so an elite-labelled dataset can never be mistaken for self-play — the kind of confusion that cost a whole gen7 training run when a stale feature cache went unnoticed. 281/281 tests.
+
+## 2026-07-31 (v3.3.0) — proven-mate stop; NNUE scale alignment measured and cut
+
+**Search-side only — no retraining, the embedded net is still gen7. Built on v3.2.1. Two things were tried; one ships, one was cut by SPRT and the negative result is recorded below because it closes a line of work.**
+
+**SPRT vs v3.2.1 (10+0.1): +3.3 ±23.1, LOS 61.2%, [0.507] over 523 games — strength-neutral, stopped by hand at LLR 0.03 rather than run to exhaustion.** A ~0 Elo effect never converges against `elo0=0 elo1=5`, and the effect had to be ~0 by construction: the stop only fires on a mate proven within 2 moves, where the game ends immediately and the banked clock has almost no chance to be spent. The run's purpose was to rule out a REGRESSION — this engine has previous form here, an earlier "break on any mate score" made it walk into the shortest mate when losing — and 523 games with a ±23 interval do rule one out. **Shipped for the behaviour, not for Elo.**
+
+**1. Proven-short-mate stop (the shipped change; validated by direct measurement).** The iterative-deepening loop now breaks when a completed iteration proves a mate in <= 3 plies for us, or that we are mated in <= 2 — the narrow case where deepening cannot improve the answer. Mirrors the reference time manager (`search.cpp`: `score >= mate_in(3) || score == mated_in(2)`). This is the deliberate exception to the existing "never break on mate scores" rule, which stays in force for LONG mates (deeper iterations find shorter mates when winning and longer defenses when losing).
+
+Fixes an observed defect: **a mate-in-1 took ~1.07 s** because the only mechanism that could shorten it was easy-move, whose gate needs `depth >= 12`, while the mate is proven at depth 1. Measured at 5+5, same move and same reported mate in every case:
+
+| position | v3.2.x | v3.3.0 |
+|---|---|---|
+| mate-in-1, 1 thread | 1074 ms (reaches d12) | **22 ms** (d1) |
+| mate-in-1, 30 threads (bot config) | 1253 ms | **112 ms** |
+| normal midgame | 12992 ms, d18, cp -19 | 13421 ms, d18, cp -19 |
+| normal opening | 5035 ms, d16, cp 44 | 5073 ms, d16, cp 44 |
+
+Clock mode only, so fixed-depth play is byte-identical (verified).
+
+**2. NNUE-to-classical eval scale alignment — MEASURED AND CUT.** Every pruning constant is expressed on the CLASSICAL centipawn scale and several are compared directly against the evaluator's output, so the scale mismatch is real: measured over **6000 real positions** from the human opening book, gen7 regresses on the classical evaluator at **slope 0.783** (mean|nnue| 95.7 vs mean|classical| 114.0, ratio 0.84 — matching the training pipeline's own validate slope of 0.840). Correcting it looked obvious. **It lost decisively: 1250 permille scored 144-261-261 [0.412] over 666 games, −61.7 ±20.7 Elo, LOS 0.0%, H0 accepted** (10+0.1, proven-mate stop in both arms), negative from the first sample and monotone. The knob was removed.
+
+**Why, since the measurement itself was correct:** (1) the margins are already calibrated to the compressed net in practice — gen3 through gen7 were each SPRT-validated with it, so the shipped combination is the empirically tuned one and "fixing" the scale broke a calibration that worked; (2) inflating the eval makes pruning MORE aggressive — RFP fires on `staticEval - margin >= beta`, so a 25% larger eval trips it far more often (likewise razoring and futility), producing unsound cutoffs. A compressed eval against fixed margins is equivalent to LARGER margins, i.e. safer pruning, and the engine prefers that.
+
+**Method note kept in the code:** the first calibration attempt used artificial material positions (removing a piece from the start position) and produced a confident but WRONG "1.29x inflated" reading — the opposite direction. Such positions are far outside the net's training distribution, so the two evaluators simply disagree there rather than differing by scale. Always regress over REAL positions, in the magnitude range the consuming margins operate in.
+
+## 2026-07-31 (v3.2.1) — bot stability: unbounded ponder spin + invisible stalls
+
+**Hot-patch over v3.2.0. No evaluation change and no strength claim: this is a robustness release, born from diagnosing a Lichess bot that "stopped playing after a few games" and had to be restarted by hand.**
+
+**The diagnosis first, because it was not what it looked like.** The engine was not hanging: the running session played 47+ games straight at 9-13 games/hour with no long silences and no `EngineTerminatedError`. The bot logs pointed elsewhere — **550 `TimeoutError` raised inside `asyncio.wait_for(protocol.initialize(), timeout)` on 2026-07-29** (lichess-bot passes `timeout=60.`, so the engine needed over a MINUTE to answer `uci` + `isready`), and **210 dropped lichess connections on 2026-07-30**, against zero such errors on 22-29 July. Root cause: lichess-bot spawns a fresh engine process per game, and with `Threads: 30` that process actually carries **~70-74 OS threads** (measured live) because ServerGC adds roughly one GC thread per core on top of the search threads. On a 16-core/32-thread machine nothing is left for the bot's Python/network thread or for the next game's engine startup. With `challenge.concurrency: 1`, one failed game is enough for the bot to look dead. **That part is fixed in the bot config (`Threads` 30 → 24), not in the engine.**
+
+**Two genuine engine defects surfaced during the investigation, and those are what this version ships:**
+
+- **Unbounded iteration depth in unlimited searches.** The iterative-deepening loop ran to `limits.MaxDepth`, which is `int.MaxValue` for ponder/infinite. In a repetition position with a warm transposition table every iteration returns instantly, so the loop spun through ever-higher depths that could no longer search anything — caught in a live bot game as **depths 22→26 completing in 30 ms** with the node count barely moving, burning a core for the whole of the opponent's thinking time. The loop is now capped at `MaxPly`, which the search stack could never exceed anyway, so only the degenerate spin is removed.
+- **Stalls were invisible.** `WaitForSearchToFinish` waits for the search task without a timeout. That wait is correct — proceeding would break `ChessEngine`'s one-search-at-a-time contract — but a search that ignored cancellation would freeze the command loop with no trace at all, which under lichess-bot silently ends the night. It now emits `info string search still stopping after Ns` once per stalled second, so the failure is diagnosable from the GUI or bot log instead of looking like a freeze.
+
+Matchmaking time controls were left unchanged, bullet included: on Lichess a player's clock does not start until AFTER their first move, so the engine's 2.5-7 s process startup costs no game time, and bullet is what maximises games per day. 281/281 tests.
+
 ## 2026-07-30 (v3.2.0) — NNUE gen7 (NNUE-0.7) + human-opening datagen pipeline
 
 **SPRT gen7 vs gen5 (the previous embedded net, tc=10+0.1): +3.7 ±10.2, LOS 76.2%, [0.505] over 3000 games — marginal (parity; not a formal H1). SPRT gen7 vs classical: +28.5 ±13.0, LOS 100%, H1 accepted over 2176 games — the total accumulated NNUE value over the classical evaluator. CCRL gauntlet (240 games, 60+0.6, single-thread, 12-engine field 2862–3281): 57.9%, ~3080 ±40 CCRL, up from gen5's 51.0% (~3050) but within combined gauntlet noise.**

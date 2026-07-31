@@ -120,6 +120,23 @@ public sealed class AlphaBetaSearch
     private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
 
+    // Proven-short-mate stop (clock mode). Once a completed iteration proves a
+    // forced mate in <= 3 plies for us — which cannot get materially shorter —
+    // or that we are mated in <= 2 (no longer defense exists), searching on is
+    // pointless: stop and play it. This is the NARROW exception to the "never
+    // break on mate scores" rule below: LONG mates still deepen (finding
+    // shorter mates / longer defenses), only the shortest proven ones stop
+    // early. Mirrors the reference time-manager (search.cpp: score >=
+    // mate_in(3) || score == mated_in(2)). Fixes multi-second thinks on an
+    // already-seen mate-in-1: the easy-move gate needs depth >= 12, but a
+    // mate-in-1 is proven at depth 1-2. Measured at 5+5: 1074 ms -> 22 ms at
+    // one thread, 1253 ms -> 112 ms at 30. Clock mode only -> fixed-depth is
+    // byte-identical. Set EnableProvenMateStop false for the isolated
+    // no-mate-stop candidate build.
+    private const bool EnableProvenMateStop = true;
+    private const int MateStopGivePlies = 3; // reference mate_in(3): we give mate in <= 3 plies
+    private const int MateStopGetPlies = 2;  // reference mated_in(2): we are mated in <= 2 plies
+
     // Mid-iteration overshoot guard: bound how far a single deep root move may
     // run past the (dynamic) soft budget before the node-level stop fires. The
     // soft deadline is only enforced at root-move boundaries, so a deep
@@ -499,7 +516,17 @@ public sealed class AlphaBetaSearch
 
         _bestMoveChangesTotal = 0; // monotonic; coordinator reads deltas of it
 
-        for (int depth = 1; depth <= limits.MaxDepth; depth++)
+        // Cap the iteration depth at the search stack's own limit. Without it,
+        // an unlimited search (ponder/infinite) in a position where every
+        // iteration returns instantly from the transposition table — a
+        // repetition dance with a warm TT — spins the loop through ever-higher
+        // depths that can no longer search anything, burning a core for the
+        // whole of the opponent's thinking time. Observed in a bot game: depths
+        // 22->26 completed in 30 ms with the node count barely moving. Beyond
+        // MaxPly the stack cannot go deeper anyway, so this only removes the
+        // degenerate spin; no real search ever reaches it.
+        int maxIterationDepth = Math.Min(limits.MaxDepth, MaxPly);
+        for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
             CheckStop();
             if (_stopped)
@@ -599,6 +626,17 @@ public sealed class AlphaBetaSearch
 
             if (clockMode)
             {
+                // Proven-short-mate stop: a mate in <= 3 for us cannot get
+                // shorter and a mate-in-2 loss has no longer defense, so the
+                // remaining budget buys nothing. Depth-gate-free (unlike
+                // easy-move), so a mate-in-1 seen at depth 1-2 plays at once
+                // instead of coasting to depth 12. Excludes TB win/loss scores
+                // (those sit in a band below MateScore, well under this bound).
+                if (EnableProvenMateStop
+                    && (score >= MateScore - MateStopGivePlies
+                        || score <= -MateScore + MateStopGetPlies))
+                    break;
+
                 // Falling eval: when the score is dropping against the
                 // previous move's average and the recent iterations, think
                 // longer (the position is deteriorating and the move matters);
