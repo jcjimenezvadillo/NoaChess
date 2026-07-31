@@ -69,9 +69,20 @@ public static class NnueModelLoader
             error = $"feature schema {schema} does not match engine schema {NnueFeatureIndex.FeatureSchemaId}";
             return false;
         }
-        if (arch != NnueModelHeader.SupportedArchitectureId)
+        if (arch != NnueModelHeader.ArchitectureInt16L1 && arch != NnueModelHeader.ArchitectureInt8L1)
         {
             error = $"unsupported architecture id {arch}";
+            return false;
+        }
+        // Arch 2 packs activations into unsigned bytes and multiplies them by
+        // signed bytes through VPMADDUBSW, whose int16 lane saturates above
+        // 32,767. QA <= 127 makes |a0*w0 + a1*w1| <= 2*127*127 = 32,258, i.e.
+        // exact for every possible input. A model claiming arch 2 with a larger
+        // QA would evaluate silently wrong positions, so it is refused.
+        if (arch == NnueModelHeader.ArchitectureInt8L1 && qa > NnueModelHeader.MaxQaForInt8L1)
+        {
+            error = $"architecture {arch} requires QA <= {NnueModelHeader.MaxQaForInt8L1} "
+                  + $"to keep the int8 dot product free of int16 saturation (got QA={qa})";
             return false;
         }
         if (ftInputs != NnueFeatureIndex.InputSize)
@@ -91,10 +102,11 @@ public static class NnueModelLoader
         }
 
         // ---- Payload ----
+        int l1WeightBytes = arch == NnueModelHeader.ArchitectureInt8L1 ? 1 : 2;
         long expectedPayload =
             (long)ftInputs * ftOutputs * 2   // ftWeights int16
             + ftOutputs * 2                  // ftBias int16
-            + (long)l1Outputs * 2 * ftOutputs * 2 // l1Weights int16
+            + (long)l1Outputs * 2 * ftOutputs * l1WeightBytes // l1Weights int16 or int8
             + l1Outputs * 4                  // l1Bias int32
             + l1Outputs * 2                  // outWeights int16
             + 4;                             // outBias int32
@@ -137,15 +149,32 @@ public static class NnueModelLoader
             return result;
         }
 
+        sbyte[] ReadInt8Array(ReadOnlySpan<byte> src, int count)
+        {
+            var result = new sbyte[count];
+            for (int i = 0; i < count; i++, offset++)
+                result[i] = (sbyte)src[offset];
+            return result;
+        }
+
         var ftWeights = ReadInt16Array(payload, ftInputs * ftOutputs);
         var ftBias = ReadInt16Array(payload, ftOutputs);
-        var l1Weights = ReadInt16Array(payload, l1Outputs * 2 * ftOutputs);
+
+        int l1WeightCount = l1Outputs * 2 * ftOutputs;
+        short[]? l1Weights = null;
+        sbyte[]? l1WeightsI8 = null;
+        if (arch == NnueModelHeader.ArchitectureInt8L1)
+            l1WeightsI8 = ReadInt8Array(payload, l1WeightCount);
+        else
+            l1Weights = ReadInt16Array(payload, l1WeightCount);
+
         var l1Bias = ReadInt32Array(payload, l1Outputs);
         var outWeights = ReadInt16Array(payload, l1Outputs);
         int outBias = BinaryPrimitives.ReadInt32LittleEndian(payload[offset..]);
 
         network = new NnueNetwork
         {
+            ArchitectureId = arch,
             FtInputs = ftInputs,
             FtOutputs = ftOutputs,
             L1Outputs = l1Outputs,
@@ -155,6 +184,7 @@ public static class NnueModelLoader
             FtWeights = ftWeights,
             FtBias = ftBias,
             L1Weights = l1Weights,
+            L1WeightsI8 = l1WeightsI8,
             L1Bias = l1Bias,
             OutWeights = outWeights,
             OutBias = outBias,

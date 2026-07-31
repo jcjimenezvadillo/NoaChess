@@ -46,6 +46,27 @@ Console.WriteLine($"limits : resign>=|{options.Resign}|cp/6plies, draw<=|{option
 if (options.Model is not null)
     Console.WriteLine($"model  : {options.Model} (self-play uses NNUE instead of the classical evaluator)");
 
+// ---- PROVENANCE GATE (v4.0.0) ----
+//
+// Blocks 7-8 spent five generations and a shipped version believing the datagen
+// was seeded from a human opening book. Every manifest on disk says
+// "8-9 random legal": the pipeline was correct and the book existed, but the
+// -Book argument was never passed, and NOTHING complained. The resulting
+// conclusion ("pure self-play is exhausted") reached the ROADMAP, the README
+// and the release notes as established fact.
+//
+// --require-book turns the operator's INTENT into a checked precondition: a
+// pipeline that means to seed from a book says so, and a run that would have
+// silently produced random openings dies here instead of 13 hours later.
+if (options.RequireBook && options.Book is null && options.LabelBook is null)
+{
+    Console.Error.WriteLine(
+        "datagen: --require-book was given but no --book/--label-book was supplied.\n"
+      + "         This run would have produced RANDOM-OPENING data while the\n"
+      + "         pipeline reported book seeding. Refusing to start.");
+    return 2;
+}
+
 // Optional human-opening seed book (from the pgnbook subcommand): each game
 // starts from a random position in it instead of 8-9 random legal plies.
 string[]? book = null;
@@ -56,6 +77,16 @@ if (options.Book is not null)
         throw new InvalidOperationException($"Opening book '{options.Book}' is empty.");
     Console.WriteLine($"book   : {options.Book} ({book.Length} seed positions; random openings disabled)");
 }
+
+// Stated once, unmissably, at the top of every run and every log. The failure
+// this guards against was invisible precisely because provenance was never
+// printed where an operator would see it.
+Console.WriteLine(options.LabelBook is not null
+    ? $"PROVENANCE: label-book (elite WDL anchoring) from '{options.LabelBook}'"
+    : options.Book is not null
+        ? $"PROVENANCE: self-play seeded from book '{options.Book}'"
+        : "PROVENANCE: self-play seeded from 8-9 RANDOM LEGAL PLIES (no book). "
+          + "If you meant to seed from a book, stop now and pass --book.");
 
 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.Output))!);
 
@@ -347,17 +378,24 @@ Console.WriteLine($"done: {gamesDone} games, {totalRecords:N0} positions in {sto
 Console.WriteLine($"manifest: {manifestPath}");
 return 0;
 
-static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook, bool RequireBook) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
     string? model = null;
     string? book = null;
     string? labelBook = null;
+    // Provenance gate: assert that this run is book-seeded. See the check at
+    // the top of the file for why an unchecked intent is not good enough.
+    bool requireBook = false;
     int resign = int.MinValue; // Sentinel: auto-pick from the evaluator scale below.
     int maxPlies = 400;
     int drawScore = 10;        // Draw adjudication threshold in centipawns.
     int drawCount = 12;        // Consecutive near-zero plies needed to adjudicate.
+
+    // --require-book is a flag with no value, so it is scanned over the whole
+    // array rather than the value-pair loop below (which stops one short).
+    bool requireBookFlag = args.Contains("--require-book");
 
     for (int i = 0; i < args.Length - 1; i++)
     {
@@ -388,5 +426,6 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
     if (resign == int.MinValue)
         resign = model is null ? 1500 : 700;
 
-    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount, book, labelBook);
+    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount,
+            book, labelBook, requireBook || requireBookFlag);
 }

@@ -299,6 +299,19 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "nnueprofile":
+                {
+                    // Not UCI: measures where NNUE evaluation time actually
+                    // goes (v4.0.0 foundation gate). The v4.2.0 width decision
+                    // must rest on this instead of on intuition — the previous
+                    // decision not to widen rested on a cost model that does
+                    // not survive arithmetic. Forces single-threaded search so
+                    // the unsynchronised counters stay meaningful.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleNnueProfile(tokens);
+                    break;
+                }
+
                 case "ucinewgame":
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
@@ -388,6 +401,57 @@ public sealed class UciLoop
         catch (AggregateException) { }
         _searchTask = null;
         _suppressBestmove = false;
+    }
+
+    // "nnueprofile [depth]" — not UCI. Prints the NNUE cost breakdown that the
+    // v4.0.0 gate is defined against. Runs single-threaded: the profiling
+    // counters are deliberately unsynchronised, and a parallel search would
+    // both corrupt them and blur the per-primitive attribution.
+    private void HandleNnueProfile(string[] tokens)
+    {
+        var network = _engine.NnueNetwork;
+        if (network is null)
+        {
+            _output.WriteLine("info string nnueprofile: no NNUE model loaded");
+            return;
+        }
+
+        int depth = 8;
+        if (tokens.Length > 1 && int.TryParse(tokens[1], out int requested) && requested > 0)
+            depth = Math.Min(requested, 20);
+
+        int savedThreads = _engine.Threads;
+        bool savedNnue = _engine.NnueActive;
+        try
+        {
+            _engine.Threads = 1;
+            if (!savedNnue)
+                _engine.SetUseNnue(true);
+
+            string report = NoaChess.Engine.Evaluation.Nnue.NnueProfiler.Run(
+                network,
+                (board, d) =>
+                {
+                    _engine.NewGame(); // cold tables, so counts are comparable
+                    return _engine.FindBestMove(board, depth: d).NodesSearched;
+                },
+                depth);
+
+            foreach (string line in report.Split('\n'))
+            {
+                string trimmed = line.TrimEnd('\r');
+                if (trimmed.Length > 0)
+                    _output.WriteLine("info string " + trimmed);
+            }
+        }
+        finally
+        {
+            _engine.Threads = savedThreads;
+            if (!savedNnue)
+                _engine.SetUseNnue(false);
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = false;
+            _engine.NewGame();
+        }
     }
 
     // "setoption name <name...> value <value...>". The name may contain
