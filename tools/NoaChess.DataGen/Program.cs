@@ -69,6 +69,106 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
     // Placeholder header; record count and manifest hash are patched at the end.
     DatasetFormat.WriteHeader(stream, 0, stackalloc byte[32]);
 
+    // ---- Elite-game WDL anchoring (--label-book) ----
+    // A fundamentally different data source from self-play: instead of playing
+    // games ourselves and labelling with our own outcome, we take positions that
+    // REAL strong players reached and label them with (our deep search score,
+    // THEIR game result). The result is the only signal in the whole pipeline
+    // that the engine cannot manufacture for itself — self-play WDL is just the
+    // engine's own opinion played out, which is why the gen3-era lambda sweep
+    // found it worthless (lambda 0.750 -> score 0.338). This is not imitation
+    // learning: the human never supplies an evaluation or a move, only the
+    // position and who eventually won.
+    if (options.LabelBook is not null)
+    {
+        string[] lines = File.ReadAllLines(options.LabelBook)
+                             .Where(l => l.Trim().Length > 0).ToArray();
+        Console.WriteLine($"label-book: {options.LabelBook} ({lines.Length:N0} positions, {options.Nodes} nodes each)");
+
+        var lineQueue = new ConcurrentQueue<string>(lines);
+        int labelled = 0, skipped = 0;
+
+        Parallel.For(0, options.Threads, _ =>
+        {
+            var engine = new ChessEngine();
+            if (options.Model is not null)
+            {
+                if (!engine.TryLoadNnueModel(options.Model, out string error))
+                    throw new InvalidOperationException($"Failed to load NNUE model '{options.Model}': {error}");
+                engine.SetUseNnue(true);
+            }
+            var record = new byte[DatasetFormat.RecordSize];
+            var batch = new List<byte[]>(256);
+
+            while (lineQueue.TryDequeue(out string? line))
+            {
+                // "FEN;R" as written by `pgnbook --with-result`; R is from White.
+                int sep = line.LastIndexOf(';');
+                if (sep <= 0) { Interlocked.Increment(ref skipped); continue; }
+                if (!int.TryParse(line[(sep + 1)..].Trim(), out int whiteResult)
+                    || whiteResult is < -1 or > 1)
+                {
+                    Interlocked.Increment(ref skipped);
+                    continue;
+                }
+
+                Board board;
+                try { board = new Board(line[..sep].Trim()); }
+                catch { Interlocked.Increment(ref skipped); continue; }
+                if (GameState.GetResult(board) != GameResult.Ongoing)
+                {
+                    Interlocked.Increment(ref skipped);
+                    continue;
+                }
+
+                engine.NewGame();
+                SearchResult search = engine.FindBestMove(board, SearchLimits.Nodes(options.Nodes));
+
+                // Same quiet-position filter as the self-play path: a static
+                // evaluator must not be taught positions whose value comes from
+                // a tactic the SEARCH resolves.
+                bool tactical = search.BestMove.IsCapture || search.BestMove.IsPromotion;
+                if (board.IsInCheck() || tactical || Math.Abs(search.Score) >= 20_000)
+                {
+                    Interlocked.Increment(ref skipped);
+                    continue;
+                }
+
+                int ply = 2 * (board.FullmoveNumber - 1) + (board.SideToMove == Color.Black ? 1 : 0);
+                int resultStm = board.SideToMove == Color.White ? whiteResult : -whiteResult;
+                DatasetFormat.WriteRecord(record, board, ply, search.Score, resultStm);
+                batch.Add((byte[])record.Clone());
+
+                if (batch.Count >= 256)
+                    FlushBatch(batch);
+            }
+            if (batch.Count > 0)
+                FlushBatch(batch);
+
+            void FlushBatch(List<byte[]> pending)
+            {
+                lock (writeLock)
+                {
+                    foreach (byte[] rec in pending)
+                        stream.Write(rec);
+                    totalRecords += pending.Count;
+                    int done = labelled += pending.Count;
+                    if (done % 5000 < pending.Count)
+                    {
+                        double perPos = stopwatch.Elapsed.TotalSeconds / Math.Max(1, done);
+                        Console.WriteLine($"  {done:N0} labelled, {skipped:N0} skipped, "
+                                        + $"ETA {(lines.Length - done) * perPos / 60:F0} min");
+                    }
+                }
+                pending.Clear();
+            }
+        });
+
+        Console.WriteLine($"label-book done: labelled={labelled:N0} skipped={skipped:N0}");
+    }
+    else
+    {
+
     var gameQueue = new ConcurrentQueue<int>(Enumerable.Range(0, options.Games));
 
     Parallel.For(0, options.Threads, worker =>
@@ -197,6 +297,8 @@ using (var stream = new FileStream(options.Output, FileMode.Create, FileAccess.W
             }
         }
     });
+
+    } // end of the self-play branch (see --label-book above)
 }
 
 // ---- Manifest + header patch ----
@@ -209,15 +311,25 @@ var manifest = new
     generator = "NoaChess.DataGen",
     formatVersion = DatasetFormat.FormatVersion,
     featureSchemaId = DatasetFormat.FeatureSchemaId,
+    // The data SOURCE is the first thing to check when a net misbehaves, so it
+    // is recorded explicitly: self-play games, or elite positions labelled with
+    // their real game result (--label-book), which is a different distribution
+    // AND a different WDL signal.
+    mode = options.LabelBook is null ? "selfplay" : "label-book (elite WDL anchoring)",
     games = gamesDone,
     records = totalRecords,
     nodesPerMove = options.Nodes,
     seed = options.Seed,
-    openingPlies = options.Book is null ? "8-9 random legal" : $"book:{options.Book}",
+    openingPlies = options.LabelBook is not null ? $"label-book:{options.LabelBook}"
+                 : options.Book is null ? "8-9 random legal" : $"book:{options.Book}",
     maxPlies = options.MaxPlies,
     filters = "no in-check, no tactical best move, |score| < 20000",
-    resignAdjudication = $"|score| >= {options.Resign} for 6 plies",
-    drawAdjudication = $"|score| <= {options.DrawScore} for {options.DrawCount} plies after ply 60",
+    wdlSource = options.LabelBook is null ? "self-play game outcome"
+                                          : "real elite game outcome (external signal)",
+    resignAdjudication = options.LabelBook is null
+        ? $"|score| >= {options.Resign} for 6 plies" : "n/a (no self-play games)",
+    drawAdjudication = options.LabelBook is null
+        ? $"|score| <= {options.DrawScore} for {options.DrawCount} plies after ply 60" : "n/a",
     evaluator = options.Model ?? "classical",
     engineVersion = $"NoaChess {ChessEngine.Version}",
     generatedUtc = DateTime.UtcNow.ToString("o"),
@@ -235,12 +347,13 @@ Console.WriteLine($"done: {gamesDone} games, {totalRecords:N0} positions in {sto
 Console.WriteLine($"manifest: {manifestPath}");
 return 0;
 
-static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
     string? model = null;
     string? book = null;
+    string? labelBook = null;
     int resign = int.MinValue; // Sentinel: auto-pick from the evaluator scale below.
     int maxPlies = 400;
     int drawScore = 10;        // Draw adjudication threshold in centipawns.
@@ -257,6 +370,7 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
             case "--out": output = args[i + 1]; break;
             case "--model": model = args[i + 1]; break;
             case "--book": book = args[i + 1]; break;
+            case "--label-book": labelBook = args[i + 1]; break;
             case "--resign": resign = int.Parse(args[i + 1]); break;
             case "--maxplies": maxPlies = int.Parse(args[i + 1]); break;
             case "--drawscore": drawScore = int.Parse(args[i + 1]); break;
@@ -274,5 +388,5 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
     if (resign == int.MinValue)
         resign = model is null ? 1500 : 700;
 
-    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount, book);
+    return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount, book, labelBook);
 }

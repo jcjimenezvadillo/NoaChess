@@ -7,7 +7,7 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/Dotnet.gitignore
 
-# Build results
+# .NET Build Artifacts
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -23,71 +23,63 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
-# .NET Core
+# .NET Core and Dependencies
 project.lock.json
 project.fragment.lock.json
 artifacts/
 
+# NuGet Packages
+*.nupkg
+*.snupkg
+
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
 
-# NuGet Packages
-*.nupkg
-# NuGet Symbol Packages
-*.snupkg
-
-# Others
-~$*
-*~
-CodeCoverage/
-
-# MSBuild Binary and Structured Log
+# Build Logs and Diagnostics
 *.binlog
-
-# MSTest test Results
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
+CodeCoverage/
 
-# NUnit
+# Test Result Files
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
 
-# Visual Studio local files
+# IDE and Editor Configuration - Visual Studio
 .vs/
 *.user
 *.suo
 *.userosscache
 *.sln.docstates
 
-# VS Code local files
+# IDE and Editor Configuration - VS Code
 .vscode/
 
-# Rider / JetBrains local files
+# IDE and Editor Configuration - Rider / JetBrains
 .idea/
 
-# Local environment files
+# Environment and Configuration
 .env
 .env.*
-/NoaChess_TECHNICAL_ROADMAP_v2_PLUS.md
 
-# NNUE training data (regenerable via tools/NoaChess.DataGen; not for git)
-data/
-tools/training/nnue/checkpoints/
-/Entrenamiento.md
-/overnight_training_nnue_run4.bat
-/overnight_training.bat
-/models/nnue/
+# Python Generated Files (tools/training/nnue scripts)
 /tools/training/nnue/__pycache__/
-# Embedded net copy: derived from models/nnue via the pipeline, regenerated
+/tools/training/nnue/__pycache__/*.pyc
+
+# NNUE Training Data and Models (regenerable via tools/NoaChess.DataGen)
+data/
+/models/nnue/
+tools/training/nnue/checkpoints/
+
+# Embedded NNUE net: derived from models/nnue via the pipeline, regenerated
 # every run; the csproj embeds it only when present (Exists condition).
 /src/NoaChess.UCI/Resources/noa-embedded.noannue
-/out/NoaChess.UCI.exe
-/tools/training/nnue/__pycache__/dataset.cpython-313.pyc
-/tools/training/nnue/__pycache__/export_model.cpython-313.pyc
-/tools/training/nnue/__pycache__/lambda_sweep_export.cpython-313.pyc
-/tools/training/nnue/__pycache__/lambda_sweep_match.cpython-313.pyc
-/tools/training/nnue/__pycache__/lambda_sweep_train.cpython-313.pyc
-/tools/training/nnue/__pycache__/model.cpython-313.pyc
-/tools/training/nnue/__pycache__/train_nnue.cpython-313.pyc
-/tools/training/nnue/__pycache__/validate_nnue.cpython-313.pyc
+
+# Legacy training scripts
+/overnight_training_nnue_run4.bat
+/overnight_training.bat
+
+# Generic temporary files
+~$*
+*~
