@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## (unreleased, v3.4.0) — elite-data infrastructure: middlegame seeds + WDL anchoring
+
+**Tooling only so far — no engine change, no net change, no strength claim.** Groundwork for the two data levers left after self-play, node depth, net size, lambda and search-threshold recalibration were all measured out.
+
+**Middlegame seeds (needed no code).** `pgnbook` already exposed `--min-ply`/`--max-ply`, so seeding self-play from **ply 20-40** instead of 12-20 is a flag change. The point: gen7 seeded openings from elite games and landed at parity, and openings are the part of the game where an engine is least likely to be lost — the middlegame is where evaluation decides games.
+
+**Elite WDL anchoring (new).** Two additions:
+
+- `pgnbook --with-result` writes `FEN;R` (R = +1/0/-1 from White) instead of a bare FEN. `PgnReader` now captures the result token it previously discarded, and games still in progress (`*`) are skipped in this mode.
+- `NoaChess.DataGen --label-book <file>` is a new data source that does **not** play games: it takes positions real strong players reached and labels each with **(our own deep search score, their actual game result)**. It reuses the self-play path's quiet-position filter (no in-check, no tactical best move, |score| < 20000) so the two datasets stay comparable.
+
+**Why this is the one lever that adds information.** Every other signal in the pipeline is the engine's own opinion fed back to itself — self-play WDL is just its evaluation played out, which is why the gen3-era lambda sweep found it actively harmful (lambda 0.750 → score 0.338). A real game's outcome is external. **This is not imitation learning:** the human supplies neither an evaluation nor a move, only the position and who eventually won — the label's score still comes from NoaChess's own search. Training on human move choices is a known way to make a net *weaker* (distribution shift) and is deliberately not done here.
+
+The dataset format needed no change: byte 32 of each record already carried "game result from the side to move". The manifest now records `mode` and `wdlSource` explicitly, so an elite-labelled dataset can never be mistaken for self-play — the kind of confusion that cost a whole gen7 training run when a stale feature cache went unnoticed. 281/281 tests.
+
 ## 2026-07-31 (v3.3.0) — proven-mate stop; NNUE scale alignment measured and cut
 
 **Search-side only — no retraining, the embedded net is still gen7. Built on v3.2.1. Two things were tried; one ships, one was cut by SPRT and the negative result is recorded below because it closes a line of work.**
