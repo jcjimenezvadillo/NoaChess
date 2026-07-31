@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## 2026-07-31 (v3.3.0) — proven-mate stop; NNUE scale alignment measured and cut
+
+**Search-side only — no retraining, the embedded net is still gen7. Built on v3.2.1. Two things were tried; one ships, one was cut by SPRT and the negative result is recorded below because it closes a line of work.**
+
+**SPRT vs v3.2.1 (10+0.1): +3.3 ±23.1, LOS 61.2%, [0.507] over 523 games — strength-neutral, stopped by hand at LLR 0.03 rather than run to exhaustion.** A ~0 Elo effect never converges against `elo0=0 elo1=5`, and the effect had to be ~0 by construction: the stop only fires on a mate proven within 2 moves, where the game ends immediately and the banked clock has almost no chance to be spent. The run's purpose was to rule out a REGRESSION — this engine has previous form here, an earlier "break on any mate score" made it walk into the shortest mate when losing — and 523 games with a ±23 interval do rule one out. **Shipped for the behaviour, not for Elo.**
+
+**1. Proven-short-mate stop (the shipped change; validated by direct measurement).** The iterative-deepening loop now breaks when a completed iteration proves a mate in <= 3 plies for us, or that we are mated in <= 2 — the narrow case where deepening cannot improve the answer. Mirrors the reference time manager (`search.cpp`: `score >= mate_in(3) || score == mated_in(2)`). This is the deliberate exception to the existing "never break on mate scores" rule, which stays in force for LONG mates (deeper iterations find shorter mates when winning and longer defenses when losing).
+
+Fixes an observed defect: **a mate-in-1 took ~1.07 s** because the only mechanism that could shorten it was easy-move, whose gate needs `depth >= 12`, while the mate is proven at depth 1. Measured at 5+5, same move and same reported mate in every case:
+
+| position | v3.2.x | v3.3.0 |
+|---|---|---|
+| mate-in-1, 1 thread | 1074 ms (reaches d12) | **22 ms** (d1) |
+| mate-in-1, 30 threads (bot config) | 1253 ms | **112 ms** |
+| normal midgame | 12992 ms, d18, cp -19 | 13421 ms, d18, cp -19 |
+| normal opening | 5035 ms, d16, cp 44 | 5073 ms, d16, cp 44 |
+
+Clock mode only, so fixed-depth play is byte-identical (verified).
+
+**2. NNUE-to-classical eval scale alignment — MEASURED AND CUT.** Every pruning constant is expressed on the CLASSICAL centipawn scale and several are compared directly against the evaluator's output, so the scale mismatch is real: measured over **6000 real positions** from the human opening book, gen7 regresses on the classical evaluator at **slope 0.783** (mean|nnue| 95.7 vs mean|classical| 114.0, ratio 0.84 — matching the training pipeline's own validate slope of 0.840). Correcting it looked obvious. **It lost decisively: 1250 permille scored 144-261-261 [0.412] over 666 games, −61.7 ±20.7 Elo, LOS 0.0%, H0 accepted** (10+0.1, proven-mate stop in both arms), negative from the first sample and monotone. The knob was removed.
+
+**Why, since the measurement itself was correct:** (1) the margins are already calibrated to the compressed net in practice — gen3 through gen7 were each SPRT-validated with it, so the shipped combination is the empirically tuned one and "fixing" the scale broke a calibration that worked; (2) inflating the eval makes pruning MORE aggressive — RFP fires on `staticEval - margin >= beta`, so a 25% larger eval trips it far more often (likewise razoring and futility), producing unsound cutoffs. A compressed eval against fixed margins is equivalent to LARGER margins, i.e. safer pruning, and the engine prefers that.
+
+**Method note kept in the code:** the first calibration attempt used artificial material positions (removing a piece from the start position) and produced a confident but WRONG "1.29x inflated" reading — the opposite direction. Such positions are far outside the net's training distribution, so the two evaluators simply disagree there rather than differing by scale. Always regress over REAL positions, in the magnitude range the consuming margins operate in.
+
 ## 2026-07-31 (v3.2.1) — bot stability: unbounded ponder spin + invisible stalls
 
 **Hot-patch over v3.2.0. No evaluation change and no strength claim: this is a robustness release, born from diagnosing a Lichess bot that "stopped playing after a few games" and had to be restarted by hand.**
