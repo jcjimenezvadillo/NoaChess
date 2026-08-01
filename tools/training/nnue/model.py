@@ -20,8 +20,15 @@ OUTPUT_SCALE = 400.0  # net output * 400 = centipawns
 # readout per phase instead of one linear map serving a 32-piece opening and a
 # 4-piece ending alike. Only ONE bucket is evaluated at play time, so this buys
 # capacity at essentially zero runtime cost — the best trade in the architecture,
-# which is why it lands before any width increase. 1 = unbucketed (arch 1/2).
-OUT_BUCKETS = 8
+# which is why it lands before any width increase.
+#
+# DEFAULT IS 1, DELIBERATELY. Buckets are an explicit opt-in (--out-buckets 8),
+# not a silent change of what every existing caller produces. Defaulting to 8
+# meant a script that had always trained an unbucketed net suddenly produced a
+# bucketed checkpoint, which then failed at export against --arch 1 — after the
+# training had already run. A default that quietly changes existing output is a
+# trap, and the failure surfaces hours downstream of the cause.
+OUT_BUCKETS = 1
 
 # Quantization scales (must match the C# loader and export_model.py).
 QA = 255
