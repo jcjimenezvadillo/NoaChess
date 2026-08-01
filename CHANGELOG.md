@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-08-01 — MEASURED: the network is data-starved, by +182 Elo
+
+Not a release; the measurement the v4.1.0 pipeline was built to make. Phase 0 of the data-scale campaign, run on two arms matched by **total search work** rather than position count:
+
+| arm | positions | nodes/move | node-work |
+|---|---|---|---|
+| `fast6k` | 20,001,946 | 6,000 | 1.2e11 |
+| `deep28k` | 4,288,192 | 28,000 | 1.2e11 |
+
+Identical architecture (ft=128, l1=32, unbucketed), identical hyperparameters, same teacher. The only difference is how the same machine time was spent.
+
+**`fast6k` wins by +182.2 ±16.6 Elo, LOS 100%** (1167-307-312 over 1786 games at 10+0.1). **The campaign runs at 6,000 nodes.**
+
+**The magnitude says more than the direction.** This is not "deep labels add little" — it is that **4.3M positions cannot train this network at all**. The feature transformer alone holds 22,528 × 128 ≈ 2.9M parameters, so the deep arm trained on roughly 1.5 positions per parameter.
+
+It is the strongest confirmation yet of the BLOCK 12 diagnosis, and it explains gen3 through gen7 retroactively: those generations raised node counts 14k → 20k → 24k → 28k and landed flat, because label depth is not the binding constraint at this size. The axis that mattered was never being moved.
+
+**It does not prove 6,000 is optimal**, only that it beats 28,000 decisively. Both arms sit deep in the starved regime, so the slope cannot be extrapolated into the 300-500M range where returns must diminish — extrapolating from two points is the class of error this project has already paid for. A third arm at 3,000 nodes / 40M positions (same total work, ~7h) would establish whether 6,000 is the plateau; that choice doubles or halves the campaign corpus for the same hours.
+
+---
+
 ## 2026-08-01 (v4.2.0) — BLOCK 12 capacity: output buckets, width support, and a way to price width
 
 **Capability release. The embedded net is still gen7 and strength is unchanged — 193,746 nodes on the fixed-depth suite, the same figure as v4.0.0 and v4.1.0.** What ships is the architecture the capacity step needs, verified across both languages, plus the measurement that the width decision was missing.
