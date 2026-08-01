@@ -94,6 +94,98 @@ public class NullMoveAndRepetitionTests
         Assert.Equal(fresh.PawnZobristKey, board.PawnZobristKey);
     }
 
+    // v4.3.0 added minor / major / per-colour non-pawn keys on the same
+    // incremental path. An incrementally maintained hash that drifts does not
+    // crash and does not fail obviously: it silently files correction-history
+    // observations under keys that no longer describe the position, and the
+    // damage shows up much later as a net that mysteriously plays worse. So
+    // every partial key is checked against a board rebuilt from FEN, over a
+    // line that exercises captures, en passant, promotion and castling.
+    // Random legal games rather than a hand-written line: a fixed sequence only
+    // tests the cases its author thought of, and gets silently weaker every
+    // time it is edited. Random play reaches captures, en passant, promotions
+    // and castling on its own, and the keys are checked at EVERY ply, so the
+    // first divergence is caught at the move that caused it.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(17)]
+    [InlineData(2024)]
+    public void PartialZobristKeys_MatchFreshlyLoadedBoard(int seed)
+    {
+        var board = new Board();
+        var rng = new Random(seed);
+
+        for (int ply = 0; ply < 160; ply++)
+        {
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            if (moves.Count == 0)
+                break;
+            board.MakeMove(moves[rng.Next(moves.Count)]);
+
+            var fresh = new Board(Fen.Save(board));
+            Assert.Equal(fresh.PawnZobristKey, board.PawnZobristKey);
+            Assert.Equal(fresh.MinorZobristKey, board.MinorZobristKey);
+            Assert.Equal(fresh.MajorZobristKey, board.MajorZobristKey);
+            Assert.Equal(fresh.NonPawnZobristKey(Color.White), board.NonPawnZobristKey(Color.White));
+            Assert.Equal(fresh.NonPawnZobristKey(Color.Black), board.NonPawnZobristKey(Color.Black));
+        }
+    }
+
+    // Unmake must restore every partial key exactly, or the keys decay over a
+    // search rather than over a game — a far faster route to the same silent
+    // corruption.
+    [Fact]
+    public void PartialZobristKeys_SurviveMakeUnmake()
+    {
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        (ulong pawn, ulong minor, ulong major, ulong npW, ulong npB) before =
+            (board.PawnZobristKey, board.MinorZobristKey, board.MajorZobristKey,
+             board.NonPawnZobristKey(Color.White), board.NonPawnZobristKey(Color.Black));
+
+        foreach (Move move in MoveGenerator.GenerateLegalMoves(board))
+        {
+            board.MakeMove(move);
+            board.UnmakeMove();
+            Assert.Equal(before.pawn, board.PawnZobristKey);
+            Assert.Equal(before.minor, board.MinorZobristKey);
+            Assert.Equal(before.major, board.MajorZobristKey);
+            Assert.Equal(before.npW, board.NonPawnZobristKey(Color.White));
+            Assert.Equal(before.npB, board.NonPawnZobristKey(Color.Black));
+        }
+    }
+
+    // The keys must SEPARATE what they are supposed to separate. A key that
+    // ignored piece type would make the minor and major tables aliases of each
+    // other and the whole point of having several would evaporate — quietly,
+    // since everything would still run.
+    [Fact]
+    public void PartialZobristKeys_DistinguishTheirOwnMaterial()
+    {
+        var knight = new Board("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1");
+        var bishop = new Board("4k3/8/8/8/8/5B2/8/4K3 w - - 0 1");
+        var rook   = new Board("4k3/8/8/8/8/5R2/8/4K3 w - - 0 1");
+
+        // Minor key sees knights and bishops, and tells them apart.
+        Assert.NotEqual(knight.MinorZobristKey, bishop.MinorZobristKey);
+        // A rook is not minor material: the minor key ignores it entirely.
+        Assert.Equal(0UL, rook.MinorZobristKey);
+        // ...and the major key sees the rook but not the minors.
+        Assert.NotEqual(0UL, rook.MajorZobristKey);
+        Assert.Equal(0UL, knight.MajorZobristKey);
+
+        // Non-pawn keys are per colour: the same piece on the same square for
+        // the other side must not collide.
+        var whiteKnight = new Board("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1");
+        var blackKnight = new Board("4k3/8/8/8/8/5n2/8/4K3 w - - 0 1");
+        Assert.NotEqual(whiteKnight.NonPawnZobristKey(Color.White),
+                        blackKnight.NonPawnZobristKey(Color.Black));
+
+        // Pawns never enter the non-pawn keys.
+        var pawns = new Board("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1");
+        var bare  = new Board("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        Assert.Equal(bare.NonPawnZobristKey(Color.White), pawns.NonPawnZobristKey(Color.White));
+    }
+
     [Fact]
     public void HasNonPawnMaterial_DetectsPawnEndgames()
     {

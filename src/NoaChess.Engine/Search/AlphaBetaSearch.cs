@@ -160,7 +160,17 @@ public sealed class AlphaBetaSearch
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
     private readonly CaptureHistory _captureHistory = new();
-    private readonly PawnCorrectionHistory _pawnCorrectionHistory = new();
+    private readonly CorrectionHistorySet _corrections = new();
+
+    // Key for the continuation correction table: the (piece, destination) of
+    // the move that reached this node, or 0 at the root and after a null move
+    // where no such move exists. Kept next to the call sites so the update and
+    // the lookup can never end up keyed differently — filing an observation
+    // under one key and reading it back under another is silent and permanent.
+    private ulong ContinuationCorrectionKey(int ply)
+        => ply > 0 && _stackPiece[ply - 1] >= 0
+            ? CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1])
+            : 0;
     private readonly Stopwatch _timer = new();
 
     // ---- Quiescence pruning constants (reference Step 6) ----
@@ -402,7 +412,7 @@ public sealed class AlphaBetaSearch
         _history.Clear();
         _contHist.Clear();
         _captureHistory.Clear();
-        _pawnCorrectionHistory.Clear();
+        _corrections.Clear();
         Array.Clear(_counterMoves);
         _bestPreviousScore = ScoreNone;
         _bestPreviousAverageScore = ScoreNone;
@@ -1204,7 +1214,7 @@ public sealed class AlphaBetaSearch
                               BoundType.None, Move.None, ttPv);
             }
 
-            staticEval = _pawnCorrectionHistory.Correct(board, rawStaticEval);
+            staticEval = _corrections.Correct(board, rawStaticEval, ContinuationCorrectionKey(ply));
         }
 
         // ---- Improvement / improving ----
@@ -1801,7 +1811,8 @@ public sealed class AlphaBetaSearch
                               : bestScore <= originalAlpha ? bestScore < staticEval
                               : true;
             if (!inCheck && quietBest && boundAgrees && Math.Abs(bestScore) < TbScoreBound)
-                _pawnCorrectionHistory.Update(board, bestScore - staticEval, depth);
+                _corrections.Update(board, bestScore - staticEval, depth,
+                                    ContinuationCorrectionKey(ply));
         }
 
         return bestScore;
@@ -1904,7 +1915,7 @@ public sealed class AlphaBetaSearch
             // static evaluation is a floor for its score. If even doing nothing
             // beats beta, the opponent will avoid this line — cut immediately.
             int rawEval = _evaluator.Evaluate(board);
-            bestScore = _pawnCorrectionHistory.Correct(board, rawEval);
+            bestScore = _corrections.Correct(board, rawEval, ContinuationCorrectionKey(ply));
             if (bestScore >= beta)
                 return bestScore;
             if (bestScore > alpha)
