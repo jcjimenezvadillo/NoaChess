@@ -2,6 +2,10 @@
 
 ## 2026-08-01 (v4.3.0) — BLOCK 12 search, part 1: the complete correction histories
 
+**MEASURED: +25.7 ±16.4 Elo vs v4.2.0, LOS 99.9%, SPRT H1 accepted** (280-212-429 over 921 games at 10+0.1, LLR 2.97 against a 2.94 bound). Same gen7 net embedded on both sides, so the difference is the search and nothing else — and since v4.2.0 is strength-identical to v3.3.0, this is **the first real Elo of the v4.x campaign, measured against the ~3080 engine**.
+
+Caveat worth stating with the number rather than after it: this is 10+0.1. Elo does not transfer 1:1 to the slow control CCRL uses, and this project has measured it going both ways — v2.6.9 gave +34.3 at STC and only +16 relative at LTC, while v2.7.0 gave +4.0 at STC and +43 at LTC. Evaluation gains shrink at long TC; search gains grow. Correction histories are search, so this may hold or grow, but the CCRL figure comes from the gauntlet, not from arithmetic on this one.
+
 **First strength-affecting engine change of the v4.x campaign.** Everything since v4.0.0 has been infrastructure with the search provably untouched; this one changes it deliberately. Node count on the fixed-depth suite moves 107,484 → 109,940, deterministic across runs at `Threads=1`.
 
 ### What a correction history is for
@@ -70,6 +74,12 @@ It is the strongest confirmation yet of the BLOCK 12 diagnosis, and it explains 
 ---
 
 ## 2026-08-01 (v4.2.0) — BLOCK 12 capacity: output buckets, width support, and a way to price width
+
+**MEASURED 2026-08-01: output buckets are worth +20.1 ±14.0 Elo, LOS 99.8%, SPRT H1** (658-560-474 over 1692 games at 10+0.1, LLR 2.95). Two nets trained on the identical 84.7M-position corpus at identical width and hyperparameters, differing only in `--out-buckets` (1 against 8), played in the same engine binary. Buckets ship.
+
+**This contradicted a prediction made before the run and recorded here for the record.** The expectation was ~0: the campaign had just measured the network to be starved of DATA (+182 Elo for volume over label depth), and buckets add CAPACITY, so the reasoning was that there was nothing for extra head capacity to feed on. That reasoning was wrong. Head capacity and input capacity are not the same constraint — the head had room to specialise even while the feature transformer did not have the data it wanted. Worth noting that the "data-starved" finding is still correct; what was wrong was treating it as a blanket argument against all capacity.
+
+Note this does NOT add to the +25.7 measured for v4.3.0: different axis, and measured on a different pair of nets (neither of them gen7).
 
 **Capability release. The embedded net is still gen7 and strength is unchanged — 193,746 nodes on the fixed-depth suite, the same figure as v4.0.0 and v4.1.0.** What ships is the architecture the capacity step needs, verified across both languages, plus the measurement that the width decision was missing.
 
