@@ -26,6 +26,7 @@ public class NnueTests
 
         var net = new NnueNetwork
         {
+            ArchitectureId = NnueModelHeader.ArchitectureInt16L1,
             FtInputs = NnueFeatureIndex.InputSize,
             FtOutputs = ftOut,
             L1Outputs = l1Out,
@@ -37,13 +38,50 @@ public class NnueTests
             L1Weights = new short[l1Out * 2 * ftOut],
             L1Bias = new int[l1Out],
             OutWeights = new short[l1Out],
-            OutBias = rng.Next(-1000, 1000),
+            OutBias = [rng.Next(-1000, 1000)],
             Sha256 = "test"
         };
 
         for (int i = 0; i < net.FtWeights.Length; i++) net.FtWeights[i] = RandW(60);
         for (int i = 0; i < net.FtBias.Length; i++) net.FtBias[i] = RandW(100);
-        for (int i = 0; i < net.L1Weights.Length; i++) net.L1Weights[i] = RandW(100);
+        for (int i = 0; i < net.L1Weights!.Length; i++) net.L1Weights[i] = RandW(100);
+        for (int i = 0; i < net.L1Bias.Length; i++) net.L1Bias[i] = rng.Next(-5000, 5000);
+        for (int i = 0; i < net.OutWeights.Length; i++) net.OutWeights[i] = RandW(100);
+        return net;
+    }
+
+    // Same weights as the int16 network, re-expressed for the v4.0.0 int8 L1
+    // path: QA drops to 127 (the VPMADDUBSW saturation bound) and the L1 matrix
+    // is stored as sbyte. ftOut must be a multiple of 32 for the AVX2 packing
+    // path to be exercised rather than the fallback.
+    private static NnueNetwork CreateTestNetworkInt8(int seed = 1234, int ftOut = 32, int l1Out = 8)
+    {
+        var rng = new Random(seed);
+        short RandW(int range) => (short)rng.Next(-range, range + 1);
+
+        var net = new NnueNetwork
+        {
+            ArchitectureId = NnueModelHeader.ArchitectureInt8L1,
+            FtInputs = NnueFeatureIndex.InputSize,
+            FtOutputs = ftOut,
+            L1Outputs = l1Out,
+            QA = 127,
+            QB = 64,
+            OutputScale = 400,
+            FtWeights = new short[NnueFeatureIndex.InputSize * ftOut],
+            FtBias = new short[ftOut],
+            L1WeightsI8 = new sbyte[l1Out * 2 * ftOut],
+            L1Bias = new int[l1Out],
+            OutWeights = new short[l1Out],
+            OutBias = [rng.Next(-1000, 1000)],
+            Sha256 = "test-i8"
+        };
+
+        for (int i = 0; i < net.FtWeights.Length; i++) net.FtWeights[i] = RandW(60);
+        for (int i = 0; i < net.FtBias.Length; i++) net.FtBias[i] = RandW(100);
+        // Full int8 range including the extremes, so the saturation bound is
+        // exercised at its worst case rather than near zero.
+        for (int i = 0; i < net.L1WeightsI8!.Length; i++) net.L1WeightsI8[i] = (sbyte)rng.Next(-127, 128);
         for (int i = 0; i < net.L1Bias.Length; i++) net.L1Bias[i] = rng.Next(-5000, 5000);
         for (int i = 0; i < net.OutWeights.Length; i++) net.OutWeights[i] = RandW(100);
         return net;
@@ -210,10 +248,13 @@ public class NnueTests
     // export_model.py, used only by tests).
     private static byte[] Serialize(NnueNetwork net)
     {
+        int l1Bytes = net.UsesInt8L1 ? 1 : 2;
+        int buckets = net.OutputBuckets;
         long payloadLen =
             (long)net.FtInputs * net.FtOutputs * 2 + net.FtOutputs * 2
-            + (long)net.L1Outputs * 2 * net.FtOutputs * 2 + net.L1Outputs * 4
-            + net.L1Outputs * 2 + 4;
+            + (long)buckets * net.L1Outputs * 2 * net.FtOutputs * l1Bytes
+            + (long)buckets * net.L1Outputs * 4
+            + (long)buckets * net.L1Outputs * 2 + (long)buckets * 4;
 
         var payload = new byte[payloadLen];
         int o = 0;
@@ -222,22 +263,28 @@ public class NnueTests
 
         foreach (short v in net.FtWeights) W16(v);
         foreach (short v in net.FtBias) W16(v);
-        foreach (short v in net.L1Weights) W16(v);
+        if (net.UsesInt8L1)
+            foreach (sbyte v in net.L1WeightsI8!) payload[o++] = (byte)v;
+        else
+            foreach (short v in net.L1Weights!) W16(v);
         foreach (int v in net.L1Bias) W32(v);
         foreach (short v in net.OutWeights) W16(v);
-        W32(net.OutBias);
+        foreach (int v in net.OutBias) W32(v);
 
         var file = new byte[NnueModelHeader.HeaderSize + payloadLen];
         Encoding.ASCII.GetBytes(NnueModelHeader.Magic).CopyTo(file, 0);
         BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(8), NnueModelHeader.SupportedFormatVersion);
         BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(12), NnueFeatureIndex.FeatureSchemaId);
-        BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(16), NnueModelHeader.SupportedArchitectureId);
+        BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(16), net.ArchitectureId);
         BinaryPrimitives.WriteInt32LittleEndian(file.AsSpan(20), net.FtInputs);
         BinaryPrimitives.WriteInt32LittleEndian(file.AsSpan(24), net.FtOutputs);
         BinaryPrimitives.WriteInt32LittleEndian(file.AsSpan(28), net.L1Outputs);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(32), (ushort)net.QA);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(34), (ushort)net.QB);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(36), (ushort)net.OutputScale);
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(38),
+            (ushort)(net.ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets
+                ? net.OutputBuckets : 0));
         BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(40), (ulong)payloadLen);
         SHA256.HashData(payload).CopyTo(file, 48);
         payload.CopyTo(file, NnueModelHeader.HeaderSize);
@@ -279,5 +326,375 @@ public class NnueTests
         byte[] bytes = Serialize(CreateTestNetwork());
         Assert.False(NnueModelLoader.TryParse(bytes.AsSpan(0, bytes.Length - 100), out _, out string error));
         Assert.Contains("length", error);
+    }
+
+    // ---------- v4.0.0: accumulator cache (finny table) ----------
+
+    // THE parity gate for the cache. The random-game test above cannot catch a
+    // cache bug on its own, because after v4.0.0 both the incremental evaluator
+    // and its "full recomputation" reference go through the cache — a wrong
+    // cache would be wrong identically on both sides and the test would pass.
+    // This one compares the cache against NnueAccumulator.Refresh, the direct
+    // rebuild-from-bias path that does not consult it.
+    [Theory]
+    [InlineData(3)]
+    [InlineData(11)]
+    [InlineData(99)]
+    public void AccumulatorCache_MatchesDirectRefresh_RandomGames(int seed)
+    {
+        var net = CreateTestNetwork();
+        var cache = new NnueAccumulatorCache(net);
+        var cached = new NnueAccumulator(net.FtOutputs);
+        var direct = new NnueAccumulator(net.FtOutputs);
+        var rng = new Random(seed);
+
+        var board = new Board();
+        for (int plyCount = 0; plyCount < 150; plyCount++)
+        {
+            foreach (Color perspective in new[] { Color.White, Color.Black })
+            {
+                cache.Refresh(cached, board, perspective);
+                direct.Refresh(net, board, perspective);
+                Assert.Equal(direct.Values[(int)perspective], cached.Values[(int)perspective]);
+                Assert.True(cached.Valid[(int)perspective]);
+            }
+
+            if (GameState.GetResult(board) != GameResult.Ongoing)
+                break;
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            board.MakeMove(moves[rng.Next(moves.Count)]);
+        }
+    }
+
+    // A cache entry is keyed by king square, and two squares sharing a bucket
+    // are horizontal mirrors whose Orient() differs — so every feature index
+    // differs too. Walking a king back and forth across the a-d / e-h boundary
+    // reuses entries in both directions and would expose a bucket-keyed cache.
+    [Fact]
+    public void AccumulatorCache_HandlesKingCrossingTheMirrorBoundary()
+    {
+        var net = CreateTestNetwork();
+        var cache = new NnueAccumulatorCache(net);
+        var cached = new NnueAccumulator(net.FtOutputs);
+        var direct = new NnueAccumulator(net.FtOutputs);
+
+        // King walks e1 -> d1 -> c1 -> d1 -> e1: crosses the file-d boundary
+        // twice, so entries are written and then re-read after the mirror flips.
+        foreach (string fen in new[]
+                 {
+                     "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+                     "4k3/8/8/8/8/8/4P3/3K4 w - - 0 1",
+                     "4k3/8/8/8/8/8/4P3/2K5 w - - 0 1",
+                     "4k3/8/8/8/8/8/4P3/3K4 w - - 0 1",
+                     "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+                 })
+        {
+            var board = new Board(fen);
+            foreach (Color perspective in new[] { Color.White, Color.Black })
+            {
+                cache.Refresh(cached, board, perspective);
+                direct.Refresh(net, board, perspective);
+                Assert.Equal(direct.Values[(int)perspective], cached.Values[(int)perspective]);
+            }
+        }
+    }
+
+    // ---------- v4.0.0: int8 L1 architecture ----------
+
+    [Fact]
+    public void Int8_ScalarMatchesSimd()
+    {
+        var net = CreateTestNetworkInt8();
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+
+        var acc = new NnueAccumulator(net.FtOutputs);
+        acc.Refresh(net, board, Color.White);
+        acc.Refresh(net, board, Color.Black);
+
+        Assert.Equal(
+            NnueInference.EvaluateScalar(net, acc.Values[0], acc.Values[1]),
+            NnueInference.EvaluateSimd(net, acc.Values[0], acc.Values[1]));
+    }
+
+    // The AVX2 packing path reorders bytes (PackUnsignedSaturate works per
+    // 128-bit lane and is corrected by a Permute4x64). If that permute were
+    // wrong, every activation would meet the wrong weight — which shows up
+    // only over many different accumulator states, not on one position.
+    [Theory]
+    [InlineData(5)]
+    [InlineData(23)]
+    [InlineData(1001)]
+    public void Int8_ScalarMatchesSimd_OverRandomGames(int seed)
+    {
+        var net = CreateTestNetworkInt8();
+        var evaluator = new NnueEvaluator(net);
+        var rng = new Random(seed);
+
+        var board = new Board();
+        var acc = new NnueAccumulator(net.FtOutputs);
+
+        for (int plyCount = 0; plyCount < 120; plyCount++)
+        {
+            acc.Refresh(net, board, Color.White);
+            acc.Refresh(net, board, Color.Black);
+            int stm = (int)board.SideToMove;
+            int opp = 1 - stm;
+
+            Assert.Equal(
+                NnueInference.EvaluateScalar(net, acc.Values[stm], acc.Values[opp]),
+                NnueInference.EvaluateSimd(net, acc.Values[stm], acc.Values[opp]));
+
+            if (GameState.GetResult(board) != GameResult.Ongoing)
+                break;
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            board.MakeMove(moves[rng.Next(moves.Count)]);
+        }
+    }
+
+    // The whole int8 design rests on VPMADDUBSW never saturating its int16
+    // lane. Drive the extreme case directly: maximum activation against maximum
+    // weight of both signs. If saturation ever occurred, SIMD and scalar would
+    // disagree, because only the SIMD path saturates.
+    [Fact]
+    public void Int8_DoesNotSaturate_AtExtremeActivationsAndWeights()
+    {
+        var net = CreateTestNetworkInt8(ftOut: 64, l1Out: 8);
+
+        // Every L1 weight at an extreme, alternating sign so partial sums do
+        // not cancel into a comfortable range.
+        for (int i = 0; i < net.L1WeightsI8!.Length; i++)
+            net.L1WeightsI8[i] = (sbyte)(i % 2 == 0 ? 127 : -127);
+
+        // Accumulators far above QA, so every activation clamps to exactly QA.
+        var stm = new short[net.FtOutputs];
+        var opp = new short[net.FtOutputs];
+        Array.Fill(stm, (short)30_000);
+        Array.Fill(opp, (short)30_000);
+
+        Assert.Equal(
+            NnueInference.EvaluateScalar(net, stm, opp),
+            NnueInference.EvaluateSimd(net, stm, opp));
+
+        // And the bound itself: 2*QA*127 must fit int16 for the kernel to be
+        // exact by construction rather than by luck.
+        Assert.True(2 * net.QA * 127 <= short.MaxValue,
+            $"int8 kernel bound violated: 2*{net.QA}*127 = {2 * net.QA * 127} > {short.MaxValue}");
+    }
+
+    [Fact]
+    public void Loader_RoundTripsAnInt8Model()
+    {
+        var original = CreateTestNetworkInt8();
+        byte[] bytes = Serialize(original);
+
+        Assert.True(NnueModelLoader.TryParse(bytes, out NnueNetwork? loaded, out string error), error);
+        Assert.Equal(NnueModelHeader.ArchitectureInt8L1, loaded!.ArchitectureId);
+        Assert.True(loaded.UsesInt8L1);
+        Assert.Null(loaded.L1Weights);
+        Assert.Equal(original.L1WeightsI8, loaded.L1WeightsI8);
+
+        var board = new Board();
+        var a = new NnueEvaluator(original); a.Reset(board);
+        var b = new NnueEvaluator(loaded); b.Reset(board);
+        Assert.Equal(a.Evaluate(board), b.Evaluate(board));
+    }
+
+    // A model claiming int8 with QA above the saturation bound would evaluate
+    // silently wrong positions. It must be refused at load, not tolerated.
+    [Fact]
+    public void Loader_RejectsInt8ModelWithUnsafeQa()
+    {
+        var net = CreateTestNetworkInt8();
+        byte[] bytes = Serialize(net);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(32), 255); // QA = 255
+
+        Assert.False(NnueModelLoader.TryParse(bytes, out _, out string error));
+        Assert.Contains("saturation", error);
+    }
+
+    // Legacy nets must keep loading unchanged: a format change that stranded
+    // the net currently playing would be a regression, not an upgrade.
+    [Fact]
+    public void Loader_StillAcceptsLegacyInt16Architecture()
+    {
+        var original = CreateTestNetwork();
+        Assert.True(NnueModelLoader.TryParse(Serialize(original), out NnueNetwork? loaded, out string error), error);
+        Assert.Equal(NnueModelHeader.ArchitectureInt16L1, loaded!.ArchitectureId);
+        Assert.False(loaded.UsesInt8L1);
+        Assert.Null(loaded.L1WeightsI8);
+        Assert.Equal(original.L1Weights, loaded.L1Weights);
+        Assert.Equal(1, loaded.OutputBuckets);
+        Assert.False(loaded.UsesOutputBuckets);
+    }
+
+    // ---------- v4.2.0: output buckets (architecture 3) ----------
+
+    private static NnueNetwork CreateTestNetworkBuckets(
+        int seed = 1234, int ftOut = 32, int l1Out = 8, int buckets = 8)
+    {
+        var rng = new Random(seed);
+        short RandW(int range) => (short)rng.Next(-range, range + 1);
+
+        var net = new NnueNetwork
+        {
+            ArchitectureId = NnueModelHeader.ArchitectureInt8L1Buckets,
+            FtInputs = NnueFeatureIndex.InputSize,
+            FtOutputs = ftOut,
+            L1Outputs = l1Out,
+            OutputBuckets = buckets,
+            QA = 127,
+            QB = 64,
+            OutputScale = 400,
+            FtWeights = new short[NnueFeatureIndex.InputSize * ftOut],
+            FtBias = new short[ftOut],
+            L1WeightsI8 = new sbyte[buckets * l1Out * 2 * ftOut],
+            L1Bias = new int[buckets * l1Out],
+            OutWeights = new short[buckets * l1Out],
+            OutBias = new int[buckets],
+            Sha256 = "test-buckets"
+        };
+
+        for (int i = 0; i < net.FtWeights.Length; i++) net.FtWeights[i] = RandW(60);
+        for (int i = 0; i < net.FtBias.Length; i++) net.FtBias[i] = RandW(100);
+        for (int i = 0; i < net.L1WeightsI8!.Length; i++) net.L1WeightsI8[i] = (sbyte)rng.Next(-127, 128);
+        for (int i = 0; i < net.L1Bias.Length; i++) net.L1Bias[i] = rng.Next(-5000, 5000);
+        for (int i = 0; i < net.OutWeights.Length; i++) net.OutWeights[i] = RandW(100);
+        for (int i = 0; i < net.OutBias.Length; i++) net.OutBias[i] = rng.Next(-1000, 1000);
+        return net;
+    }
+
+    // Bucket selection is duplicated in the C# engine and the Python trainer.
+    // If the two formulas ever disagree, every evaluation reads a head the net
+    // was not trained for — a silent, catastrophic mismatch. These values pin
+    // the C# side; tools/training/nnue/model.py must produce the same.
+    [Fact]
+    public void BucketForPieceCount_GoldenValues()
+    {
+        // 8 buckets: (count - 1) * 8 / 32 == (count - 1) / 4.
+        Assert.Equal(0, NnueModelHeader.BucketForPieceCount(2, 8));   // bare kings
+        Assert.Equal(0, NnueModelHeader.BucketForPieceCount(4, 8));
+        Assert.Equal(1, NnueModelHeader.BucketForPieceCount(5, 8));
+        Assert.Equal(1, NnueModelHeader.BucketForPieceCount(8, 8));
+        Assert.Equal(2, NnueModelHeader.BucketForPieceCount(9, 8));
+        Assert.Equal(7, NnueModelHeader.BucketForPieceCount(32, 8));  // full board
+
+        // An unbucketed net always selects head 0, whatever the piece count.
+        Assert.Equal(0, NnueModelHeader.BucketForPieceCount(32, 1));
+        Assert.Equal(0, NnueModelHeader.BucketForPieceCount(2, 1));
+
+        // Never out of range, including inputs the engine should never produce.
+        for (int count = 0; count <= 40; count++)
+            for (int buckets = 1; buckets <= 16; buckets++)
+                Assert.InRange(NnueModelHeader.BucketForPieceCount(count, buckets), 0, buckets - 1);
+    }
+
+    [Fact]
+    public void Buckets_ScalarMatchesSimd_OverRandomGames()
+    {
+        var net = CreateTestNetworkBuckets();
+        var rng = new Random(31);
+        var board = new Board();
+        var acc = new NnueAccumulator(net.FtOutputs);
+
+        for (int plyCount = 0; plyCount < 140; plyCount++)
+        {
+            acc.Refresh(net, board, Color.White);
+            acc.Refresh(net, board, Color.Black);
+            int stm = (int)board.SideToMove;
+            int bucket = NnueModelHeader.BucketForPieceCount(
+                System.Numerics.BitOperations.PopCount(board.AllOccupancy), net.OutputBuckets);
+
+            Assert.Equal(
+                NnueInference.EvaluateScalar(net, acc.Values[stm], acc.Values[1 - stm], bucket),
+                NnueInference.EvaluateSimd(net, acc.Values[stm], acc.Values[1 - stm], bucket));
+
+            if (GameState.GetResult(board) != GameResult.Ongoing)
+                break;
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            board.MakeMove(moves[rng.Next(moves.Count)]);
+        }
+    }
+
+    // Different buckets must actually produce different evaluations, otherwise
+    // the head is being read from the same slice and the whole feature is a
+    // no-op that would still pass every parity test above.
+    [Fact]
+    public void Buckets_DifferentBucketsGiveDifferentEvaluations()
+    {
+        var net = CreateTestNetworkBuckets();
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        var acc = new NnueAccumulator(net.FtOutputs);
+        acc.Refresh(net, board, Color.White);
+        acc.Refresh(net, board, Color.Black);
+
+        var scores = new HashSet<int>();
+        for (int bucket = 0; bucket < net.OutputBuckets; bucket++)
+            scores.Add(NnueInference.EvaluateSimd(net, acc.Values[0], acc.Values[1], bucket));
+
+        Assert.True(scores.Count > 1,
+            "every bucket produced the same score — the head is not actually bucketed");
+    }
+
+    // A one-bucket arch-3 net must evaluate exactly like the arch-2 net built
+    // from the same weights: the bucket machinery has to vanish when unused.
+    [Fact]
+    public void Buckets_SingleBucketMatchesUnbucketedArchitecture()
+    {
+        var bucketed = CreateTestNetworkBuckets(seed: 77, buckets: 1);
+        var plain = new NnueNetwork
+        {
+            ArchitectureId = NnueModelHeader.ArchitectureInt8L1,
+            FtInputs = bucketed.FtInputs,
+            FtOutputs = bucketed.FtOutputs,
+            L1Outputs = bucketed.L1Outputs,
+            QA = bucketed.QA,
+            QB = bucketed.QB,
+            OutputScale = bucketed.OutputScale,
+            FtWeights = bucketed.FtWeights,
+            FtBias = bucketed.FtBias,
+            L1WeightsI8 = bucketed.L1WeightsI8,
+            L1Bias = bucketed.L1Bias,
+            OutWeights = bucketed.OutWeights,
+            OutBias = bucketed.OutBias,
+            Sha256 = "plain"
+        };
+
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        var a = new NnueEvaluator(bucketed); a.Reset(board);
+        var b = new NnueEvaluator(plain); b.Reset(board);
+        Assert.Equal(b.Evaluate(board), a.Evaluate(board));
+    }
+
+    [Fact]
+    public void Loader_RoundTripsABucketedModel()
+    {
+        var original = CreateTestNetworkBuckets();
+        Assert.True(NnueModelLoader.TryParse(Serialize(original), out NnueNetwork? loaded, out string error), error);
+
+        Assert.Equal(NnueModelHeader.ArchitectureInt8L1Buckets, loaded!.ArchitectureId);
+        Assert.Equal(original.OutputBuckets, loaded.OutputBuckets);
+        Assert.True(loaded.UsesOutputBuckets);
+        Assert.True(loaded.UsesInt8L1);
+        Assert.Equal(original.L1WeightsI8, loaded.L1WeightsI8);
+        Assert.Equal(original.L1Bias, loaded.L1Bias);
+        Assert.Equal(original.OutWeights, loaded.OutWeights);
+        Assert.Equal(original.OutBias, loaded.OutBias);
+
+        var board = new Board();
+        var a = new NnueEvaluator(original); a.Reset(board);
+        var b = new NnueEvaluator(loaded); b.Reset(board);
+        Assert.Equal(a.Evaluate(board), b.Evaluate(board));
+    }
+
+    // Declaring buckets on an architecture that has no room for them means the
+    // payload size and the head indexing disagree; refuse rather than misread.
+    [Fact]
+    public void Loader_RejectsBucketsOnUnbucketedArchitecture()
+    {
+        byte[] bytes = Serialize(CreateTestNetworkInt8());
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(38), 8);
+
+        Assert.False(NnueModelLoader.TryParse(bytes, out _, out string error));
+        Assert.Contains("bucket", error);
     }
 }

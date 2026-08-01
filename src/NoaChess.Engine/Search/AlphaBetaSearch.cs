@@ -109,10 +109,41 @@ public sealed class AlphaBetaSearch
     // mask makes the check nearly free.
     private const int StopCheckInterval = 2048;
 
-    // SMP mid-iteration overshoot guard: bound how far a single deep root move
-    // may run past the (dynamic) soft budget before the node-level stop fires.
-    // See the _maxTimeMs update in FindBestMove.
-    private const double SmpOvershootFactor = 1.5;
+    // "Easy move" time control (clock mode). A decisively winning or losing
+    // score that has held for several iterations is not going to change, so the
+    // engine plays it on a small fraction of the optimum instead of burning the
+    // whole budget. Without this it spent 8.5 s at 5+5 on an obvious recapture
+    // whose forced mate it had already seen — bleeding the clock while an
+    // instant-moving opponent banked time. Tunable by SPRT.
+    private const int EasyMoveMargin = 700;       // |score| (cp) that counts as decisive
+    private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
+    private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
+    private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
+
+    // Proven-short-mate stop (clock mode). Once a completed iteration proves a
+    // forced mate in <= 3 plies for us — which cannot get materially shorter —
+    // or that we are mated in <= 2 (no longer defense exists), searching on is
+    // pointless: stop and play it. This is the NARROW exception to the "never
+    // break on mate scores" rule below: LONG mates still deepen (finding
+    // shorter mates / longer defenses), only the shortest proven ones stop
+    // early. Mirrors the reference time-manager (search.cpp: score >=
+    // mate_in(3) || score == mated_in(2)). Fixes multi-second thinks on an
+    // already-seen mate-in-1: the easy-move gate needs depth >= 12, but a
+    // mate-in-1 is proven at depth 1-2. Measured at 5+5: 1074 ms -> 22 ms at
+    // one thread, 1253 ms -> 112 ms at 30. Clock mode only -> fixed-depth is
+    // byte-identical. Set EnableProvenMateStop false for the isolated
+    // no-mate-stop candidate build.
+    private const bool EnableProvenMateStop = true;
+    private const int MateStopGivePlies = 3; // reference mate_in(3): we give mate in <= 3 plies
+    private const int MateStopGetPlies = 2;  // reference mated_in(2): we are mated in <= 2 plies
+
+    // Mid-iteration overshoot guard: bound how far a single deep root move may
+    // run past the (dynamic) soft budget before the node-level stop fires. The
+    // soft deadline is only enforced at root-move boundaries, so a deep
+    // iteration whose first root move takes seconds (a won/decisive position
+    // reached over a warm TT) otherwise runs to the loose hard maximum. Applies
+    // to single-thread AND SMP. See the _maxTimeMs update in FindBestMove.
+    private const double OvershootFactor = 1.5;
 
     private IPositionEvaluator _evaluator;
 
@@ -129,7 +160,17 @@ public sealed class AlphaBetaSearch
     private readonly HistoryTable _history = new();
     private readonly ContinuationHistory _contHist = new();
     private readonly CaptureHistory _captureHistory = new();
-    private readonly PawnCorrectionHistory _pawnCorrectionHistory = new();
+    private readonly CorrectionHistorySet _corrections = new();
+
+    // Key for the continuation correction table: the (piece, destination) of
+    // the move that reached this node, or 0 at the root and after a null move
+    // where no such move exists. Kept next to the call sites so the update and
+    // the lookup can never end up keyed differently — filing an observation
+    // under one key and reading it back under another is silent and permanent.
+    private ulong ContinuationCorrectionKey(int ply)
+        => ply > 0 && _stackPiece[ply - 1] >= 0
+            ? CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1])
+            : 0;
     private readonly Stopwatch _timer = new();
 
     // ---- Quiescence pruning constants (reference Step 6) ----
@@ -363,7 +404,7 @@ public sealed class AlphaBetaSearch
         _history.Clear();
         _contHist.Clear();
         _captureHistory.Clear();
-        _pawnCorrectionHistory.Clear();
+        _corrections.Clear();
         Array.Clear(_counterMoves);
         _bestPreviousScore = ScoreNone;
         _bestPreviousAverageScore = ScoreNone;
@@ -485,7 +526,17 @@ public sealed class AlphaBetaSearch
 
         _bestMoveChangesTotal = 0; // monotonic; coordinator reads deltas of it
 
-        for (int depth = 1; depth <= limits.MaxDepth; depth++)
+        // Cap the iteration depth at the search stack's own limit. Without it,
+        // an unlimited search (ponder/infinite) in a position where every
+        // iteration returns instantly from the transposition table — a
+        // repetition dance with a warm TT — spins the loop through ever-higher
+        // depths that can no longer search anything, burning a core for the
+        // whole of the opponent's thinking time. Observed in a bot game: depths
+        // 22->26 completed in 30 ms with the node count barely moving. Beyond
+        // MaxPly the stack cannot go deeper anyway, so this only removes the
+        // degenerate spin; no real search ever reaches it.
+        int maxIterationDepth = Math.Min(limits.MaxDepth, MaxPly);
+        for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
             CheckStop();
             if (_stopped)
@@ -585,6 +636,17 @@ public sealed class AlphaBetaSearch
 
             if (clockMode)
             {
+                // Proven-short-mate stop: a mate in <= 3 for us cannot get
+                // shorter and a mate-in-2 loss has no longer defense, so the
+                // remaining budget buys nothing. Depth-gate-free (unlike
+                // easy-move), so a mate-in-1 seen at depth 1-2 plays at once
+                // instead of coasting to depth 12. Excludes TB win/loss scores
+                // (those sit in a band below MateScore, well under this bound).
+                if (EnableProvenMateStop
+                    && (score >= MateScore - MateStopGivePlies
+                        || score <= -MateScore + MateStopGetPlies))
+                    break;
+
                 // Falling eval: when the score is dropping against the
                 // previous move's average and the recent iterations, think
                 // longer (the position is deteriorating and the move matters);
@@ -629,26 +691,37 @@ public sealed class AlphaBetaSearch
                 if (SearchThreadCount > 1 && totalTime > _softTimeMs)
                     totalTime = _softTimeMs;
 
+                // Easy move: a decisively winning/losing score (including a
+                // found mate/tablebase result, whose magnitude is far above the
+                // margin) that has not changed the best move for several
+                // iterations will not change. Play it on a fraction of the
+                // budget and bank the clock rather than spend the full optimum
+                // on an obvious move. Only after a trustworthy depth.
+                if (depth >= EasyMoveMinDepth
+                    && Math.Abs(score) >= EasyMoveMargin
+                    && lastBestMoveDepth + EasyMoveStableDepth <= depth)
+                    totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
+
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
                 if (ElapsedMs > totalTime)
                     break;
                 _softDeadlineMs = (long)totalTime;
 
-                // SMP mid-iteration overshoot guard. The root-boundary soft-stop
+                // Mid-iteration overshoot guard. The root-boundary soft-stop
                 // (SearchRoot) only fires BETWEEN root moves, so a single deep
                 // root move begun near the budget edge can run for many seconds
-                // to the loose hard maximum before the next check — a warm TT
-                // after a ponderhit reaches high depth almost instantly, so this
-                // hits trivial/forced moves (measured 22-37s on a forced recapture
-                // at 30 threads). Tighten the NODE-level deadline to a small
-                // multiple of the (dynamic) soft budget: CheckStop then aborts the
-                // runaway move mid-iteration and the hard-stop keeps the last
-                // completed iteration's move. Never above the hard maximum, and
-                // single-thread keeps the loose hard limit (byte-identical).
-                _maxTimeMs = SearchThreadCount > 1
-                    ? Math.Min(_hardTimeMs, (long)(totalTime * SmpOvershootFactor))
-                    : _hardTimeMs;
+                // to the loose hard maximum before the next check — a won
+                // position reaches high depth almost instantly, so this burned
+                // 8.5 s at 5+5 on an obvious recapture whose mate was already
+                // seen (and 22-37 s on a ponderhit at 30 threads). Tighten the
+                // NODE-level deadline to a small multiple of the (dynamic) soft
+                // budget: CheckStop then aborts the runaway move mid-iteration
+                // and the hard-stop keeps the last completed iteration's move.
+                // Never above the hard maximum; applies to single-thread and SMP.
+                // Fixed-depth/analysis is unaffected (this whole block is clock
+                // mode only), so those node counts stay byte-identical.
+                _maxTimeMs = Math.Min(_hardTimeMs, (long)(totalTime * OvershootFactor));
             }
 
             _iterValue[iterIdx] = score;
@@ -1132,7 +1205,7 @@ public sealed class AlphaBetaSearch
                               BoundType.None, Move.None, ttPv);
             }
 
-            staticEval = _pawnCorrectionHistory.Correct(board, rawStaticEval);
+            staticEval = _corrections.Correct(board, rawStaticEval, ContinuationCorrectionKey(ply));
         }
 
         // ---- Improvement / improving ----
@@ -1728,7 +1801,8 @@ public sealed class AlphaBetaSearch
                               : bestScore <= originalAlpha ? bestScore < staticEval
                               : true;
             if (!inCheck && quietBest && boundAgrees && Math.Abs(bestScore) < TbScoreBound)
-                _pawnCorrectionHistory.Update(board, bestScore - staticEval, depth);
+                _corrections.Update(board, bestScore - staticEval, depth,
+                                    ContinuationCorrectionKey(ply));
         }
 
         return bestScore;
@@ -1831,7 +1905,7 @@ public sealed class AlphaBetaSearch
             // static evaluation is a floor for its score. If even doing nothing
             // beats beta, the opponent will avoid this line — cut immediately.
             int rawEval = _evaluator.Evaluate(board);
-            bestScore = _pawnCorrectionHistory.Correct(board, rawEval);
+            bestScore = _corrections.Correct(board, rawEval, ContinuationCorrectionKey(ply));
             if (bestScore >= beta)
                 return bestScore;
             if (bestScore > alpha)
