@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "3.1.1";
+    public const string Version = "4.3.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -266,6 +266,10 @@ public sealed class ChessEngine
 
     // SHA-256 of the loaded model (reproducibility logging), or null.
     public string? NnueModelSha256 => _nnue?.ModelSha256;
+
+    // Loaded network weights, or null when no model is loaded. Exposed for the
+    // `nnueprofile` command, which times the inference primitives directly.
+    public NnueNetwork? NnueNetwork => _nnue?.Network;
 
     // Loads a .noannue model. On success the evaluator can be switched with
     // SetUseNnue; on failure the classical evaluator stays active and the

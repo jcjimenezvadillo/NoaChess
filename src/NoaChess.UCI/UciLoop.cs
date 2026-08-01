@@ -299,6 +299,31 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "nnueprofile":
+                {
+                    // Not UCI: measures where NNUE evaluation time actually
+                    // goes (v4.0.0 foundation gate). The v4.2.0 width decision
+                    // must rest on this instead of on intuition — the previous
+                    // decision not to widen rested on a cost model that does
+                    // not survive arithmetic. Forces single-threaded search so
+                    // the unsynchronised counters stay meaningful.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleNnueProfile(tokens);
+                    break;
+                }
+
+                case "nnuewidth":
+                {
+                    // Not UCI: measures what each feature-transformer width
+                    // COSTS, using shape-accurate synthetic nets so no training
+                    // is needed. This is the v4.2.0 gate input — the width
+                    // decision must rest on measurement, and previously the
+                    // measurement did not exist. Run on an idle machine.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleNnueWidth(tokens);
+                    break;
+                }
+
                 case "ucinewgame":
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
@@ -366,10 +391,110 @@ public sealed class UciLoop
         // thread — which would kill the read loop and leave a zombie process
         // (alive but deaf; Arena's Ctrl+N new game shows exactly this). The
         // search already reported the failure; the loop must survive it.
-        try { _searchTask?.Wait(); }
+        //
+        // The wait is UNBOUNDED by design (proceeding while a search still runs
+        // would break ChessEngine's "one search at a time" contract), but a
+        // search that ignored cancellation would hang the command loop with no
+        // trace at all — under lichess-bot, with concurrency 1, that silently
+        // ends the bot's night. Report every stalled second so the failure is
+        // diagnosable from the GUI/bot log instead of looking like a freeze.
+        try
+        {
+            if (_searchTask is { } task)
+            {
+                for (int waitedSeconds = 0; !task.Wait(TimeSpan.FromSeconds(1)); waitedSeconds++)
+                {
+                    _output.WriteLine("info string search still stopping after "
+                                    + $"{waitedSeconds + 1}s — cancellation not honoured");
+                    LogLine("--", $"STALL: search task not finishing after {waitedSeconds + 1}s");
+                }
+            }
+        }
         catch (AggregateException) { }
         _searchTask = null;
         _suppressBestmove = false;
+    }
+
+    // "nnueprofile [depth]" — not UCI. Prints the NNUE cost breakdown that the
+    // v4.0.0 gate is defined against. Runs single-threaded: the profiling
+    // counters are deliberately unsynchronised, and a parallel search would
+    // both corrupt them and blur the per-primitive attribution.
+    private void HandleNnueProfile(string[] tokens)
+    {
+        var network = _engine.NnueNetwork;
+        if (network is null)
+        {
+            _output.WriteLine("info string nnueprofile: no NNUE model loaded");
+            return;
+        }
+
+        int depth = 8;
+        if (tokens.Length > 1 && int.TryParse(tokens[1], out int requested) && requested > 0)
+            depth = Math.Min(requested, 20);
+
+        int savedThreads = _engine.Threads;
+        bool savedNnue = _engine.NnueActive;
+        try
+        {
+            _engine.Threads = 1;
+            if (!savedNnue)
+                _engine.SetUseNnue(true);
+
+            string report = NoaChess.Engine.Evaluation.Nnue.NnueProfiler.Run(
+                network,
+                (board, d) =>
+                {
+                    _engine.NewGame(); // cold tables, so counts are comparable
+                    return _engine.FindBestMove(board, depth: d).NodesSearched;
+                },
+                depth);
+
+            foreach (string line in report.Split('\n'))
+            {
+                string trimmed = line.TrimEnd('\r');
+                if (trimmed.Length > 0)
+                    _output.WriteLine("info string " + trimmed);
+            }
+        }
+        finally
+        {
+            _engine.Threads = savedThreads;
+            if (!savedNnue)
+                _engine.SetUseNnue(false);
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = false;
+            _engine.NewGame();
+        }
+    }
+
+    // "nnuewidth [w1,w2,...] [l1] [buckets]" — not UCI. Defaults sweep the
+    // widths BLOCK 12 is choosing between.
+    private void HandleNnueWidth(string[] tokens)
+    {
+        int[] widths = [128, 256, 512, 1024];
+        int l1 = 32;
+        int buckets = 8;
+
+        if (tokens.Length > 1)
+        {
+            var parsed = tokens[1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                  .Select(t => int.TryParse(t, out int w) ? w : 0)
+                                  .Where(w => w > 0 && w % 32 == 0 && w <= 4096)
+                                  .ToArray();
+            if (parsed.Length > 0)
+                widths = parsed;
+        }
+        if (tokens.Length > 2 && int.TryParse(tokens[2], out int parsedL1) && parsedL1 > 0)
+            l1 = parsedL1;
+        if (tokens.Length > 3 && int.TryParse(tokens[3], out int parsedBuckets) && parsedBuckets > 0)
+            buckets = parsedBuckets;
+
+        string report = NoaChess.Engine.Evaluation.Nnue.NnueProfiler.RunWidthSweep(widths, l1, buckets);
+        foreach (string line in report.Split('\n'))
+        {
+            string trimmed = line.TrimEnd('\r');
+            if (trimmed.Length > 0)
+                _output.WriteLine("info string " + trimmed);
+        }
     }
 
     // "setoption name <name...> value <value...>". The name may contain

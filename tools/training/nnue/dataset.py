@@ -5,7 +5,9 @@
 # side (DatasetFormat.cs and NnueFeatureIndex.cs); any change there requires
 # a matching change here and a new schema/version id.
 
+import json
 import os
+import time
 
 import numpy as np
 
@@ -123,6 +125,86 @@ def record_to_features(rec):
     return feats[0], feats[1], int(rec["stm"]), int(rec["score"]), int(rec["result"])
 
 
+# ---------------------------------------------------------------------------
+# v4.1.0 VECTORISED DECODER
+#
+# record_to_features above is the readable reference and stays the definition of
+# correctness. It is also a per-record Python loop running at ~14k records/s,
+# which is 6 hours for 300M positions and 10 for 500M — the volume BLOCK 12
+# needs. That is not a tuning problem, it is a wall: every change to the data
+# mix would cost most of a day before training could even start.
+#
+# This decodes whole blocks with numpy instead. The bit twiddling is identical;
+# only the loop moves from Python into vectorised operations. decode_block is
+# asserted equal to record_to_features over random records by the parity test —
+# a decoder that is fast and subtly wrong would poison every net trained after
+# it, exactly the class of failure that cost gen7.
+# ---------------------------------------------------------------------------
+
+_KING_BUCKETS_ARR = np.array(_KING_BUCKETS, dtype=np.int32)
+
+
+def decode_block(records):
+    """
+    Vectorised equivalent of record_to_features over a block of records.
+    Returns (stm_feats, opp_feats, scores, results) with -1 padding, already
+    ordered (side to move, opponent).
+    """
+    n = len(records)
+    if n == 0:
+        return (np.full((0, MAX_ACTIVE), -1, np.int16), np.full((0, MAX_ACTIVE), -1, np.int16),
+                np.zeros(0, np.float32), np.zeros(0, np.float32))
+
+    occupancy = np.ascontiguousarray(records["occupancy"])
+    # Bit i of the occupancy is square i, so little bit order gives squares in
+    # ascending order — the same order the nibbles were written in.
+    bits = np.unpackbits(occupancy.view(np.uint8).reshape(n, 8), axis=1, bitorder="little")
+    row_idx, square = np.nonzero(bits)          # row-major: rows in order, squares ascending
+    row_idx = row_idx.astype(np.int64)
+    square = square.astype(np.int32)
+
+    counts = bits.sum(axis=1).astype(np.int64)  # pieces per record
+    # Ordinal of each piece within its own record: 0,1,2,... restarting per row.
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    ordinal = (np.arange(len(row_idx), dtype=np.int64) - np.repeat(starts, counts)).astype(np.int32)
+
+    # Nibble j of the 16-byte piece array: low nibble for even j, high for odd.
+    pieces = np.ascontiguousarray(records["pieces"]).reshape(n, 16)
+    packed = pieces[row_idx, ordinal >> 1]
+    code = ((packed >> ((ordinal & 1) * 4).astype(np.uint8)) & 0xF).astype(np.int32)
+    ptype = code % 6
+    color = code // 6
+
+    # King square per (record, colour). Every record has exactly two kings.
+    kings = np.zeros((n, 2), dtype=np.int32)
+    is_king = ptype == 5
+    kings[row_idx[is_king], color[is_king]] = square[is_king]
+
+    out = []
+    for perspective in (0, 1):
+        vflip = 0 if perspective == 0 else 56
+        king_sq = kings[row_idx, perspective]
+        orient = np.where((king_sq & 7) < 4, 7, 0).astype(np.int32)
+        oriented = square ^ orient ^ vflip
+        enemy = (color != perspective).astype(np.int32)
+        plane = np.where(is_king, 10 * 64, (ptype * 2 + enemy) * 64)
+        index = oriented + plane + _KING_BUCKETS_ARR[king_sq ^ vflip] * PS_NB
+
+        feats = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
+        feats[row_idx, ordinal] = index.astype(np.int16)
+        out.append(feats)
+
+    white_f, black_f = out
+    stm = np.ascontiguousarray(records["stm"]).astype(np.int32)
+    white_to_move = (stm == 0)[:, None]
+    stm_f = np.where(white_to_move, white_f, black_f)
+    opp_f = np.where(white_to_move, black_f, white_f)
+
+    scores = np.ascontiguousarray(records["score"]).astype(np.float32)
+    results = np.ascontiguousarray(records["result"]).astype(np.float32)
+    return stm_f, opp_f, scores, results
+
+
 def precompute_features(records, cache_path=None, log_every=250_000):
     """
     Decodes ALL records into dense arrays once (the per-record Python loop is
@@ -137,14 +219,25 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     subsampling. EmbeddingBag needs Long indices, so model.forward casts per
     batch (cheap: batch*32 values).
     """
+    # The cache is valid ONLY if it is at least as new as the .noadata it was
+    # derived from. Keying on existence alone silently trains on stale features
+    # when a dataset is regenerated under the same name (e.g. a re-run with a
+    # different opening book): the old .npz survives and the fresh .noadata is
+    # ignored. Compare mtimes and recompute when the source dataset is newer.
     if cache_path and os.path.exists(cache_path):
-        data = np.load(cache_path)
-        print(f"feature cache loaded: {cache_path}")
-        # Legacy caches were saved as int64; cast down to int16 (lossless, the
-        # values fit in [-1, 22527]). No-op if the cache is already int16.
-        return (data["stm"].astype(np.int16, copy=False),
-                data["opp"].astype(np.int16, copy=False),
-                data["scores"], data["results"])
+        source = cache_path[:-len(".features.npz")] if cache_path.endswith(".features.npz") else None
+        fresh = (source is None or not os.path.exists(source)
+                 or os.path.getmtime(cache_path) >= os.path.getmtime(source))
+        if not fresh:
+            print(f"feature cache STALE (source .noadata is newer), recomputing: {cache_path}")
+        else:
+            data = np.load(cache_path)
+            print(f"feature cache loaded: {cache_path}")
+            # Legacy caches were saved as int64; cast down to int16 (lossless, the
+            # values fit in [-1, 22527]). No-op if the cache is already int16.
+            return (data["stm"].astype(np.int16, copy=False),
+                    data["opp"].astype(np.int16, copy=False),
+                    data["scores"], data["results"])
 
     n = len(records)
     stm_f = np.full((n, MAX_ACTIVE), -1, dtype=np.int16)
@@ -152,20 +245,246 @@ def precompute_features(records, cache_path=None, log_every=250_000):
     scores = np.zeros(n, dtype=np.float32)
     results = np.zeros(n, dtype=np.float32)
 
-    for i in range(n):
-        white, black, stm, score, result = record_to_features(records[i])
-        own, other = (white, black) if stm == 0 else (black, white)
-        stm_f[i, :len(own)] = own
-        opp_f[i, :len(other)] = other
-        scores[i] = score
-        results[i] = result
-        if log_every and (i + 1) % log_every == 0:
-            print(f"  decoded {i + 1:,}/{n:,} records", flush=True)
+    # Same vectorised decoder as the streaming path (v4.1.0).
+    block = 1_000_000
+    for begin in range(0, n, block):
+        end = min(begin + block, n)
+        stm_f[begin:end], opp_f[begin:end], scores[begin:end], results[begin:end] = \
+            decode_block(np.array(records[begin:end]))
+        if log_every:
+            print(f"  decoded {end:,}/{n:,} records", flush=True)
 
     if cache_path:
         np.savez_compressed(cache_path, stm=stm_f, opp=opp_f, scores=scores, results=results)
         print(f"feature cache saved: {cache_path}")
     return stm_f, opp_f, scores, results
+
+
+# ---------------------------------------------------------------------------
+# v4.0.0 STREAMING PATH
+#
+# WHY. precompute_features above builds dense arrays in RAM: 32 int16 per
+# perspective, plus score and result, is ~136 bytes per record. train_nnue.py
+# therefore carried a --max-records safety cap of 120M, which is ~16 GB — and
+# that cap is an ARCHITECTURAL CEILING, not a tuning knob. BLOCK 12 targets
+# 300-500M positions on the way to a billion; at 136 bytes each that is 40-136
+# GB and simply cannot be an in-RAM array on this machine.
+#
+# HOW. Features are decoded ONCE into memory-mappable .npy shards, and training
+# streams batches straight off the mapping. Nothing but the shuffle buffer is
+# ever resident, so dataset size is bounded by disk instead of by RAM.
+#
+# SHUFFLING. A perfect global shuffle would mean random single-record reads
+# across a file far larger than RAM, which is pathological on any disk. Instead
+# the index space is cut into contiguous chunks, the CHUNK ORDER is shuffled,
+# and several chunks are read into a buffer that is then shuffled internally.
+# That mixes well across the whole file while keeping reads sequential. The
+# NOADATA format stores records game by game, so a chunk is a run of related
+# positions — which is exactly why the in-buffer shuffle matters and why the
+# buffer holds many chunks rather than one.
+# ---------------------------------------------------------------------------
+
+FEATURE_SHARD_SUFFIX = ".features"
+_SHARD_ARRAYS = ("stm", "opp", "scores", "results")
+
+
+def shard_dir_for(path):
+    """Directory holding the memory-mapped feature shards of a .noadata file."""
+    return path + FEATURE_SHARD_SUFFIX
+
+
+def _shard_paths(directory):
+    return {name: os.path.join(directory, name + ".npy") for name in _SHARD_ARRAYS}
+
+
+def build_feature_shards(path, log_every=250_000, force=False):
+    """
+    Decodes a .noadata into memory-mappable .npy shards and returns their
+    directory. Re-decodes when the shards are missing, incomplete, or OLDER
+    than the source dataset.
+
+    The mtime check is not optional bookkeeping. Keying a feature cache on mere
+    existence is what silently trained gen7 on stale random-opening features
+    after the dataset had been regenerated under the same name — the run looked
+    healthy and measured the wrong net. Provenance has to be checked, never
+    assumed.
+    """
+    directory = shard_dir_for(path)
+    paths = _shard_paths(directory)
+    meta_path = os.path.join(directory, "meta.json")
+
+    if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
+        source_mtime = os.path.getmtime(path)
+        if min(os.path.getmtime(p) for p in paths.values()) >= source_mtime:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            print(f"feature shards reused: {directory} ({meta['count']:,} records)")
+            return directory
+        print(f"feature shards STALE (source .noadata is newer), rebuilding: {directory}")
+
+    records = load_records(path)
+    n = len(records)
+    os.makedirs(directory, exist_ok=True)
+
+    stm_f = np.lib.format.open_memmap(paths["stm"], mode="w+", dtype=np.int16, shape=(n, MAX_ACTIVE))
+    opp_f = np.lib.format.open_memmap(paths["opp"], mode="w+", dtype=np.int16, shape=(n, MAX_ACTIVE))
+    scores = np.lib.format.open_memmap(paths["scores"], mode="w+", dtype=np.float32, shape=(n,))
+    results = np.lib.format.open_memmap(paths["results"], mode="w+", dtype=np.float32, shape=(n,))
+
+    # Block-decoded with numpy (v4.1.0): ~170k records/s against ~14k for the
+    # per-record Python loop, i.e. 30 minutes for 300M positions instead of 6
+    # hours. Blocks are bounded so peak memory stays flat regardless of dataset
+    # size — the whole point of the streaming path.
+    block = 1_000_000
+    print(f"decoding {n:,} records -> {directory}", flush=True)
+    start_time = time.time()
+    for begin in range(0, n, block):
+        end = min(begin + block, n)
+        chunk_stm, chunk_opp, chunk_scores, chunk_results = decode_block(
+            np.array(records[begin:end]))
+        stm_f[begin:end] = chunk_stm
+        opp_f[begin:end] = chunk_opp
+        scores[begin:end] = chunk_scores
+        results[begin:end] = chunk_results
+        elapsed = time.time() - start_time
+        rate = end / elapsed if elapsed > 0 else 0
+        eta = (n - end) / rate / 60 if rate > 0 else 0
+        print(f"  decoded {end:,}/{n:,} records "
+              f"({rate:,.0f} rec/s, ETA {eta:.1f} min)", flush=True)
+
+    for array in (stm_f, opp_f, scores, results):
+        array.flush()
+
+    # The meta file is written LAST and is what marks the shard set complete: an
+    # interrupted decode leaves no meta, so the next run rebuilds instead of
+    # training on a half-written mapping.
+    with open(meta_path, "w") as f:
+        json.dump({"count": int(n), "source": os.path.basename(path),
+                   "source_mtime": os.path.getmtime(path),
+                   "max_active": MAX_ACTIVE}, f, indent=2)
+
+    print(f"feature shards written: {directory}")
+    return directory
+
+
+class FeatureStore:
+    """
+    Memory-mapped features for one or more datasets, addressed as one logical
+    array. Nothing is loaded until a batch asks for it.
+
+    Train/validation are split per FILE by a tail cut, exactly as the in-RAM
+    path did: splitting the concatenation instead would make the validation set
+    come only from the last file, and a tail cut keeps whole games on one side
+    because the record format is ordered by game.
+    """
+
+    def __init__(self, paths, val_fraction=0.05):
+        self.files = []
+        for path in paths:
+            directory = build_feature_shards(path)
+            shards = _shard_paths(directory)
+            stm = np.load(shards["stm"], mmap_mode="r")
+            opp = np.load(shards["opp"], mmap_mode="r")
+            scores = np.load(shards["scores"], mmap_mode="r")
+            results = np.load(shards["results"], mmap_mode="r")
+            count = len(stm)
+            if count == 0:
+                # A shard whose header still says zero records was never
+                # finalized — the datagen was interrupted while writing it. It
+                # reads as empty rather than corrupt, so it would silently
+                # contribute nothing; say so instead of letting it look fine.
+                print(f"WARNING: {path} holds 0 records (interrupted shard, never "
+                      f"finalized). It contributes nothing — re-run the datagen "
+                      f"with --resume, or drop the file.")
+                continue
+            train_count = count - int(count * val_fraction)
+            self.files.append({
+                "path": path, "stm": stm, "opp": opp,
+                "scores": scores, "results": results,
+                "count": count, "train_count": train_count,
+            })
+            print(f"dataset: {count:,} records from {path} "
+                  f"(train {train_count:,} / val {count - train_count:,})")
+
+    @property
+    def train_total(self):
+        return sum(f["train_count"] for f in self.files)
+
+    @property
+    def val_total(self):
+        return sum(f["count"] - f["train_count"] for f in self.files)
+
+    def _spans(self, split):
+        """(file, start, stop) ranges for the requested split."""
+        for f in self.files:
+            if split == "train":
+                yield f, 0, f["train_count"]
+            else:
+                yield f, f["train_count"], f["count"]
+
+    def stream_batches(self, batch_size, rng, split="train",
+                       chunk=8192, buffer_chunks=64):
+        """
+        Yields (stm, opp, scores, results) batches. Chunk order is shuffled
+        globally across every file, then each buffer of chunks is shuffled
+        internally before being cut into batches.
+        """
+        chunks = []
+        for file_index, (f, start, stop) in enumerate(self._spans(split)):
+            for begin in range(start, stop, chunk):
+                chunks.append((file_index, begin, min(begin + chunk, stop)))
+        if not chunks:
+            return
+
+        order = rng.permutation(len(chunks))
+
+        pending = ([], [], [], [])
+        pending_rows = 0
+        # Rows left over when a buffer does not divide evenly into batches. They
+        # are CARRIED into the next buffer rather than dropped: discarding a
+        # partial batch per buffer would quietly throw away real training data
+        # on every epoch, and the smaller the buffer the worse it gets (measured
+        # at 0.29% loss with a deliberately tiny buffer). Only the final tail of
+        # the whole pass is dropped, exactly like the in-RAM path.
+        carry = None
+
+        for position, chunk_index in enumerate(order):
+            file_index, begin, end = chunks[chunk_index]
+            f = self.files[file_index]
+            # np.asarray forces the mapped slice into real memory once, so the
+            # later fancy-indexing does not fault page by page.
+            pending[0].append(np.asarray(f["stm"][begin:end]))
+            pending[1].append(np.asarray(f["opp"][begin:end]))
+            pending[2].append(np.asarray(f["scores"][begin:end]))
+            pending[3].append(np.asarray(f["results"][begin:end]))
+            pending_rows += end - begin
+
+            is_last = position == len(order) - 1
+            if len(pending[0]) < buffer_chunks and not is_last:
+                continue
+
+            arrays = [np.concatenate(part) for part in pending]
+            perm = rng.permutation(pending_rows)
+            arrays = [a[perm] for a in arrays]
+            if carry is not None:
+                # Prepend before batching, after the shuffle, so carried rows do
+                # not all land together at the head of one batch.
+                arrays = [np.concatenate([c, a]) for c, a in zip(carry, arrays)]
+                mixed = rng.permutation(len(arrays[0]))
+                arrays = [a[mixed] for a in arrays]
+                carry = None
+
+            rows = len(arrays[0])
+            start = 0
+            while start + batch_size <= rows:
+                stop = start + batch_size
+                yield tuple(a[start:stop] for a in arrays)
+                start = stop
+            if start < rows and not is_last:
+                carry = [a[start:] for a in arrays]
+
+            pending = ([], [], [], [])
+            pending_rows = 0
 
 
 def batches(records, batch_size, rng, sample_limit=None, precomputed=None):
