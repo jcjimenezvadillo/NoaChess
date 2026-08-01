@@ -54,6 +54,21 @@ public sealed class Board
     // and hit almost always (see the engine's pawn hash table).
     public ulong PawnZobristKey { get; private set; }
 
+    // Partial Zobrist keys over subsets of the material, maintained on the same
+    // incremental path as the full key (v4.3.0). They exist so the search can
+    // key SEPARATE correction histories on different structural signals: a
+    // systematic evaluator bias that follows the minor pieces recurs across
+    // positions whose pawns differ, and vice versa. One key per subset lets
+    // each table generalise over exactly what it should and nothing else.
+    public ulong MinorZobristKey { get; private set; }   // knights + bishops, both colours
+    public ulong MajorZobristKey { get; private set; }   // rooks + queens, both colours
+
+    // Non-pawn material of ONE side (kings included). Indexed by colour, so an
+    // asymmetric bias — "this evaluator misjudges White's piece placement" —
+    // has somewhere to live that a colour-blind key would average away.
+    private readonly ulong[] _nonPawnZobristKeys = new ulong[2];
+    public ulong NonPawnZobristKey(Color color) => _nonPawnZobristKeys[(int)color];
+
     // Data that MakeMove stores so UnmakeMove can restore the exact state.
     private readonly struct UndoInfo(Move move, PieceType captured, CastlingRights castling,
                                      int enPassant, int halfmove, ulong zobrist)
@@ -274,8 +289,7 @@ public sealed class Board
         _occupancy[(int)color] |= bb;
         _mailbox[square] = type;
         ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
-        if (type == PieceType.Pawn)
-            PawnZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        TogglePartialKeys(color, type, square);
     }
 
     private void RemovePiece(Color color, PieceType type, int square)
@@ -285,8 +299,29 @@ public sealed class Board
         _occupancy[(int)color] &= ~bb;
         _mailbox[square] = PieceType.None;
         ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        TogglePartialKeys(color, type, square);
+    }
+
+    // XOR is its own inverse, so add and remove share one path: toggling a
+    // piece's contribution is the same operation either way. Keeping it in a
+    // single method is what stops the two sides from drifting apart, which for
+    // an incrementally maintained hash is a bug that only shows up as
+    // occasional wrong answers much later.
+    private void TogglePartialKeys(Color color, PieceType type, int square)
+    {
+        ulong key = Zobrist.PieceKeys[(int)color, (int)type, square];
         if (type == PieceType.Pawn)
-            PawnZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        {
+            PawnZobristKey ^= key;
+            return;
+        }
+
+        // Everything below is non-pawn material, kings included.
+        _nonPawnZobristKeys[(int)color] ^= key;
+        if (type is PieceType.Knight or PieceType.Bishop)
+            MinorZobristKey ^= key;
+        else if (type is PieceType.Rook or PieceType.Queen)
+            MajorZobristKey ^= key;
     }
 
     // Deep copy of the entire position. Used to give each parallel search
@@ -314,6 +349,10 @@ public sealed class Board
         copy.FullmoveNumber = FullmoveNumber;
         copy.ZobristKey = ZobristKey;
         copy.PawnZobristKey = PawnZobristKey;
+        copy.MinorZobristKey = MinorZobristKey;
+        copy.MajorZobristKey = MajorZobristKey;
+        copy._nonPawnZobristKeys[0] = _nonPawnZobristKeys[0];
+        copy._nonPawnZobristKeys[1] = _nonPawnZobristKeys[1];
         return copy;
     }
 
@@ -678,6 +717,10 @@ public sealed class Board
         FullmoveNumber = 1;
         ZobristKey = 0;
         PawnZobristKey = 0;
+        MinorZobristKey = 0;
+        MajorZobristKey = 0;
+        _nonPawnZobristKeys[0] = 0;
+        _nonPawnZobristKeys[1] = 0;
     }
 
     internal void PlacePiece(Color color, PieceType type, int square) => AddPiece(color, type, square);

@@ -1035,15 +1035,36 @@ which would confound buckets with gen7's different hyperparameters.
 - **Complete the correction histories.** Only `PawnCorrectionHistory` exists today. Add minor-piece,
   major-piece, non-pawn (per colour) and continuation correction histories. Cheap tables, the
   pattern is already implemented once.
-- **Re-enter the coupled search features as a bundle**: statScore in LMR, cutNode, double extensions,
-  multi-level continuation history — all previously cut individually at −18, −4/−7 and −19.7/−12.5.
-- **Methodological correction, recorded deliberately:** "one term = one SPRT" is correct for
-  evaluation terms and **wrong for tightly coupled search features**. Each of these is worth roughly
-  +2–5 Elo alone — *below the resolution of an 8,000-game SPRT* — while jointly they are worth far
-  more, because each one's value depends on the others being present (statScore needs calibrated
-  history tables; cutNode feeds LMR, NMP and IIR together). Measuring them individually against a
-  baseline missing the rest measures their marginal value in a system that does not exist. Measure
-  the bundle; ablate only after it passes.
+- ⛔ **THE "COUPLED BUNDLE" PLAN WAS WITHDRAWN 2026-08-01, BEFORE ANY MACHINE TIME WAS SPENT ON IT.**
+
+  The plan said: re-enter statScore in LMR, cutNode, double extensions and multi-level continuation
+  history *as a bundle*, on the argument that each is worth only +2–5 Elo alone — below the
+  resolution of an 8,000-game SPRT — and that they are worth more together.
+
+  **The argument does not survive the evidence already in this repository.** These were not
+  sub-resolution results:
+
+  | Feature | What was actually measured |
+  |---|---|
+  | statScore in LMR | **Three** variants against v2.8.3-class baselines: −18 Elo (H0); −4.8 ±11.4 (LLR −2.89, H0); +4.2 ±9.1 flat over 3000 games. `AlphaBetaSearch.cs` records the conclusion: *do not re-add without a new mechanism; the direct form is settled* |
+  | Double extensions (5E) | **Four** SPRTs, all at or below equality, −19.7 / −12.5 the worst |
+  | Multi-level continuation history (5G) | **Four** builds: −33.9 → −10.9 → [0.496] → −4.2. Per-distance tables, gravity and the depth≥6 gate were all built and tested |
+  | cutNode | Isolated term cut at both magnitudes, −4.0 / −7.1 (H0) |
+
+  A supporting premise was also wrong: the plan assumed statScore had failed because the butterfly
+  table was miscalibrated and that v2.8.3 later fixed the calibration. It did not — those three
+  measurements were taken **after** the gravity fix.
+
+  **The coupling rule itself remains sound as a general principle** (a genuinely sub-resolution term
+  cannot be measured alone), but it was applied here to features that were cut for being clearly
+  negative, with root causes identified at the time. Building them would have burned days of machine
+  time against evidence that already existed.
+
+- **What IS still defensible, as a targeted change rather than a bundle:** 5G's final result was
+  exact equity, and its root cause was identified — *the hard killer/counter ordering bands sit above
+  all history*, so no history refinement below them can express itself. Addressing those bands is the
+  "new mechanism" the code demands before history-in-ordering is retried. One coherent change with a
+  stated mechanism, not four resurrections. Still speculative; still needs its own SPRT.
 
 ### Deferred within this campaign (deliberately not in the critical path)
 

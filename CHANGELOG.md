@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## 2026-08-01 (v4.3.0) — BLOCK 12 search, part 1: the complete correction histories
+
+**First strength-affecting engine change of the v4.x campaign.** Everything since v4.0.0 has been infrastructure with the search provably untouched; this one changes it deliberately. Node count on the fixed-depth suite moves 107,484 → 109,940, deterministic across runs at `Threads=1`.
+
+### What a correction history is for
+
+A static evaluator's errors are not random — it misjudges particular structures the same way every time it meets them, and those structures recur across many branches of one search. The difference between what the evaluator said and what the search actually found is therefore worth remembering, and correcting the static evaluation before it feeds forward pruning and the improving flag removes that bias where it does the most damage.
+
+Until now there was exactly one such table, keyed on pawn structure (v2.8.2). But pawn structure is not the only thing an evaluator can be systematically wrong about: a bias that follows the minor pieces recurs across positions whose pawns differ, and a bias in how *one side's* pieces are judged is invisible to a colour-blind key.
+
+### Six tables instead of one
+
+Added: **minor pieces** (knights + bishops), **major pieces** (rooks + queens), **non-pawn material per colour** (two tables, kings included), and a **continuation** table keyed by the move that reached the position — which describes *how* the position was arrived at rather than what stands on the board, a genuinely different axis, since the same position reached by a quiet regrouping and by a forcing capture tends to be misjudged differently.
+
+Each needs its own incrementally-maintained Zobrist key, so `Board` now carries `MinorZobristKey`, `MajorZobristKey` and `NonPawnZobristKey(colour)` alongside the existing pawn key. Add and remove share one toggle path, because XOR is its own inverse and two copies of that logic is how an incremental hash silently drifts.
+
+### The combination rule is deliberately additive
+
+All six tables estimate the *same* quantity from different keys, so they are combined by weighted average, not summed — summing independent estimates of one quantity would over-correct exactly when they agree, which is when they are most trustworthy.
+
+**The pawn weight equals the divisor.** When only the pawn table has learned anything, the correction is arithmetically identical to what v4.2.0 produced, and the five new tables can only add on top, bounded at ±320 cp.
+
+This is not a detail. Folding six tables in by plain averaging would let an empty table pull the correction toward zero and quietly shrink a validated behaviour by a factor of six — and then a failed SPRT would be unattributable between "the new keys are useless" and "we damaged the one that worked". A test asserts the pawn-only case directly rather than trusting the arithmetic.
+
+### Tests
+
+308 total (232 engine, 76 core). The new ones target the failure modes that do not announce themselves:
+
+- Partial Zobrist keys checked against a board rebuilt from FEN **at every ply** of random legal games (three seeds), not along a hand-written line. A fixed sequence only tests what its author thought of; random play reaches captures, en passant, promotions and castling on its own. The first version of this test used a hand-written line that turned out to contain an illegal move.
+- Every partial key restored exactly by make/unmake, over every legal move of a complex position.
+- Keys proven to *separate* what they should: a rook leaves the minor key at zero, a knight leaves the major key at zero, the same piece for the other colour does not collide, and pawns never enter the non-pawn keys.
+- The continuation sentinel (0 = no previous move) proven unreachable as a real key.
+- The combined correction proven bounded under 500 extreme consistent observations.
+
+### The "coupled bundle" half of v4.3.0 was withdrawn, not deferred
+
+The roadmap paired these tables with re-entering statScore, cutNode, double extensions and multi-level continuation history *as a bundle*, arguing each was worth only +2–5 Elo alone — below an 8,000-game SPRT's resolution — and that they were worth more together.
+
+**That argument does not survive the evidence already in this repository, and the plan was withdrawn before any machine time was spent on it.** These were not sub-resolution results: statScore in LMR was tested in *three* variants against v2.8.3-class baselines (−18 Elo H0; −4.8 ±11.4 with LLR −2.89; +4.2 ±9.1 flat over 3000 games) and `AlphaBetaSearch.cs` records the conclusion *do not re-add without a new mechanism*. Double extensions: four SPRTs, worst −19.7/−12.5. Multi-level continuation history: four builds, −33.9 → −10.9 → [0.496] → −4.2, with the per-distance tables, gravity and depth gate all built. cutNode: cut at both magnitudes.
+
+A supporting premise was wrong too — the plan assumed statScore had failed because the butterfly table was miscalibrated and that v2.8.3 fixed it afterwards. Those three measurements were taken *after* the gravity fix.
+
+The coupling rule remains sound in general; it was applied here to features cut for being clearly negative, with root causes identified at the time. What survives as defensible is one targeted change, not four resurrections: 5G's root cause was that the hard killer/counter ordering bands sit above all history, so no history refinement below them can express itself. Addressing those bands is the "new mechanism" the code asks for. Still speculative, still needs its own SPRT.
+
+`sprt_corrhist.bat` measures this version alone.
+
+---
+
 ## 2026-08-01 — MEASURED: the network is data-starved, by +182 Elo
 
 Not a release; the measurement the v4.1.0 pipeline was built to make. Phase 0 of the data-scale campaign, run on two arms matched by **total search work** rather than position count:
