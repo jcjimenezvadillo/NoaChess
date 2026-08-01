@@ -930,13 +930,38 @@ a datagen is still writing it. Run against the existing data it states in one li
 generations to find: **84,697,234 positions across 7 datasets, every one `openings=8-9 random
 legal`.**
 
-**`Noa-DataScale.ps1`** runs the campaign in phases 0→4. **Phase 0 is the gate on the campaign
-itself**: the premise that at ft=128 volume beats label depth is an assumption, so two matched 20M
-corpora (6k vs 28k nodes) are trained at identical width and played off in ~4 hours before 2-3 days
-are committed. Parity already favours the cheap arm at ~5× less machine time per position. Phase 1
-mixes 45% bulk self-play / 20% opening seeds / 35% middlegame seeds and passes `--require-book` on
-every seeded arm. Phase 3 trains at **width unchanged**, which is what isolates the data axis —
-changing width and data together is exactly what made block 8 uninterpretable.
+**`Noa-DataScale.ps1`** runs the campaign in phases 0→4. Phase 1 mixes 45% bulk self-play / 20%
+opening seeds / 35% middlegame seeds and passes `--require-book` on every seeded arm. Phase 3 trains
+at **width unchanged**, which is what isolates the data axis — changing width and data together is
+exactly what made block 8 uninterpretable.
+
+#### ✅ PHASE 0 MEASURED (2026-08-01) — the premise held, and by a landslide
+
+Two arms matched on **total search work**, not position count (at 28k nodes a position costs ~4.7×
+what it costs at 6k, so equal counts would have meant 32 hours against 7 — and would have answered a
+question nobody asks, since the campaign gets a compute budget rather than a position quota):
+
+| arm | positions | nodes/move | node-work |
+|---|---|---|---|
+| `fast6k` | 20,001,946 | 6,000 | 1.2e11 |
+| `deep28k` | 4,288,192 | 28,000 | 1.2e11 |
+
+Identical architecture, hyperparameters and teacher. **Result: `fast6k` +182.2 ±16.6 Elo, LOS 100%**
+(1167-307-312 over 1786 games, 10+0.1). **The campaign runs at 6,000 nodes — confirmed, not assumed.**
+
+**The magnitude matters more than the direction.** +182 Elo is not "deep labels add little": it is
+that **4.3M positions cannot train this net at all**. The feature transformer alone holds
+22,528 × 128 ≈ 2.9M parameters, so the deep arm had ~1.5 positions per parameter and was broken from
+the start. This is the strongest confirmation yet that the network is starved of DATA rather than of
+label quality — and it explains retroactively why gen3 through gen7 landed flat while node counts
+were being raised 14k → 20k → 24k → 28k. Every one of those generations tuned the axis that does not
+matter at this size.
+
+**It does NOT prove 6,000 is optimal**, only that it beats 28,000 decisively. Both arms sit deep in
+the starved regime, so the slope cannot be extrapolated to the 300-500M range where returns must
+diminish. A third arm at 3,000 nodes / 40M positions (same total work, ~7h) would say whether 6,000
+is the plateau or still climbing — that choice doubles or halves the campaign corpus for the same
+hours.
 
 **Original plan, for the record:**
 
