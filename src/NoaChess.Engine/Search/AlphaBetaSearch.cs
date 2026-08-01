@@ -69,6 +69,12 @@ public sealed class AlphaBetaSearch
     private int _tbMaxMen;
     private int _tbMinProbeDepth = 1;
 
+    // True once the root position itself was resolved by the tablebases and the
+    // root move list was ranked by DTZ. It disables tablebase probing INSIDE the
+    // search, which is what lets the search choose between moves the tables call
+    // equal. See the probe guard in Negamax for the full reasoning.
+    private bool _rootInTb;
+
     // Recomputed after the tablebases are (re)loaded or the limit changes.
     public void RefreshTbLimit()
     {
@@ -432,6 +438,7 @@ public sealed class AlphaBetaSearch
 
         _nodes = 0;
         TbHits = 0;
+        _rootInTb = false;
         _stopped = false;
         _softStopped = false;
         _cancellation = cancellation;
@@ -901,6 +908,12 @@ public sealed class AlphaBetaSearch
 
         TbHits++;
 
+        // The ranking covered every root move, so whatever survives below is
+        // game-theoretically optimal. From here the search must run WITHOUT
+        // tablebase scores (see the probe guard in Negamax): it is the only
+        // thing left that can tell two equally-winning moves apart.
+        _rootInTb = true;
+
         // Keep every move with the best TB rank, so the search still gets a
         // choice among equally optimal continuations.
         var keep = new MoveList();
@@ -1126,8 +1139,19 @@ public sealed class AlphaBetaSearch
         // are loaded, which disables the whole block with a single compare.
         // Measured: the previous ordering cost 3.5% NPS on positions that never
         // probe at all, which is pure loss.
+        //
+        // Skipped entirely when the ROOT was already resolved by the tables
+        // (_rootInTb). A tablebase score is flat: every winning continuation
+        // returns exactly TbWin - ply, so the search cannot rank them and keeps
+        // whichever it happened to try first. In K+P vs K that made promoting to
+        // a rook score identical to promoting to a queen - both simply "win" -
+        // and the engine underpromoted. The root move list is already restricted
+        // to DTZ-optimal moves at that point, so the win cannot be thrown away;
+        // turning the probe off lets normal evaluation and mate distance pick
+        // the fastest win among the moves the tables call equal.
         int pieceCount = System.Numerics.BitOperations.PopCount(board.AllOccupancy);
-        if (pieceCount <= _tbMaxMen
+        if (!_rootInTb
+            && pieceCount <= _tbMaxMen
             && (pieceCount < _tbMaxMen || depth >= _tbMinProbeDepth)
             && board.HalfmoveClock == 0 && ply > 0
             && excluded == Move.None)
