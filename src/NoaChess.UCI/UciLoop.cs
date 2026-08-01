@@ -202,7 +202,7 @@ public sealed class UciLoop
             {
                 foreach (string line in _queue.GetConsumingEnumerable())
                 {
-                    // The ONLY place a full stdout can block — and it blocks only
+                    // The ONLY place a full stdout can block - and it blocks only
                     // this pump thread, never a producer.
                     try { _sink.WriteLine(line); _sink.Flush(); }
                     catch { /* GUI gone: keep draining so producers never block */ }
@@ -239,7 +239,7 @@ public sealed class UciLoop
                     if (!Dispatch(tokens))
                     {
                         quitReceived = true;
-                        LogLine("--", "quit received — read loop ends");
+                        LogLine("--", "quit received - read loop ends");
                         break;
                     }
                 }
@@ -249,7 +249,7 @@ public sealed class UciLoop
                 }
             }
             if (!quitReceived)
-                LogLine("--", "stdin EOF — read loop ends");
+                LogLine("--", "stdin EOF - read loop ends");
         }
         finally
         {
@@ -271,7 +271,7 @@ public sealed class UciLoop
                     break;
 
                 case "isready":
-                    // Must answer even while a search runs — the GUI uses it
+                    // Must answer even while a search runs - the GUI uses it
                     // as a heartbeat. The loop thread is free, so just reply.
                     if (!_embeddedNnueChecked)
                     {
@@ -303,7 +303,7 @@ public sealed class UciLoop
                 {
                     // Not UCI: measures where NNUE evaluation time actually
                     // goes (v4.0.0 foundation gate). The v4.2.0 width decision
-                    // must rest on this instead of on intuition — the previous
+                    // must rest on this instead of on intuition - the previous
                     // decision not to widen rested on a cost model that does
                     // not survive arithmetic. Forces single-threaded search so
                     // the unsynchronised counters stay meaningful.
@@ -316,7 +316,7 @@ public sealed class UciLoop
                 {
                     // Not UCI: measures what each feature-transformer width
                     // COSTS, using shape-accurate synthetic nets so no training
-                    // is needed. This is the v4.2.0 gate input — the width
+                    // is needed. This is the v4.2.0 gate input - the width
                     // decision must rest on measurement, and previously the
                     // measurement did not exist. Run on an idle machine.
                     WaitForSearchToFinish(suppressBestmove: true);
@@ -350,7 +350,7 @@ public sealed class UciLoop
                 case "ponderhit":
                     // The opponent played the predicted move: everything the
                     // ponder search stored in the TT is valid. Silently stop
-                    // it and relaunch as a normal timed search — the warm TT
+                    // it and relaunch as a normal timed search - the warm TT
                     // makes the early iterations nearly free, and the time
                     // already pondered is charged against the new budget so
                     // a long ponder answers almost instantly.
@@ -377,7 +377,7 @@ public sealed class UciLoop
 
     // Cancels and joins any running search. Called before commands that touch
     // the board or the engine: a search still running would race with them.
-    // 'suppressBestmove' silences the aborted search's answer — used when the
+    // 'suppressBestmove' silences the aborted search's answer - used when the
     // GUI moved on (new position / new game / ponderhit) and a late bestmove
     // would be misattributed to the new context.
     private void WaitForSearchToFinish(bool suppressBestmove = false)
@@ -388,14 +388,14 @@ public sealed class UciLoop
             LogLine("--", $"waiting for search task (suppress={suppressBestmove})");
         _searchCts?.Cancel();
         // A faulted search task re-throws its exception here, on the UCI loop
-        // thread — which would kill the read loop and leave a zombie process
+        // thread - which would kill the read loop and leave a zombie process
         // (alive but deaf; Arena's Ctrl+N new game shows exactly this). The
         // search already reported the failure; the loop must survive it.
         //
         // The wait is UNBOUNDED by design (proceeding while a search still runs
         // would break ChessEngine's "one search at a time" contract), but a
         // search that ignored cancellation would hang the command loop with no
-        // trace at all — under lichess-bot, with concurrency 1, that silently
+        // trace at all - under lichess-bot, with concurrency 1, that silently
         // ends the bot's night. Report every stalled second so the failure is
         // diagnosable from the GUI/bot log instead of looking like a freeze.
         try
@@ -405,7 +405,7 @@ public sealed class UciLoop
                 for (int waitedSeconds = 0; !task.Wait(TimeSpan.FromSeconds(1)); waitedSeconds++)
                 {
                     _output.WriteLine("info string search still stopping after "
-                                    + $"{waitedSeconds + 1}s — cancellation not honoured");
+                                    + $"{waitedSeconds + 1}s - cancellation not honoured");
                     LogLine("--", $"STALL: search task not finishing after {waitedSeconds + 1}s");
                 }
             }
@@ -415,7 +415,7 @@ public sealed class UciLoop
         _suppressBestmove = false;
     }
 
-    // "nnueprofile [depth]" — not UCI. Prints the NNUE cost breakdown that the
+    // "nnueprofile [depth]" - not UCI. Prints the NNUE cost breakdown that the
     // v4.0.0 gate is defined against. Runs single-threaded: the profiling
     // counters are deliberately unsynchronised, and a parallel search would
     // both corrupt them and blur the per-primitive attribution.
@@ -466,7 +466,7 @@ public sealed class UciLoop
         }
     }
 
-    // "nnuewidth [w1,w2,...] [l1] [buckets]" — not UCI. Defaults sweep the
+    // "nnuewidth [w1,w2,...] [l1] [buckets]" - not UCI. Defaults sweep the
     // widths BLOCK 12 is choosing between.
     private void HandleNnueWidth(string[] tokens)
     {
@@ -646,7 +646,7 @@ public sealed class UciLoop
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
         // "bestmove" until the GUI resolves the search with "stop" or
-        // "ponderhit" — even if the search finishes on its own (a forced mate
+        // "ponderhit" - even if the search finishes on its own (a forced mate
         // breaks iterative deepening in milliseconds, which happens all the
         // time in pondered positions near the end of a game). A bestmove
         // leaked here desyncs the GUI: Arena consumes it as the answer to the
@@ -695,7 +695,7 @@ public sealed class UciLoop
         var stopwatch = Stopwatch.StartNew();
 
         // Kept for the "ponder" hint: the second move of the last full PV is
-        // the opponent reply we expect — the GUI needs it to ponder at all.
+        // the opponent reply we expect - the GUI needs it to ponder at all.
         Move[] lastPv = [];
 
         // One "info" line per completed depth (standard UCI progress output).
@@ -744,7 +744,7 @@ public sealed class UciLoop
         // soft-stopped partial iteration may have improved past the last
         // completed PV). When it does not, predict ANY legal reply instead of
         // omitting the hint: Arena's Permanent Brain stalls its whole game
-        // controller on a bare bestmove — it waits forever for the ponder
+        // controller on a bare bestmove - it waits forever for the ponder
         // position, the engine's clock runs out, and not even a new game
         // recovers until the engine process is restarted (seen in the
         // 2026-07-14 traffic log). A wrong prediction is harmless: a ponder

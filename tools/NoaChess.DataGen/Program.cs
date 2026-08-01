@@ -44,7 +44,7 @@ if (args.Length >= 1 && args[0] == "corpus")
     return Corpus.Run(args[1..]);
 
 // A mistyped subcommand used to fall straight through into the datagen and
-// start a 500-game run against the DEFAULT output path — which is exactly what
+// start a 500-game run against the DEFAULT output path - which is exactly what
 // happened when `nnueprobe` was typed instead of `--nnueprobe`. Options always
 // begin with "--", so a bare first word that is not a known subcommand is a
 // typo, and a typo must not launch hours of work.
@@ -131,7 +131,7 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
     // games ourselves and labelling with our own outcome, we take positions that
     // REAL strong players reached and label them with (our deep search score,
     // THEIR game result). The result is the only signal in the whole pipeline
-    // that the engine cannot manufacture for itself — self-play WDL is just the
+    // that the engine cannot manufacture for itself - self-play WDL is just the
     // engine's own opinion played out, which is why the gen3-era lambda sweep
     // found it worthless (lambda 0.750 -> score 0.338). This is not imitation
     // learning: the human never supplies an evaluation or a move, only the
@@ -258,7 +258,7 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
 
             // Opening seed. With --book: start from a random HUMAN position
             // (realistic and diverse; see the pgnbook subcommand). Without it:
-            // 8-9 uniformly random legal plies — variety without a book, but they
+            // 8-9 uniformly random legal plies - variety without a book, but they
             // over-sample junk/unbalanced positions.
             Board board;
             int ply;
@@ -441,7 +441,7 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
     // the top of the file for why an unchecked intent is not good enough.
     bool requireBook = false;
     // Sharding: 0 keeps the classic single output file. A multi-day run should
-    // always set this — see ShardWriter for why.
+    // always set this - see ShardWriter for why.
     long shardSize = 0;
     // Stop on a POSITION count rather than a game count. Corpus size is what is
     // actually being specified; --games only approximates it and game length
@@ -483,7 +483,7 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
     // evaluator's scale. The classical evaluator reaches ±1500 readily; an
     // NNUE model's output is sigmoid-trained and compressed (~0.5-0.6x
     // classical, saturating further at the extremes), so the same 1500 almost
-    // never triggers and games run to the ply cap — datagen with an NNUE
+    // never triggers and games run to the ply cap - datagen with an NNUE
     // teacher then takes many times longer for no extra data quality. Default
     // to a scale-appropriate value per evaluator; --resign overrides.
     if (resign == int.MinValue)

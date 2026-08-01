@@ -14,7 +14,7 @@ namespace NoaChess.DataGen;
 // checks for this ("the datagen did not reach 'done:' -> the file is useless").
 //
 // Sharding removes that cliff. Every `--shard-size` records the current shard is
-// closed properly — header patched, manifest written, SHA recorded — and a new
+// closed properly - header patched, manifest written, SHA recorded - and a new
 // one begins. An interrupted run therefore loses at most the shard in flight,
 // and every completed shard is a fully valid dataset that training can consume
 // immediately (the streaming FeatureStore already takes many files).
@@ -69,7 +69,7 @@ public sealed class ShardWriter : IDisposable
         long total = 0;
         // Allocated ONCE, outside the loop. A stackalloc per iteration grows the
         // frame with the shard count and never releases until the method
-        // returns (CA2014) — with the 60+ shards a 300M-position corpus
+        // returns (CA2014) - with the 60+ shards a 300M-position corpus
         // produces, that is a stack overflow waiting for a big enough campaign.
         Span<byte> header = stackalloc byte[DatasetFormat.HeaderSize];
         for (int index = 0; index < upToIndex; index++)
@@ -143,7 +143,7 @@ public sealed class ShardWriter : IDisposable
 
     // Closes the current shard if it has reached the target size. Called between
     // games rather than between records, so a game's positions are never split
-    // across two shards — the format's records are ordered by game and the
+    // across two shards - the format's records are ordered by game and the
     // training split relies on that.
     public void RollIfNeeded()
     {

@@ -1,6 +1,6 @@
 namespace NoaChess.Core;
 
-// Parser for SAN (Standard Algebraic Notation) chess moves — "Nf3", "exd5",
+// Parser for SAN (Standard Algebraic Notation) chess moves - "Nf3", "exd5",
 // "O-O", "e8=Q+", "Qh4xe1#". A SAN token is resolved against the position's
 // LEGAL moves: matching a generated move is the only reliable way to attach the
 // correct flags (capture, en passant, castle, promotion) to a bare notation

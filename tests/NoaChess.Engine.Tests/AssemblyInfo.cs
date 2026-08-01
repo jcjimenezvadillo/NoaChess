@@ -5,7 +5,7 @@ using Xunit;
 // reloads them. SyzygyIntegrationTests reinitialises that registry, while other
 // engine-search tests (e.g. SearchTests on a five-man position) probe whatever
 // is currently loaded. Under xUnit's default cross-class parallelism the two
-// race — a DTZ probe reads a view accessor a concurrent Init() has just
+// race - a DTZ probe reads a view accessor a concurrent Init() has just
 // disposed, throwing ObjectDisposedException. The race is invisible until real
 // tablebases exist at the tests' hardcoded path, then it flakes at random.
 //

@@ -4,13 +4,13 @@ namespace NoaChess.DataGen;
 
 // One game: its main-line SAN tokens plus the final result, from WHITE's point
 // of view (+1 white won, 0 draw, -1 black won, NoResult for an unfinished "*").
-// The result is what makes elite-game WDL anchoring possible — it is the one
+// The result is what makes elite-game WDL anchoring possible - it is the one
 // signal the engine's own search cannot manufacture for itself.
 // HasBot is true when either side carried [WhiteTitle "BOT"] / [BlackTitle "BOT"],
 // i.e. the game was played by an engine account. Those games must be excluded
 // from WDL anchoring: the whole point of a real game's outcome is that it is
 // EXTERNAL information, and an engine's result is just another engine's opinion
-// played out — exactly the self-play signal that was already measured worthless.
+// played out - exactly the self-play signal that was already measured worthless.
 public readonly record struct PgnGame(List<string> Moves, int Result, bool HasBot)
 {
     public const int NoResult = int.MinValue;
@@ -20,7 +20,7 @@ public readonly record struct PgnGame(List<string> Moves, int Result, bool HasBo
 // Minimal PGN reader for opening-book seeding: yields each game's main-line
 // move list as SAN tokens plus its result. It deliberately ignores tag pairs,
 // comments {...} (the clock annotations), recursive variations (...) and NAGs
-// ($n) — all we need are the moves actually played, in order.
+// ($n) - all we need are the moves actually played, in order.
 public static class PgnReader
 {
     public static IEnumerable<PgnGame> ReadGames(TextReader reader)
@@ -31,7 +31,7 @@ public static class PgnReader
         bool inMoves = false;
         // Tag pairs precede their own game's movetext, so this flag belongs to
         // the game currently being accumulated and is reset once that game is
-        // emitted — not when the tag block is seen.
+        // emitted - not when the tag block is seen.
         bool botSeen = false;
 
         string? line;

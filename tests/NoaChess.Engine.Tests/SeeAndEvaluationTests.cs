@@ -73,7 +73,7 @@ public class SeeAndEvaluationTests
     {
         var evaluator = new ClassicalEvaluator();
 
-        // White rook on a7 (7th rank) vs a6 — same material. The 7th-rank
+        // White rook on a7 (7th rank) vs a6 - same material. The 7th-rank
         // bonus (endgame-heavy) must outweigh any PST difference between ranks.
         var onSeventh = new Board("4k3/R7/8/8/8/8/8/4K3 w - - 0 1");
         var onSixth   = new Board("4k3/8/R7/8/8/8/8/4K3 w - - 0 1");
@@ -291,7 +291,7 @@ public class SeeAndEvaluationTests
     {
         // White has two bishops; the comparison board swaps one for a knight.
         // Both the small material edge and the pair bonus favour the two
-        // bishops — a directional sanity check that the pair bonus is applied.
+        // bishops - a directional sanity check that the pair bonus is applied.
         var evaluator = new ClassicalEvaluator();
         var withPair = new Board("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1");
         var withoutPair = new Board("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1");
@@ -302,7 +302,7 @@ public class SeeAndEvaluationTests
     [Fact]
     public void Phalanx_BonusIsApplied()
     {
-        // White has two pawns side by side on d4/e4 (phalanx — the Connected
+        // White has two pawns side by side on d4/e4 (phalanx - the Connected
         // formula doubles their rank base) vs the same pawns on d4/f4 (no
         // neighbours: both are isolated). Structure evaluator in isolation so
         // PSTs do not muddy the comparison.

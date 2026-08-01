@@ -2,7 +2,7 @@ namespace NoaChess.Engine.Profiles;
 
 // A named bundle of search/time parameters. Different time controls want
 // different trade-offs: at bullet speeds, re-searching and deep verification
-// are luxuries — pruning harder and moving faster wins more games than
+// are luxuries - pruning harder and moving faster wins more games than
 // searching "properly". Profiles keep those trade-offs in one tunable place
 // (full per-time-control profiles arrive in v3.2 per the roadmap).
 public sealed record EngineProfile(

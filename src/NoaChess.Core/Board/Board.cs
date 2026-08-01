@@ -64,7 +64,7 @@ public sealed class Board
     public ulong MajorZobristKey { get; private set; }   // rooks + queens, both colours
 
     // Non-pawn material of ONE side (kings included). Indexed by colour, so an
-    // asymmetric bias — "this evaluator misjudges White's piece placement" —
+    // asymmetric bias - "this evaluator misjudges White's piece placement" -
     // has somewhere to live that a colour-blind key would average away.
     private readonly ulong[] _nonPawnZobristKeys = new ulong[2];
     public ulong NonPawnZobristKey(Color color) => _nonPawnZobristKeys[(int)color];
@@ -263,7 +263,7 @@ public sealed class Board
         int c = (int)byColor;
         ulong occ = AllOccupancy;
 
-        // Pawns: the table of the OPPOSITE color is used — a white pawn on
+        // Pawns: the table of the OPPOSITE color is used - a white pawn on
         // 'square' would attack upwards, therefore the black pawns attacking
         // 'square' sit exactly on those squares.
         if ((Attacks.Pawn(OppositeColor(byColor), square) & _pieces[c, (int)PieceType.Pawn]) != 0) return true;
@@ -523,7 +523,7 @@ public sealed class Board
 
     // "Passes the turn" without moving: only the side to move (and the en
     // passant square, which is no longer capturable) change. This is not a
-    // legal chess move — the engine uses it as a search heuristic: "if I do
+    // legal chess move - the engine uses it as a search heuristic: "if I do
     // NOTHING and my position is still winning, this branch can be pruned".
     public void MakeNullMove()
     {
@@ -543,7 +543,7 @@ public sealed class Board
         ZobristKey ^= Zobrist.SideToMoveKey;
     }
 
-    // Undoes a MakeNullMove (and nothing else — the two calls must pair up).
+    // Undoes a MakeNullMove (and nothing else - the two calls must pair up).
     public void UnmakeNullMove()
     {
         UndoInfo undo = _history.Pop();

@@ -5,7 +5,7 @@ namespace NoaChess.Core.Tests;
 // Exactness contract for MoveGenerator.IsPseudoLegal: for ANY move, the
 // predicate must return true if and only if the pseudo-legal generator of the
 // position would emit that move. The staged move picker relies on it to vet
-// transposition-table moves before making them — a false positive there would
+// transposition-table moves before making them - a false positive there would
 // hand the board a corrupting garbage move (e.g. moving from an empty square),
 // a false negative would silently drop the best move.
 public class PseudoLegalTests
@@ -48,7 +48,7 @@ public class PseudoLegalTests
 
                 // 3) No false positives: a move that passes the predicate must
                 //    be in the generated set. Probed with a stale TT-style move
-                //    (a move from an EARLIER position — the exact collision
+                //    (a move from an EARLIER position - the exact collision
                 //    scenario) and with random 16-bit encodings.
                 if (previousPositionMove != Move.None)
                     Assert.Equal(scratch.Contains(previousPositionMove),

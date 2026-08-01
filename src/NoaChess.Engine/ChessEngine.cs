@@ -10,7 +10,7 @@ namespace NoaChess.Engine;
 // depend on the engine's internal classes.
 //
 // NOTE: the engine keeps state between searches (transposition table, history
-// heuristic), which is a big part of its strength — but it also means a single
+// heuristic), which is a big part of its strength - but it also means a single
 // instance must not run two searches CONCURRENTLY. Callers are responsible for
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine

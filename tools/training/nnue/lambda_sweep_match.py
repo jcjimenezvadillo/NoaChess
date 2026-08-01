@@ -1,5 +1,5 @@
 # Lambda sweep: A/B each lsweep-*.noannue vs the gen3 net (lambda=0.9 baseline)
-# at equal nodes per move — speed-neutral comparison of eval quality only.
+# at equal nodes per move - speed-neutral comparison of eval quality only.
 #
 # Usage:
 #   python lambda_sweep_match.py
@@ -46,7 +46,7 @@ def opening(seed):
 
 def play_game(eng_white, eng_black):
     """Returns +1 white wins, -1 black wins, 0 draw."""
-    # We need a fresh board — caller passes opening board copy
+    # We need a fresh board - caller passes opening board copy
     raise NotImplementedError  # replaced below
 
 
@@ -124,7 +124,7 @@ def preflight():
         if not os.path.exists(p):
             missing.append(f"lambda {lam:.3f}  {p}")
     if missing:
-        print("PREFLIGHT FAILED — these files are missing:")
+        print("PREFLIGHT FAILED - these files are missing:")
         for m in missing:
             print(f"  MISSING: {m}")
         print("\nRun lambda_sweep_export.py first (or the full lambda_sweep.bat).")
@@ -134,7 +134,7 @@ def preflight():
 
 def main():
     preflight()
-    print(f"Lambda sweep A/B — {N_PAIRS*2} games per lambda vs gen3 (baseline=0.90)")
+    print(f"Lambda sweep A/B - {N_PAIRS*2} games per lambda vs gen3 (baseline=0.90)")
     print(f"Nodes/move: {NODES}  |  Baseline net: noa-gen3.noannue\n")
 
     results = {}

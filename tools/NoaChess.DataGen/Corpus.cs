@@ -11,13 +11,13 @@ namespace NoaChess.DataGen;
 // WHY THIS EXISTS. BLOCK 12 assembles 300-500M positions from several sources
 // across several sessions: bulk self-play, book-seeded openings, middlegame
 // seeds, and elite games labelled with their real result. Once that corpus is a
-// pile of shards, "what is actually in it" stops being obvious — and the one
+// pile of shards, "what is actually in it" stops being obvious - and the one
 // time this project assumed rather than checked what went into training, it
 // cost five generations and a shipped conclusion that turned out to be void.
 //
 // So the composition is read back off disk and reported: how many positions came
 // from which source, at which node budget, from which evaluator, with which WDL
-// signal. It also verifies each shard rather than trusting it — header count
+// signal. It also verifies each shard rather than trusting it - header count
 // against manifest count, schema and record size, and the presence of the
 // manifest that marks a shard complete.
 public static class Corpus
@@ -82,7 +82,7 @@ public static class Corpus
                 // is a normal state, not a failure of the corpus, so it is
                 // reported and skipped rather than aborting the whole audit.
                 problems.Add($"{Path.GetFileName(file)}: unreadable ({ex.Message.Split('\n')[0]}) "
-                           + "— in use by a running datagen?");
+                           + "- in use by a running datagen?");
                 continue;
             }
             if (schema != DatasetFormat.FeatureSchemaId)
@@ -95,7 +95,7 @@ public static class Corpus
             long derived = (new FileInfo(file).Length - DatasetFormat.HeaderSize) / DatasetFormat.RecordSize;
             if (headerCount == 0 && derived > 0)
                 problems.Add($"{Path.GetFileName(file)}: header says 0 records but the file holds "
-                           + $"{derived:N0} — INTERRUPTED, not finalized (exclude it or regenerate)");
+                           + $"{derived:N0} - INTERRUPTED, not finalized (exclude it or regenerate)");
             else if (headerCount != derived)
                 problems.Add($"{Path.GetFileName(file)}: header {headerCount:N0} != derived {derived:N0}");
 
@@ -104,7 +104,7 @@ public static class Corpus
             long games = 0;
             if (!File.Exists(manifestPath))
             {
-                problems.Add($"{Path.GetFileName(file)}: NO MANIFEST — provenance unknown, "
+                problems.Add($"{Path.GetFileName(file)}: NO MANIFEST - provenance unknown, "
                            + "so this shard cannot be accounted for");
                 key = "UNKNOWN PROVENANCE (no manifest)";
             }
@@ -154,7 +154,7 @@ public static class Corpus
         Console.WriteLine();
         if (problems.Count == 0)
         {
-            Console.WriteLine("verification: OK — every shard finalized, schema consistent, "
+            Console.WriteLine("verification: OK - every shard finalized, schema consistent, "
                             + "provenance recorded.");
             return 0;
         }

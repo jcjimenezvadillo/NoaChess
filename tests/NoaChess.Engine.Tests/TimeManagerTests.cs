@@ -30,7 +30,7 @@ public class TimeManagerTests
         SearchLimits limits = TimeManager.FromClock(remainingMs: 10_000_000, incrementMs: 1_000,
                                                     moveOverheadMs: 0, movesToGo: null, gamePly: 20);
 
-        // 85% of the increment, plus a small clock slice — but the softCap
+        // 85% of the increment, plus a small clock slice - but the softCap
         // (usable/3) is enormous here, so this is not clipped. Expect >= 850ms
         // (the increment share alone) with the tiny slice on top.
         Assert.True(limits.SoftTimeMs >= 850, $"soft={limits.SoftTimeMs}");
@@ -82,7 +82,7 @@ public class TimeManagerTests
     public void SustainabilityGuard_TimeTroubleSpendStaysNearTheIncrement()
     {
         // 2+1 bullet with 5s left (the Arena death spiral): the raw reference
-        // formula allowed a ~4s hard deadline — 80% of the clock on one move.
+        // formula allowed a ~4s hard deadline - 80% of the clock on one move.
         // The guard bounds the target by inc + clock/16 and the deadline by
         // inc + clock/4, so the clock stabilizes around the increment.
         SearchLimits trouble = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
@@ -119,7 +119,7 @@ public class TimeManagerTests
     [Fact]
     public void ElapsedOffset_DefaultsToZero()
     {
-        // Every existing construction path must keep a zero offset — only the
+        // Every existing construction path must keep a zero offset - only the
         // ponderhit relaunch sets it.
         Assert.Equal(0, SearchLimits.Clock(100, 200).ElapsedOffsetMs);
         Assert.Equal(0, TimeManager.FromClock(60_000, 600, 30).ElapsedOffsetMs);
@@ -132,7 +132,7 @@ public class TimeManagerTests
     {
         // A ponderhit after a long ponder: the budget is nearly exhausted
         // before the search starts, so it must come back in well under the
-        // nominal soft time — and still with a legal move (the position is
+        // nominal soft time - and still with a legal move (the position is
         // mid-game, 20+ legal moves, so the forced-move shortcut is not what
         // answers here).
         var engine = new ChessEngine();

@@ -2,7 +2,7 @@ using NoaChess.Core;
 
 namespace NoaChess.Engine.Evaluation.Nnue;
 
-// HalfKAv2_hm feature indexing (feature_schema_id = 2) — the frozen contract
+// HalfKAv2_hm feature indexing (feature_schema_id = 2) - the frozen contract
 // between the C# runtime and the Python training pipeline.
 //
 // NNUE evaluates a position through a sparse input layer: each (piece, square)
@@ -112,7 +112,7 @@ public static class NnueFeatureIndex
         for (int c = 0; c < 2; c++)
         {
             Color pieceColor = (Color)c;
-            for (int t = 0; t < 6; t++) // Pawn..King — the king IS a feature.
+            for (int t = 0; t < 6; t++) // Pawn..King - the king IS a feature.
             {
                 ulong pieces = board.Pieces(pieceColor, (PieceType)t);
                 while (pieces != 0)

@@ -3,8 +3,8 @@ namespace NoaChess.Engine.Search;
 // Limits for one search. The search runs iterative deepening until whichever
 // limit triggers first:
 // - MaxDepth: hard depth cap.
-// - HardTimeMs: absolute deadline — the search aborts mid-iteration.
-// - SoftTimeMs: target budget — no NEW iteration starts past it, but the one
+// - HardTimeMs: absolute deadline - the search aborts mid-iteration.
+// - SoftTimeMs: target budget - no NEW iteration starts past it, but the one
 //   in progress may finish. Distinguishing soft/hard lets time-managed games
 //   use their budget well without ever flagging.
 // - MaxNodes: node cap ("go nodes N").

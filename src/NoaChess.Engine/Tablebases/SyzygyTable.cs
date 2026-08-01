@@ -134,8 +134,8 @@ internal sealed class SyzygyTable : IDisposable
                                 | ((uint)U8(o + 2) << 8) | U8(o + 3);
 
     // The symbol tree is stored as 3-byte records: 12 bits for the left child,
-    // 12 for the right. The base offset is PER PairsData — a pawn table holds
-    // eight of them (4 files x 2 sides), each with its own tree — so it must
+    // 12 for the right. The base offset is PER PairsData - a pawn table holds
+    // eight of them (4 files x 2 sides), each with its own tree - so it must
     // never be cached on the table itself.
     private ushort BtreeLeft(PairsData d, int sym)
     {
@@ -324,7 +324,7 @@ internal sealed class SyzygyTable : IDisposable
     }
 
     // Reference set_symlen(): how many values a Huffman symbol expands to.
-    // Iterative rather than recursive — the symbol tree can be deep and this
+    // Iterative rather than recursive - the symbol tree can be deep and this
     // runs once per table, so an explicit stack is both safe and cheap.
     private void SetSymLen(PairsData d, int s, bool[] visited)
     {

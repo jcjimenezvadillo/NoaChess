@@ -332,7 +332,7 @@ public class NnueTests
 
     // THE parity gate for the cache. The random-game test above cannot catch a
     // cache bug on its own, because after v4.0.0 both the incremental evaluator
-    // and its "full recomputation" reference go through the cache — a wrong
+    // and its "full recomputation" reference go through the cache - a wrong
     // cache would be wrong identically on both sides and the test would pass.
     // This one compares the cache against NnueAccumulator.Refresh, the direct
     // rebuild-from-bias path that does not consult it.
@@ -367,7 +367,7 @@ public class NnueTests
     }
 
     // A cache entry is keyed by king square, and two squares sharing a bucket
-    // are horizontal mirrors whose Orient() differs — so every feature index
+    // are horizontal mirrors whose Orient() differs - so every feature index
     // differs too. Walking a king back and forth across the a-d / e-h boundary
     // reuses entries in both directions and would expose a bucket-keyed cache.
     [Fact]
@@ -418,7 +418,7 @@ public class NnueTests
 
     // The AVX2 packing path reorders bytes (PackUnsignedSaturate works per
     // 128-bit lane and is corrected by a Permute4x64). If that permute were
-    // wrong, every activation would meet the wrong weight — which shows up
+    // wrong, every activation would meet the wrong weight - which shows up
     // only over many different accumulator states, not on one position.
     [Theory]
     [InlineData(5)]
@@ -565,7 +565,7 @@ public class NnueTests
 
     // Bucket selection is duplicated in the C# engine and the Python trainer.
     // If the two formulas ever disagree, every evaluation reads a head the net
-    // was not trained for — a silent, catastrophic mismatch. These values pin
+    // was not trained for - a silent, catastrophic mismatch. These values pin
     // the C# side; tools/training/nnue/model.py must produce the same.
     [Fact]
     public void BucketForPieceCount_GoldenValues()
@@ -632,7 +632,7 @@ public class NnueTests
             scores.Add(NnueInference.EvaluateSimd(net, acc.Values[0], acc.Values[1], bucket));
 
         Assert.True(scores.Count > 1,
-            "every bucket produced the same score — the head is not actually bucketed");
+            "every bucket produced the same score - the head is not actually bucketed");
     }
 
     // A one-bucket arch-3 net must evaluate exactly like the arch-2 net built

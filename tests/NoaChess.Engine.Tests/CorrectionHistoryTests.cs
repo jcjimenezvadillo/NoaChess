@@ -40,7 +40,7 @@ public sealed class CorrectionHistoryTests
     // that was actually validated (v2.8.2); the five new tables were added on
     // top. If folding them in changed what the pawn signal alone produces, a
     // failed SPRT would be unattributable between "the new keys do not help"
-    // and "we damaged the one that did" — so the weights are chosen to make the
+    // and "we damaged the one that did" - so the weights are chosen to make the
     // pawn-only case arithmetically identical, and that is asserted here rather
     // than trusted.
     [Fact]
