@@ -26,6 +26,10 @@ public sealed class NnueNetwork
     public required int FtInputs { get; init; }
     public required int FtOutputs { get; init; }
     public required int L1Outputs { get; init; }
+    // Head replicas selected by piece count (arch 3). 1 for arch 1/2, which
+    // makes every bucket offset below collapse to zero and the older paths
+    // byte-identical to what they were before buckets existed.
+    public int OutputBuckets { get; init; } = 1;
     public required int QA { get; init; }
     public required int QB { get; init; }
     public required int OutputScale { get; init; }
@@ -36,13 +40,19 @@ public sealed class NnueNetwork
     // ArchitectureId. Keeping them separate (rather than widening int8 to
     // int16 at load) is the whole point: the int8 array is half the bytes, and
     // the L1 dot product is a streaming read over it.
-    public short[]? L1Weights { get; init; }           // arch 1: [L1Outputs * 2*FtOutputs]
-    public sbyte[]? L1WeightsI8 { get; init; }          // arch 2: [L1Outputs * 2*FtOutputs]
-    public required int[] L1Bias { get; init; }        // [L1Outputs]
-    public required short[] OutWeights { get; init; }  // [L1Outputs]
-    public required int OutBias { get; init; }
+    // All head arrays are BUCKET-MAJOR: bucket b occupies the slice starting at
+    // b * <per-bucket size>. With OutputBuckets == 1 that slice is the whole
+    // array and the indexing is exactly the pre-v4.2.0 indexing.
+    public short[]? L1Weights { get; init; }           // arch 1: [Buckets * L1Outputs * 2*FtOutputs]
+    public sbyte[]? L1WeightsI8 { get; init; }          // arch 2/3: same shape, int8
+    public required int[] L1Bias { get; init; }        // [Buckets * L1Outputs]
+    public required short[] OutWeights { get; init; }  // [Buckets * L1Outputs]
+    public required int[] OutBias { get; init; }       // [Buckets]
 
-    public bool UsesInt8L1 => ArchitectureId == NnueModelHeader.ArchitectureInt8L1;
+    public bool UsesInt8L1 => ArchitectureId == NnueModelHeader.ArchitectureInt8L1
+                           || ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets;
+
+    public bool UsesOutputBuckets => OutputBuckets > 1;
 
     // Identifies the loaded model (payload hash) for logging/reproducibility.
     public required string Sha256 { get; init; }

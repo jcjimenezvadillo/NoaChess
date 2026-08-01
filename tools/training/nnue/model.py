@@ -15,26 +15,50 @@ FT_OUT = 128
 L1_OUT = 32
 OUTPUT_SCALE = 400.0  # net output * 400 = centipawns
 
+# Output buckets (architecture 3, v4.2.0). The head is replicated per bucket and
+# the bucket is chosen from the piece count, so the network gets a specialised
+# readout per phase instead of one linear map serving a 32-piece opening and a
+# 4-piece ending alike. Only ONE bucket is evaluated at play time, so this buys
+# capacity at essentially zero runtime cost — the best trade in the architecture,
+# which is why it lands before any width increase. 1 = unbucketed (arch 1/2).
+OUT_BUCKETS = 8
+
 # Quantization scales (must match the C# loader and export_model.py).
 QA = 255
 QB = 64
 
 
+def bucket_for_piece_count(piece_count, buckets):
+    """
+    Mirror of NnueModelHeader.BucketForPieceCount. Duplicating this formula is
+    how a trainer and an engine drift apart silently, so it lives in exactly one
+    place on each side and the tests pin its values on both.
+        bucket = clamp((pieceCount - 1) * buckets // 32, 0, buckets - 1)
+    """
+    if buckets <= 1:
+        return torch.zeros_like(piece_count)
+    return torch.clamp((piece_count - 1) * buckets // 32, 0, buckets - 1)
+
+
 class NoaNnue(nn.Module):
     # ft_out / l1_out default to the module constants but can be widened to
-    # sweep capacity (256, 512, ...). The C# runtime reads both dimensions from
-    # the model header, so a wider net needs no engine change — only a retrain.
-    def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT):
+    # sweep capacity (256, 512, ...). The C# runtime reads every dimension from
+    # the model header, so a wider or more bucketed net needs no engine change
+    # — only a retrain and an export.
+    def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
+        self.out_buckets = max(1, out_buckets)
         # EmbeddingBag with padding trick: sparse sum of feature rows.
         # Index 0..INPUT_SIZE-1 are real features; INPUT_SIZE is a zero
         # padding row so batches can be rectangular.
         self.ft = nn.EmbeddingBag(INPUT_SIZE + 1, ft_out, mode="sum", padding_idx=INPUT_SIZE)
         self.ft_bias = nn.Parameter(torch.zeros(ft_out))
-        self.l1 = nn.Linear(2 * ft_out, l1_out)
-        self.out = nn.Linear(l1_out, 1)
+        # The head is bucket-major, matching the C# payload layout exactly:
+        # l1 holds buckets * l1_out rows, out holds one row per bucket.
+        self.l1 = nn.Linear(2 * ft_out, self.out_buckets * l1_out)
+        self.out = nn.Linear(l1_out, self.out_buckets)
 
         # Small init keeps the quantized ranges healthy from the start.
         nn.init.uniform_(self.ft.weight, -0.05, 0.05)
@@ -42,6 +66,12 @@ class NoaNnue(nn.Module):
             self.ft.weight[INPUT_SIZE].zero_()
 
     def forward(self, stm_feats, opp_feats):
+        # The piece count is read off the FEATURES, not carried as a separate
+        # column: in HalfKA every piece is exactly one feature, so the number of
+        # non-padding entries IS the piece count. That keeps the dataset format
+        # unchanged and lets already-decoded shards train a bucketed net.
+        piece_count = (stm_feats >= 0).sum(dim=1).long()
+
         # -1 padding -> the zero row. Features are stored int16 in host RAM to
         # save memory; INPUT_SIZE (22528) fits int16, and EmbeddingBag needs
         # Long indices, so cast after remapping. .long() is a no-op when the
@@ -52,8 +82,20 @@ class NoaNnue(nn.Module):
         stm = torch.clamp(self.ft(stm_feats) + self.ft_bias, 0.0, 1.0)
         opp = torch.clamp(self.ft(opp_feats) + self.ft_bias, 0.0, 1.0)
 
-        hidden = torch.clamp(self.l1(torch.cat([stm, opp], dim=1)), 0.0, 1.0)
-        return self.out(hidden).squeeze(1)
+        hidden_all = torch.clamp(self.l1(torch.cat([stm, opp], dim=1)), 0.0, 1.0)
+        if self.out_buckets == 1:
+            return self.out(hidden_all).squeeze(1)
+
+        # Select this sample's bucket. Every bucket is computed and one is
+        # gathered, which is wasteful in training and irrelevant in cost (l1_out
+        # is 32), while play time evaluates the selected bucket only.
+        batch = hidden_all.shape[0]
+        bucket = bucket_for_piece_count(piece_count, self.out_buckets)
+        hidden = hidden_all.view(batch, self.out_buckets, self.l1_out)[
+            torch.arange(batch, device=hidden_all.device), bucket]
+        weight = self.out.weight[bucket]        # [batch, l1_out]
+        bias = self.out.bias[bucket]            # [batch]
+        return (hidden * weight).sum(dim=1) + bias
 
     def clip_weights(self):
         """
@@ -65,5 +107,8 @@ class NoaNnue(nn.Module):
         with torch.no_grad():
             self.ft.weight.clamp_(-1.98, 1.98)          # |w*QA| <= ~505/int16-safe
             self.ft_bias.clamp_(-1.98, 1.98)
+            # The int8 architectures need |round(w*QB)| <= 127 for the
+            # VPMADDUBSW bound to hold; this clamp is what guarantees the export
+            # saturation check passes rather than merely usually passing.
             self.l1.weight.clamp_(-127.0 / QB, 127.0 / QB)
             self.out.weight.clamp_(-127.0 / QB, 127.0 / QB)

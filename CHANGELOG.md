@@ -1,5 +1,63 @@
 # CHANGELOG
 
+## 2026-08-01 (v4.2.0) — BLOCK 12 capacity: output buckets, width support, and a way to price width
+
+**Capability release. The embedded net is still gen7 and strength is unchanged — 193,746 nodes on the fixed-depth suite, the same figure as v4.0.0 and v4.1.0.** What ships is the architecture the capacity step needs, verified across both languages, plus the measurement that the width decision was missing.
+
+### Output buckets (architecture 3)
+
+The head is replicated per bucket and the bucket is chosen from the piece count, so the network gets a specialised readout per phase instead of one linear map serving a 32-piece opening and a 4-piece ending alike.
+
+**It is almost free at runtime.** Only ONE bucket is evaluated per call — the others are never touched — so the arithmetic per evaluation is exactly the arch-2 cost. What grows is the weight table, and only for the head: at ft=128/l1=32 the L1 matrix goes from 16 KB to 128 KB against a 5.5 MB feature transformer. That ratio is why buckets land before any width increase.
+
+Bucket selection is `clamp((pieceCount - 1) * buckets / 32, 0, buckets - 1)` — with 8 buckets, the familiar `(pieceCount - 1) / 4`. It lives in exactly one function per language, because a trainer and an engine that disagree here read a head the net was never trained for, and nothing fails loudly when that happens.
+
+### Verified across the language boundary, not assumed
+
+The engine and the trainer are two independent implementations of the same integer arithmetic joined only by a byte layout and that bucket formula. So both were checked directly:
+
+- **Bucket formula**: the C# golden values are asserted in the test suite and the Python side was run against the same table — identical for every case, and in range across piece counts 0-40 × 1-16 buckets.
+- **End-to-end values**: a bucketed net trained in Python, exported as arch 3, loaded by the engine and evaluated on three positions spanning three different buckets (7, 0, 5) gives **18 / 80 / 62** — and the new `verify_export.py`, which reproduces the engine's integer forward pass from the exported FILE, gives **18 / 80 / 62**. Exact agreement, not approximate.
+- **Backward compatibility**: re-exporting gen7 as arch 1 still reproduces the shipped payload **byte-identically** (sha `3c7e94a9…`), and the engine still searches the same 193,746 nodes.
+
+`verify_export.py` is new and is meant to be run on every future export.
+
+### Pricing width without training anything
+
+The v4.0.0 rule was that width must be decided on measured NPS, never on an attribution table. Measuring it normally means training a net at each candidate width first — days before the first number arrives.
+
+It does not have to. **The cost of a width is a property of the shapes, not of the weights**: a randomly initialised net of the same dimensions executes the same instructions over the same memory. The new `nnuewidth` command synthesises shape-accurate nets and times them, so the cost curve takes seconds and only the widths that survive it are worth training. Preliminary (on a loaded machine, so indicative only):
+
+| ft | eval | vs 128 | accumulator move | vs 128 |
+|---|---|---|---|---|
+| 128 | 898.6 ns | 1.00× | 28.6 ns | 1.00× |
+| 256 | 1361.1 ns | **1.51×** | 44.6 ns | 1.56× |
+| 512 | 2370.0 ns | **2.64×** | 83.8 ns | 2.93× |
+
+Cost rises **sub-linearly** with width in this range — doubling the transformer costs about 1.5×, not 2×, because the fixed overheads (activation packing, the output layer) do not scale. That is a materially better trade than the "wider is counterproductive" assumption v3.2.0 was built on.
+
+The first version of this sweep reported ft=256 as *faster* than ft=128, which is impossible; the estimator now takes the **minimum of five repetitions** (interference only ever makes a measurement slower, so the fastest observation is closest to the truth) and warms up before the first width. The report prints its own sanity check — if cost does not rise with width, the machine was busy and the table is noise.
+
+### Buckets can be measured now, on data that already exists
+
+Width needs the 300-500M corpus; buckets do not, because they add head capacity rather than input capacity, and 84.7M positions already fits eight small heads. `Noa-Buckets.ps1` trains two arms that differ **only** in `--out-buckets` (1 against 8) — same data, same width, same hyperparameters — and `sprt_buckets.bat` plays them off. Both arms are trained fresh rather than reusing gen7 as the control, because gen7 differs in hyperparameters and epoch count and would confound buckets with everything else.
+
+### Also fixed
+
+**A mistyped subcommand started a 500-game datagen.** `nnueprobe` instead of `--nnueprobe` fell through into the default run path and launched two full datagen runs on an already-loaded machine. Options always begin with `--`, so a bare first word that is not a known subcommand is now rejected with exit code 2. Deliberately narrow — it cannot affect any invocation that starts with a flag.
+
+**`stackalloc` inside a loop in `ShardWriter.CountExistingRecords` (CA2014).** The buffer was allocated per shard and never released until the method returned, so the stack frame grew with the shard count. Harmless at five shards; a 300M-position corpus produces sixty-plus, and the pattern has no upper bound. Hoisted out of the loop.
+
+### Campaign-script fixes (outside the repo, recorded here because they cost a run)
+
+The v4.1.0 campaign script invoked the datagen through `dotnet run --project`, which **rebuilds on every invocation**. That killed the calibration's second arm after the first had spent seven hours succeeding: the rebuild wrote into `tools/NoaChess.DataGen/bin`, which the still-running elite-labelling process held locked, and the build failed with MSB3027. It also meant different shards could come from different builds — and a corpus assembled from more than one binary has a story for provenance rather than a fact. The datagen is now published **once** into a campaign-private directory and invoked as a frozen executable.
+
+The calibration itself was redesigned. It gave both arms the same **position count**, which sounds fairer and asks the wrong question: at 28,000 nodes a position costs ~4.7× what it costs at 6,000, so the deep arm would have taken ~32 hours against the fast arm's 7. The campaign never gets to choose "20M positions at any depth" — it gets a compute budget. Both arms are now matched on **total search work** (`20,000,000 × 6,000 ≈ 4,285,714 × 28,000`), which costs the same hours and answers the question that actually decides the campaign: with the same machine time, are many cheap labels worth more than few expensive ones?
+
+228 engine tests, 71 core tests.
+
+---
+
 ## 2026-07-31 (v4.1.0) — BLOCK 12 data scale: the pipeline that makes 300-500M positions possible
 
 **Infrastructure release. The embedded net is still gen7 and strength is unchanged from v4.0.0.** The Elo this version targets (+80 to +150) comes from *running* the campaign, which is 2-3 days of datagen; what ships here is everything needed to run it safely, plus a cheap experiment that tests the campaign's core assumption before those days are spent.

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 import dataset
-from model import NoaNnue, OUTPUT_SCALE, FT_OUT, L1_OUT
+from model import NoaNnue, OUTPUT_SCALE, FT_OUT, L1_OUT, OUT_BUCKETS
 
 
 def wdl_target(scores, results, lam):
@@ -50,6 +50,11 @@ def main():
     # needed. Saved into the checkpoint so export/validate rebuild the right net.
     parser.add_argument("--ft-out", type=int, default=FT_OUT)
     parser.add_argument("--l1-out", type=int, default=L1_OUT)
+    # Output buckets (v4.2.0). The head is replicated per bucket and selected by
+    # piece count, so the net gets a per-phase readout. Only one bucket is
+    # evaluated at play time, so this is capacity at ~zero runtime cost. Saved
+    # into the checkpoint so export rebuilds the right shape; 1 = unbucketed.
+    parser.add_argument("--out-buckets", type=int, default=OUT_BUCKETS)
     # Legacy salvage flag: drops exactly-0 labels. Was needed only for the old
     # contaminated datasets (an engine hard-stop bug zeroed ~57% of labels,
     # fixed 2026-07-24). Clean datasets have ~2% genuine-draw zeros — leave off.
@@ -168,8 +173,8 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
     print(f"device: {device}"
           + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else " (no CUDA GPU)"))
 
-    model = NoaNnue(args.ft_out, args.l1_out).to(device)
-    print(f"net: ft_out={args.ft_out} l1_out={args.l1_out}")
+    model = NoaNnue(args.ft_out, args.l1_out, args.out_buckets).to(device)
+    print(f"net: ft_out={args.ft_out} l1_out={args.l1_out} out_buckets={args.out_buckets}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
 

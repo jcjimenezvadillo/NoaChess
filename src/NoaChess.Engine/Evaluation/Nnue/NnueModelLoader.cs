@@ -56,6 +56,9 @@ public static class NnueModelLoader
         ushort qa = BinaryPrimitives.ReadUInt16LittleEndian(bytes[32..]);
         ushort qb = BinaryPrimitives.ReadUInt16LittleEndian(bytes[34..]);
         ushort outputScale = BinaryPrimitives.ReadUInt16LittleEndian(bytes[36..]);
+        // Offset 38 was padding before v4.2.0, so legacy files read 0 here and
+        // are treated as unbucketed — old models keep loading unchanged.
+        ushort headerBuckets = BinaryPrimitives.ReadUInt16LittleEndian(bytes[38..]);
         ulong payloadLength = BinaryPrimitives.ReadUInt64LittleEndian(bytes[40..]);
         ReadOnlySpan<byte> expectedSha = bytes[48..80];
 
@@ -69,20 +72,38 @@ public static class NnueModelLoader
             error = $"feature schema {schema} does not match engine schema {NnueFeatureIndex.FeatureSchemaId}";
             return false;
         }
-        if (arch != NnueModelHeader.ArchitectureInt16L1 && arch != NnueModelHeader.ArchitectureInt8L1)
+        bool int8 = arch is NnueModelHeader.ArchitectureInt8L1
+                         or NnueModelHeader.ArchitectureInt8L1Buckets;
+        if (arch != NnueModelHeader.ArchitectureInt16L1 && !int8)
         {
             error = $"unsupported architecture id {arch}";
             return false;
         }
-        // Arch 2 packs activations into unsigned bytes and multiplies them by
-        // signed bytes through VPMADDUBSW, whose int16 lane saturates above
-        // 32,767. QA <= 127 makes |a0*w0 + a1*w1| <= 2*127*127 = 32,258, i.e.
-        // exact for every possible input. A model claiming arch 2 with a larger
-        // QA would evaluate silently wrong positions, so it is refused.
-        if (arch == NnueModelHeader.ArchitectureInt8L1 && qa > NnueModelHeader.MaxQaForInt8L1)
+        // The int8 architectures pack activations into unsigned bytes and
+        // multiply them by signed bytes through VPMADDUBSW, whose int16 lane
+        // saturates above 32,767. QA <= 127 makes |a0*w0 + a1*w1| <= 2*127*127
+        // = 32,258, i.e. exact for every possible input. A model claiming int8
+        // with a larger QA would evaluate silently wrong positions.
+        if (int8 && qa > NnueModelHeader.MaxQaForInt8L1)
         {
             error = $"architecture {arch} requires QA <= {NnueModelHeader.MaxQaForInt8L1} "
                   + $"to keep the int8 dot product free of int16 saturation (got QA={qa})";
+            return false;
+        }
+
+        // Only arch 3 is allowed to declare buckets; anything else must be
+        // unbucketed, or the payload size and the head indexing disagree.
+        int buckets = arch == NnueModelHeader.ArchitectureInt8L1Buckets
+            ? (headerBuckets == 0 ? 1 : headerBuckets)
+            : 1;
+        if (arch != NnueModelHeader.ArchitectureInt8L1Buckets && headerBuckets > 1)
+        {
+            error = $"architecture {arch} does not support output buckets (header declares {headerBuckets})";
+            return false;
+        }
+        if (buckets < 1 || buckets > NnueModelHeader.MaxOutputBuckets)
+        {
+            error = $"implausible output bucket count {buckets}";
             return false;
         }
         if (ftInputs != NnueFeatureIndex.InputSize)
@@ -102,14 +123,15 @@ public static class NnueModelLoader
         }
 
         // ---- Payload ----
-        int l1WeightBytes = arch == NnueModelHeader.ArchitectureInt8L1 ? 1 : 2;
+        // Everything after the feature transformer is replicated per bucket.
+        int l1WeightBytes = int8 ? 1 : 2;
         long expectedPayload =
-            (long)ftInputs * ftOutputs * 2   // ftWeights int16
-            + ftOutputs * 2                  // ftBias int16
-            + (long)l1Outputs * 2 * ftOutputs * l1WeightBytes // l1Weights int16 or int8
-            + l1Outputs * 4                  // l1Bias int32
-            + l1Outputs * 2                  // outWeights int16
-            + 4;                             // outBias int32
+            (long)ftInputs * ftOutputs * 2                            // ftWeights int16
+            + ftOutputs * 2                                           // ftBias int16
+            + (long)buckets * l1Outputs * 2 * ftOutputs * l1WeightBytes // l1Weights
+            + (long)buckets * l1Outputs * 4                           // l1Bias int32
+            + (long)buckets * l1Outputs * 2                           // outWeights int16
+            + (long)buckets * 4;                                      // outBias int32
 
         if ((long)payloadLength != expectedPayload)
         {
@@ -160,17 +182,17 @@ public static class NnueModelLoader
         var ftWeights = ReadInt16Array(payload, ftInputs * ftOutputs);
         var ftBias = ReadInt16Array(payload, ftOutputs);
 
-        int l1WeightCount = l1Outputs * 2 * ftOutputs;
+        int l1WeightCount = buckets * l1Outputs * 2 * ftOutputs;
         short[]? l1Weights = null;
         sbyte[]? l1WeightsI8 = null;
-        if (arch == NnueModelHeader.ArchitectureInt8L1)
+        if (int8)
             l1WeightsI8 = ReadInt8Array(payload, l1WeightCount);
         else
             l1Weights = ReadInt16Array(payload, l1WeightCount);
 
-        var l1Bias = ReadInt32Array(payload, l1Outputs);
-        var outWeights = ReadInt16Array(payload, l1Outputs);
-        int outBias = BinaryPrimitives.ReadInt32LittleEndian(payload[offset..]);
+        var l1Bias = ReadInt32Array(payload, buckets * l1Outputs);
+        var outWeights = ReadInt16Array(payload, buckets * l1Outputs);
+        var outBias = ReadInt32Array(payload, buckets);
 
         network = new NnueNetwork
         {
@@ -178,6 +200,7 @@ public static class NnueModelLoader
             FtInputs = ftInputs,
             FtOutputs = ftOutputs,
             L1Outputs = l1Outputs,
+            OutputBuckets = buckets,
             QA = qa,
             QB = qb,
             OutputScale = outputScale,

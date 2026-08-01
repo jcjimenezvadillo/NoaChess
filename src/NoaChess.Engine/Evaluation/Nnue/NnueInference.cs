@@ -32,34 +32,42 @@ public static class NnueInference
     // Evaluates from the side to move's point of view, in centipawns.
     // 'stmAccumulator'/'oppAccumulator' are the feature-transformer outputs
     // for the side to move and the opponent (already king-refresh-valid).
-    public static int Evaluate(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator)
+    // 'bucket' selects the head replica (arch 3). It is always 0 for the
+    // unbucketed architectures, which makes every offset below vanish.
+    public static int Evaluate(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
+                               int bucket = 0)
         => SimdAvailable
-            ? EvaluateSimd(net, stmAccumulator, oppAccumulator)
-            : EvaluateScalar(net, stmAccumulator, oppAccumulator);
+            ? EvaluateSimd(net, stmAccumulator, oppAccumulator, bucket)
+            : EvaluateScalar(net, stmAccumulator, oppAccumulator, bucket);
 
     // ---- Shared tail: hidden activations -> output -> centipawns ----
-    // Identical for both architectures; only the way 'hidden' was produced
-    // differs. Kept in one place so the two paths cannot drift apart.
+    // Identical for every architecture; only the way 'hidden' was produced
+    // differs. Kept in one place so the paths cannot drift apart.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int FinishOutput(NnueNetwork net, ReadOnlySpan<int> hidden)
+    private static int FinishOutput(NnueNetwork net, ReadOnlySpan<int> hidden, int bucket)
     {
         int qa = net.QA;
-        long output = net.OutBias;
+        int headOffset = bucket * net.L1Outputs;
+        long output = net.OutBias[bucket];
         for (int o = 0; o < net.L1Outputs; o++)
         {
             int a2 = Math.Clamp(hidden[o] / net.QB, 0, qa);
-            output += net.OutWeights[o] * (long)a2;
+            output += net.OutWeights[headOffset + o] * (long)a2;
         }
         return (int)(output * net.OutputScale / ((long)qa * net.QB));
     }
 
-    public static int EvaluateScalar(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator)
+    public static int EvaluateScalar(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
+                                     int bucket = 0)
     {
         NnueProfiling.CountEvaluation();
 
         int ftOut = net.FtOutputs;
         int qa = net.QA;
         int inputs = 2 * ftOut;
+        // Head arrays are bucket-major; one bucket's L1 block is L1Outputs rows.
+        int weightBase = bucket * net.L1Outputs * inputs;
+        int biasBase = bucket * net.L1Outputs;
 
         Span<int> hidden = stackalloc int[net.L1Outputs];
 
@@ -68,8 +76,8 @@ public static class NnueInference
             sbyte[] weights = net.L1WeightsI8!;
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                int sum = net.L1Bias[o];
-                int row = o * inputs;
+                int sum = net.L1Bias[biasBase + o];
+                int row = weightBase + o * inputs;
                 for (int i = 0; i < ftOut; i++)
                     sum += weights[row + i] * Math.Clamp((int)stmAccumulator[i], 0, qa);
                 for (int i = 0; i < ftOut; i++)
@@ -82,8 +90,8 @@ public static class NnueInference
             short[] weights = net.L1Weights!;
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                int sum = net.L1Bias[o];
-                int row = o * inputs;
+                int sum = net.L1Bias[biasBase + o];
+                int row = weightBase + o * inputs;
                 for (int i = 0; i < ftOut; i++)
                     sum += weights[row + i] * Math.Clamp((int)stmAccumulator[i], 0, qa);
                 for (int i = 0; i < ftOut; i++)
@@ -92,16 +100,17 @@ public static class NnueInference
             }
         }
 
-        return FinishOutput(net, hidden);
+        return FinishOutput(net, hidden, bucket);
     }
 
-    public static int EvaluateSimd(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator)
+    public static int EvaluateSimd(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
+                                   int bucket = 0)
     {
         NnueProfiling.CountEvaluation();
 
         return net.UsesInt8L1
-            ? EvaluateInt8(net, stmAccumulator, oppAccumulator)
-            : EvaluateInt16(net, stmAccumulator, oppAccumulator);
+            ? EvaluateInt8(net, stmAccumulator, oppAccumulator, bucket)
+            : EvaluateInt16(net, stmAccumulator, oppAccumulator, bucket);
     }
 
     // ---- ARCH 2: int8 L1, VPMADDUBSW + VPMADDWD ----
@@ -118,11 +127,16 @@ public static class NnueInference
     // at most 2*127*127 = 32,258 against an int16 limit of 32,767. The loader
     // refuses any arch-2 model with QA > 127, which is what makes that bound
     // hold for every possible position rather than for the ones we tested.
-    private static int EvaluateInt8(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator)
+    private static int EvaluateInt8(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
+                                    int bucket)
     {
         int ftOut = net.FtOutputs;
         int inputs = 2 * ftOut;
         sbyte[] weights = net.L1WeightsI8!;
+        // Only THIS bucket's block is read; the other buckets are never touched,
+        // which is why adding buckets costs weight memory but not evaluation time.
+        int weightBase = bucket * net.L1Outputs * inputs;
+        int biasBase = bucket * net.L1Outputs;
 
         Span<byte> act = stackalloc byte[inputs];
         Span<int> hidden = stackalloc int[net.L1Outputs];
@@ -137,7 +151,7 @@ public static class NnueInference
 
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                nuint row = (nuint)o * (nuint)inputs;
+                nuint row = (nuint)(weightBase + o * inputs);
                 var accum = Vector256<int>.Zero;
                 for (nuint i = 0; i < (nuint)inputs; i += (nuint)Vector256<byte>.Count)
                 {
@@ -147,7 +161,7 @@ public static class NnueInference
                     var products = Avx2.MultiplyAddAdjacent(a, w);
                     accum = Avx2.Add(accum, Avx2.MultiplyAddAdjacent(products, ones));
                 }
-                hidden[o] = net.L1Bias[o] + Vector256.Sum(accum);
+                hidden[o] = net.L1Bias[biasBase + o] + Vector256.Sum(accum);
             }
         }
         else
@@ -157,15 +171,15 @@ public static class NnueInference
             PackActivationsScalar(stmAccumulator, oppAccumulator, act, net.QA, ftOut);
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                int sum = net.L1Bias[o];
-                int row = o * inputs;
+                int sum = net.L1Bias[biasBase + o];
+                int row = weightBase + o * inputs;
                 for (int i = 0; i < inputs; i++)
                     sum += weights[row + i] * act[i];
                 hidden[o] = sum;
             }
         }
 
-        return FinishOutput(net, hidden);
+        return FinishOutput(net, hidden, bucket);
     }
 
     // Clamps both accumulators to [0, QA] and packs them into one contiguous
@@ -217,7 +231,8 @@ public static class NnueInference
     }
 
     // ---- ARCH 1: int16 L1, VPMADDWD ----
-    private static int EvaluateInt16(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator)
+    private static int EvaluateInt16(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
+                                     int bucket)
     {
         int ftOut = net.FtOutputs;
         int qa = net.QA;
@@ -239,13 +254,15 @@ public static class NnueInference
 
         Span<int> hidden = stackalloc int[net.L1Outputs];
         short[] l1Weights = net.L1Weights!;
+        int weightBase = bucket * net.L1Outputs * inputs;
+        int biasBase = bucket * net.L1Outputs;
         if (Avx2.IsSupported && inputs % Vector256<short>.Count == 0)
         {
             ref short actRef = ref MemoryMarshal.GetReference(act);
             ref short wRef = ref MemoryMarshal.GetArrayDataReference(l1Weights);
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                nuint row = (nuint)(o * inputs);
+                nuint row = (nuint)(weightBase + o * inputs);
                 var accum = Vector256<int>.Zero;
                 for (nuint i = 0; i < (nuint)inputs; i += (nuint)Vector256<short>.Count)
                 {
@@ -253,14 +270,14 @@ public static class NnueInference
                     var w = Vector256.LoadUnsafe(ref wRef, row + i);
                     accum = Avx2.Add(accum, Avx2.MultiplyAddAdjacent(a, w));
                 }
-                hidden[o] = net.L1Bias[o] + Vector256.Sum(accum);
+                hidden[o] = net.L1Bias[biasBase + o] + Vector256.Sum(accum);
             }
         }
         else
         {
             for (int o = 0; o < net.L1Outputs; o++)
             {
-                int row = o * inputs;
+                int row = weightBase + o * inputs;
                 var accum = Vector<int>.Zero;
                 for (int i = 0; i < inputs; i += lanes)
                 {
@@ -270,10 +287,10 @@ public static class NnueInference
                     Vector.Widen(w, out Vector<int> wLo, out Vector<int> wHi);
                     accum += aLo * wLo + aHi * wHi;
                 }
-                hidden[o] = net.L1Bias[o] + Vector.Sum(accum);
+                hidden[o] = net.L1Bias[biasBase + o] + Vector.Sum(accum);
             }
         }
 
-        return FinishOutput(net, hidden);
+        return FinishOutput(net, hidden, bucket);
     }
 }

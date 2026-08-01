@@ -43,6 +43,20 @@ if (args.Length >= 1 && args[0] == "pgnbook")
 if (args.Length >= 1 && args[0] == "corpus")
     return Corpus.Run(args[1..]);
 
+// A mistyped subcommand used to fall straight through into the datagen and
+// start a 500-game run against the DEFAULT output path — which is exactly what
+// happened when `nnueprobe` was typed instead of `--nnueprobe`. Options always
+// begin with "--", so a bare first word that is not a known subcommand is a
+// typo, and a typo must not launch hours of work.
+if (args.Length >= 1 && !args[0].StartsWith("--"))
+{
+    Console.Error.WriteLine($"datagen: unknown subcommand '{args[0]}'.");
+    Console.Error.WriteLine("         Known subcommands: pgnbook, corpus.");
+    Console.Error.WriteLine("         Options start with '--' (e.g. --games, --nodes, --out).");
+    Console.Error.WriteLine("         Refusing to start a default datagen run from a typo.");
+    return 2;
+}
+
 var options = ParseArgs(args);
 Console.WriteLine($"datagen: games={options.Games} nodes={options.Nodes} threads={options.Threads} seed={options.Seed}");
 Console.WriteLine($"output : {options.Output}");

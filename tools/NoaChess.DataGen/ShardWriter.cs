@@ -67,6 +67,11 @@ public sealed class ShardWriter : IDisposable
     public static long CountExistingRecords(string basePath, int upToIndex)
     {
         long total = 0;
+        // Allocated ONCE, outside the loop. A stackalloc per iteration grows the
+        // frame with the shard count and never releases until the method
+        // returns (CA2014) — with the 60+ shards a 300M-position corpus
+        // produces, that is a stack overflow waiting for a big enough campaign.
+        Span<byte> header = stackalloc byte[DatasetFormat.HeaderSize];
         for (int index = 0; index < upToIndex; index++)
         {
             string path = ShardPath(basePath, index);
@@ -76,7 +81,6 @@ public sealed class ShardWriter : IDisposable
             {
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
                                                   FileShare.ReadWrite);
-                Span<byte> header = stackalloc byte[DatasetFormat.HeaderSize];
                 if (stream.Read(header) == DatasetFormat.HeaderSize)
                     total += (long)System.Buffers.Binary.BinaryPrimitives
                         .ReadUInt64LittleEndian(header[24..]);
