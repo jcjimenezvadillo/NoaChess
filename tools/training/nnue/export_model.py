@@ -34,7 +34,7 @@ import struct
 import numpy as np
 import torch
 
-from model import NoaNnue, INPUT_SIZE, FT_OUT, L1_OUT, QA, QB, OUTPUT_SCALE
+from model import NoaNnue, INPUT_SIZE, FT_OUT, L1_OUT, OUT_BUCKETS, QA, QB, OUTPUT_SCALE
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
@@ -42,10 +42,11 @@ FEATURE_SCHEMA_ID = 2
 
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
+ARCH_INT8_L1_BUCKETS = 3
 
-# Activation scale per architecture. Arch 2 is capped by the saturation bound
-# proved above; the C# loader enforces the same number.
-QA_FOR_ARCH = {ARCH_INT16_L1: QA, ARCH_INT8_L1: 127}
+# Activation scale per architecture. The int8 architectures are capped by the
+# saturation bound proved above; the C# loader enforces the same number.
+QA_FOR_ARCH = {ARCH_INT16_L1: QA, ARCH_INT8_L1: 127, ARCH_INT8_L1_BUCKETS: 127}
 
 
 def quantize(tensor, scale, dtype, limit, name):
@@ -63,24 +64,41 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--arch", type=int, default=ARCH_INT8_L1,
-                        choices=[ARCH_INT16_L1, ARCH_INT8_L1],
-                        help="1 = legacy int16 L1 (QA=255), 2 = int8 L1 (QA=127, default)")
+    parser.add_argument("--arch", type=int, default=None,
+                        choices=[ARCH_INT16_L1, ARCH_INT8_L1, ARCH_INT8_L1_BUCKETS],
+                        help="1 = legacy int16 L1 (QA=255), 2 = int8 L1 (QA=127), "
+                             "3 = int8 L1 + output buckets. Default: 3 when the "
+                             "checkpoint has buckets, else 2.")
     args = parser.parse_args()
-
-    arch = args.arch
-    qa = QA_FOR_ARCH[arch]
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     ckpt_args = checkpoint.get("args", {})
     ft_out = ckpt_args.get("ft_out", FT_OUT)
     l1_out = ckpt_args.get("l1_out", L1_OUT)
-    model = NoaNnue(ft_out, l1_out)
+    # Default 1, NOT OUT_BUCKETS: a checkpoint without this key was trained
+    # before buckets existed, so it genuinely has one head. Defaulting to the
+    # current module constant would build a model whose shape does not match
+    # the saved weights and fail to load — or worse, load a reshaped mess.
+    buckets = max(1, ckpt_args.get("out_buckets", 1))
+
+    # The architecture follows the checkpoint unless overridden: exporting a
+    # bucketed net as arch 1/2 would silently drop every bucket but the first.
+    arch = args.arch if args.arch is not None else (
+        ARCH_INT8_L1_BUCKETS if buckets > 1 else ARCH_INT8_L1)
+    if buckets > 1 and arch != ARCH_INT8_L1_BUCKETS:
+        raise SystemExit(
+            f"checkpoint has {buckets} output buckets but --arch {arch} cannot represent them. "
+            f"Use --arch {ARCH_INT8_L1_BUCKETS}, or retrain with --out-buckets 1.")
+    if arch != ARCH_INT8_L1_BUCKETS:
+        buckets = 1
+    qa = QA_FOR_ARCH[arch]
+
+    model = NoaNnue(ft_out, l1_out, buckets)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
-    print(f"exporting arch {arch} "
-          f"({'int8' if arch == ARCH_INT8_L1 else 'int16'} L1), "
+    kind = "int16" if arch == ARCH_INT16_L1 else "int8"
+    print(f"exporting arch {arch} ({kind} L1, {buckets} output bucket(s)), "
           f"ft_out={ft_out} l1_out={l1_out} QA={qa} QB={QB}")
 
     # EmbeddingBag rows are feature-major already; drop the padding row.
@@ -88,20 +106,22 @@ def main():
     ft_b = quantize(model.ft_bias, qa, np.int16, 32767, "ftBias")
     # nn.Linear stores weight as [out, in] — exactly the row-per-output layout
     # the C# dot product expects.
-    l1_dtype = np.int8 if arch == ARCH_INT8_L1 else np.int16
+    # Both l1 (buckets*l1_out rows) and out (one row per bucket) are already
+    # bucket-major in the module, which is exactly the C# payload layout.
+    l1_dtype = np.int16 if arch == ARCH_INT16_L1 else np.int8
     l1_w = quantize(model.l1.weight, QB, l1_dtype, 127, "l1Weights")
     l1_b = quantize(model.l1.bias, qa * QB, np.int32, 2**31 - 1, "l1Bias")
     out_w = quantize(model.out.weight.flatten(), QB, np.int16, 127, "outWeights")
-    out_b = int(np.round(model.out.bias.item() * qa * QB))
+    out_b = quantize(model.out.bias, qa * QB, np.int32, 2**31 - 1, "outBias")
 
     # Guard the saturation bound with the ACTUAL exported values, not just the
     # nominal limits — a future change to clip_weights must not be able to make
     # the kernel wrong without this failing first.
-    if arch == ARCH_INT8_L1:
+    if arch != ARCH_INT16_L1:
         worst = 2 * qa * int(np.abs(l1_w.astype(np.int32)).max())
         if worst > 32767:
             raise SystemExit(
-                f"arch 2 saturation check FAILED: 2*QA*max|l1_w| = {worst:,} > 32,767. "
+                f"arch {arch} saturation check FAILED: 2*QA*max|l1_w| = {worst:,} > 32,767. "
                 f"The int8 kernel would saturate. Lower QA or tighten l1 weight clipping.")
         print(f"  saturation check OK: worst int16 lane = {worst:,} / 32,767 "
               f"({100.0 * worst / 32767:.1f}% of headroom used)")
@@ -109,15 +129,17 @@ def main():
     payload = b"".join([
         ft_w.tobytes(), ft_b.tobytes(),
         l1_w.tobytes(), l1_b.tobytes(),
-        out_w.tobytes(), struct.pack("<i", out_b),
+        out_w.tobytes(), out_b.tobytes(),
     ])
     sha = hashlib.sha256(payload).digest()
 
+    # Offset 38 was padding before v4.2.0; arch 1/2 keep writing 0 there, which
+    # is what makes every legacy file load unchanged.
     header = struct.pack(
         "<8s I I I i i i H H H H Q 32s",
         MAGIC, FORMAT_VERSION, FEATURE_SCHEMA_ID, arch,
         INPUT_SIZE, ft_out, l1_out,
-        qa, QB, int(OUTPUT_SCALE), 0,
+        qa, QB, int(OUTPUT_SCALE), buckets if arch == ARCH_INT8_L1_BUCKETS else 0,
         len(payload), sha)
     assert len(header) == 80
 

@@ -81,9 +81,18 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
         short[] stmAcc = _accumulators.GetPerspective(board, stm);
         short[] oppAcc = _accumulators.GetPerspective(board, Board.OppositeColor(stm));
 
+        // Output bucket by piece count (arch 3). A one-bucket net short-circuits
+        // to 0 without touching the popcount, so the older architectures pay
+        // nothing for this.
+        int bucket = _network.UsesOutputBuckets
+            ? NnueModelHeader.BucketForPieceCount(
+                System.Numerics.BitOperations.PopCount(board.AllOccupancy),
+                _network.OutputBuckets)
+            : 0;
+
         int score = _useSimd
-            ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc)
-            : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc);
+            ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc, bucket)
+            : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc, bucket);
 
         return Math.Clamp(score, -EvalClamp, EvalClamp);
     }

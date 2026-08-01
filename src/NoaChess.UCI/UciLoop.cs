@@ -312,6 +312,18 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "nnuewidth":
+                {
+                    // Not UCI: measures what each feature-transformer width
+                    // COSTS, using shape-accurate synthetic nets so no training
+                    // is needed. This is the v4.2.0 gate input — the width
+                    // decision must rest on measurement, and previously the
+                    // measurement did not exist. Run on an idle machine.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleNnueWidth(tokens);
+                    break;
+                }
+
                 case "ucinewgame":
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
@@ -451,6 +463,37 @@ public sealed class UciLoop
                 _engine.SetUseNnue(false);
             NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = false;
             _engine.NewGame();
+        }
+    }
+
+    // "nnuewidth [w1,w2,...] [l1] [buckets]" — not UCI. Defaults sweep the
+    // widths BLOCK 12 is choosing between.
+    private void HandleNnueWidth(string[] tokens)
+    {
+        int[] widths = [128, 256, 512, 1024];
+        int l1 = 32;
+        int buckets = 8;
+
+        if (tokens.Length > 1)
+        {
+            var parsed = tokens[1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                  .Select(t => int.TryParse(t, out int w) ? w : 0)
+                                  .Where(w => w > 0 && w % 32 == 0 && w <= 4096)
+                                  .ToArray();
+            if (parsed.Length > 0)
+                widths = parsed;
+        }
+        if (tokens.Length > 2 && int.TryParse(tokens[2], out int parsedL1) && parsedL1 > 0)
+            l1 = parsedL1;
+        if (tokens.Length > 3 && int.TryParse(tokens[3], out int parsedBuckets) && parsedBuckets > 0)
+            buckets = parsedBuckets;
+
+        string report = NoaChess.Engine.Evaluation.Nnue.NnueProfiler.RunWidthSweep(widths, l1, buckets);
+        foreach (string line in report.Split('\n'))
+        {
+            string trimmed = line.TrimEnd('\r');
+            if (trimmed.Length > 0)
+                _output.WriteLine("info string " + trimmed);
         }
     }
 
