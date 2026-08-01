@@ -58,15 +58,22 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     {
         _network = network;
         _accumulators = new NnueAccumulatorStack(network);
-        // The SIMD kernel processes whole vector lanes; fall back to scalar
-        // for widths that do not divide evenly (never the case for the
-        // shipped architectures, but never trust a file).
+        // The SIMD kernels process whole vector lanes; fall back to scalar for
+        // widths that do not divide evenly (never the case for the shipped
+        // architectures, but never trust a file). The int8 path packs 32 bytes
+        // at a time and carries its own portable fallback, so it only needs the
+        // accumulator-clipping width to line up.
         _useSimd = NnueInference.SimdAvailable
-                   && network.FtOutputs % System.Numerics.Vector<short>.Count == 0;
+                   && (network.UsesInt8L1
+                       || network.FtOutputs % System.Numerics.Vector<short>.Count == 0);
     }
 
     public string ModelSha256 => _network.Sha256;
     public bool UsesSimd => _useSimd;
+
+    // Exposed for the `nnueprofile` command, which needs the loaded weights to
+    // time the primitives in isolation. Read-only after load.
+    public NnueNetwork Network => _network;
 
     public int Evaluate(Board board)
     {
@@ -74,9 +81,18 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
         short[] stmAcc = _accumulators.GetPerspective(board, stm);
         short[] oppAcc = _accumulators.GetPerspective(board, Board.OppositeColor(stm));
 
+        // Output bucket by piece count (arch 3). A one-bucket net short-circuits
+        // to 0 without touching the popcount, so the older architectures pay
+        // nothing for this.
+        int bucket = _network.UsesOutputBuckets
+            ? NnueModelHeader.BucketForPieceCount(
+                System.Numerics.BitOperations.PopCount(board.AllOccupancy),
+                _network.OutputBuckets)
+            : 0;
+
         int score = _useSimd
-            ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc)
-            : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc);
+            ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc, bucket)
+            : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc, bucket);
 
         return Math.Clamp(score, -EvalClamp, EvalClamp);
     }

@@ -5,6 +5,31 @@
 > **Golden SPRT rule:** one term per SPRT, TC 10+0.1, 8192 games, elo0=0 elo1=10. Never tune mobility (spurious endgame signal). Watch NPS before and after every evaluation change. One term = one SPRT, always.
 >
 > **Golden reference-scale rule:** EVERY value copied from a reference engine (evaluate.cpp, pawns.cpp) is multiplied by **100/208 ≈ 0.48**. The reference engine works in internal units where PawnValueEg=208 is the 100 cp it reports over UCI; NoaChess evaluates directly in ~centipawns (PeSTO). Copying the numbers raw doubles the weight of every term (lesson from 4B: llr −1.09 over 200 games with unscaled values).
+>
+> **Golden provenance rule (added 2026-07-31):** a claim about what went INTO an experiment must be
+> machine-checked, never asserted. Blocks 7–8 spent five generations and a shipped version on the
+> belief that the datagen was seeded from human openings; every manifest on disk says
+> `"openingPlies": "8-9 random legal"`. The pipeline was correct, the book existed, the flag was
+> simply never passed — and the resulting conclusion ("self-play is exhausted") went into the
+> ROADMAP, the README and the release notes as established fact. **If the manifest does not prove
+> it, it did not happen.**
+>
+> **Golden coupling rule (added 2026-07-31):** "one term = one SPRT" is correct for EVALUATION terms
+> and wrong for tightly coupled SEARCH features. A feature worth +2–5 Elo alone is invisible to an
+> 8,000-game SPRT, and search features are worth more together than apart because each depends on
+> the others being present. Measure coupled search work as a bundle; ablate only after it passes.
+
+---
+
+## ACTIVE CAMPAIGN — BLOCK 12, NNUE architecture overhaul (branch `4.0.0`)
+
+Everything below v4.0.0 is history. The current work is the **v4.x campaign**: the network is 8×
+narrower than reference-class nets and trained on ~100× less data, which is why five consecutive
+generations landed flat. Order is **foundation → data → capacity → search**, and no width increase
+is attempted before the evaluation profile exists. Full plan in **BLOCK 12**.
+
+**Retired on 2026-07-31:** further self-play generations at 13 M positions, lambda sweeps, NNUE
+eval-scale recalibration (measured −61.7), and the competition opening book (deferred to v4.9.0).
 
 ---
 
@@ -12,9 +37,13 @@
 
 | Version | CCRL Elo | Status |
 |---------|----------|--------|
+| **4.3.0** | **+25.7 ±16.4 Elo vs v4.2.0, LOS 99.9%, SPRT H1** (280-212-429, 921 games, 10+0.1, LLR 2.97). Same gen7 net both sides → **the first real Elo of the v4.x campaign, against the ~3080 engine**. STC figure; CCRL number pending the gauntlet | **BLOCK 12 search part 1: six correction histories instead of one.** Pawn (validated v2.8.2) plus minor, major, non-pawn per colour, and a continuation table keyed by the move that reached the position. Three new incremental Zobrist keys in `Board`, add/remove sharing one toggle path. Combined by weighted average, **pawn weight = divisor**, so the pawn-only case is arithmetically identical to v4.2.0 and the five new tables can only add on top, bounded at ±320 cp — asserted by a test, because plain averaging would have shrunk a validated behaviour sixfold and made a failed SPRT unattributable. **The coupled-bundle half was WITHDRAWN** on the repository's own evidence (see BLOCK 12). 308 tests. |
+| **4.2.0** | **Output buckets MEASURED +20.1 ±14.0 Elo, LOS 99.8%, SPRT H1** (658-560-474, 1692 games, 10+0.1). Two nets, identical 84.7M corpus, identical width and hyperparameters, only `--out-buckets` differs. **Engine itself unchanged — embedded net still gen7, exactly 193,746 nodes as in 4.0.0/4.1.0.** ⚠️ Contradicted a prior prediction of ~0: the "net is data-starved" finding was treated as a blanket argument against all capacity, but head capacity and input capacity are different constraints | **BLOCK 12 capacity: output buckets + width pricing.** **Arch 3** replicates the head per bucket, selected by piece count — **almost free at runtime** since only one bucket is evaluated per call (head table 16 KB → 128 KB against a 5.5 MB feature transformer). **Verified across languages, not assumed**: bucket formula identical C#↔Python over piece counts 0-40 × 1-16 buckets; a Python-exported arch-3 net evaluates **18/80/62** in the engine and **18/80/62** in the new `verify_export.py` (which reproduces the integer forward pass from the exported FILE) across buckets 7/0/5; gen7 still re-exports **byte-identically**. **`nnuewidth`** prices width without training anything, since cost is a property of shapes not weights: **ft 256 = 1.51×, 512 = 2.64×** — SUB-LINEAR, a better trade than the "wider is counterproductive" assumption of v3.2.0. The first sweep reported 256 as faster than 128 (impossible); estimator now takes min-of-5 and prints its own sanity check. **Buckets are measurable now on existing data** (`Noa-Buckets.ps1` + `sprt_buckets.bat`, two arms differing only in `--out-buckets`). Also fixed: a mistyped subcommand used to launch a 500-game datagen against the default path — it bit me during this work. 228+71 tests. |
+| **4.1.0** | **No strength change yet — infrastructure release; the embedded net is still gen7. The +80/+150 target is gated on 2-3 days of datagen, not on code** | **BLOCK 12 data scale: the pipeline for 300-500M positions.** Feature decoding was the wall — **13,816 rec/s meant 6 hours for 300M**, paid again on every mix change; `decode_block` vectorises it to **169,366 rec/s (12×, 29 minutes)**, asserted equal to the scalar reference over 50,000 real records. **Sharded datagen** (`--shard-size`, `--resume`, `--positions`) removes the crash cliff of a multi-day run: each shard is finalized as it fills and is independently trainable, and shards roll between games so the train/val tail cut stays valid. **`corpus` audit** verifies every shard off disk and reports composition by provenance — against the current data it prints, in one line, that all **84,697,234 positions are `8-9 random legal`**. **`Noa-DataScale.ps1`** runs phases 0→4, where **phase 0 tests the campaign's own premise** (6k vs 28k nodes at equal position count, ~4h) before committing days to it, and phase 3 trains at **unchanged width** so the data axis is isolated. `sprt_datascale.bat` + `sprt_datascale_calib.bat`. 293 tests. |
+| **4.0.0** | **No strength change (foundation release) — shipped net unchanged, 193,746 nodes on a fixed-depth suite before and after** | **BLOCK 12 foundation: the cost model was measured and it was wrong.** `nnueprofile` reports **L1 dot product 26.2%, feature-transformer row traffic 73.8%** — `NnueInference.cs` had asserted for two versions that the dot product was "THE cost of NNUE eval", which is what justified keeping the net narrow in v3.2.0. **int8 L1 (arch 2)**: eval 1039.9 → 774.7 ns (−25%), NPS 243.7k → 268.7k; QA must drop 255 → 127 because `VPMADDUBSW` saturates its int16 lane (64,770 > 32,767 vs 32,258 < 32,767) — a correctness bound the loader and exporter both enforce. Arch 1 stays supported and re-exports **byte-identically**; the embedded net stays arch 1 because QA=127 changes search (193,746 → 140,008 nodes) and that needs an SPRT. **Accumulator cache**: refresh 4407 → 110 ns (40-52×), 99.6% cached. **Accumulator updates**: 1.9-2.5× faster in isolation after replacing bounds-checked `Vector<short>` loads — but **end-to-end wall time did not move**, because the bottleneck is memory latency on a 5.5 MB table, not instruction count (reported as measured). **Streaming dataset**: the 120M-record RAM ceiling is gone; verified 0 duplicates, 0 val leakage, val 0.052585 vs in-RAM 0.052003. **Provenance gate**: `--require-book` + a mandatory `PROVENANCE:` line, turning the BLOCK 8 failure into a machine check. Plus a pre-existing bug fixed that saved checkpoints with `"model": None` whenever validation was smaller than one batch. 222/222 tests. |
 | **3.3.0** | **Mate-stop strength-neutral (+3.3 ±23.1, 523 games, stopped for non-convergence) — shipped for behavior. NNUE scale alignment CUT (−61.7 ±20.7, H0, 666 games)** | **Proven-mate stop + NNUE/classical scale alignment (candidates, on top of 3.2.1).** (1) **Mate-stop**: the loop breaks once a completed iteration proves mate in ≤3 plies for us or that we are mated in ≤2 (the reference's exact rule); it is the NARROW exception to "never break on mate scores" (long mates still deepen). Measured at 5+5: mate-in-1 **1074 ms → 22 ms** single-threaded and **1253 ms → 112 ms** at 30 threads; normal positions identical. Clock-mode only → fixed depth byte-identical. (2) **NNUE scale — MEASURED AND CUT.** The mismatch is real (regression over 6000 real positions: slope 0.783, mean ratio 0.84 = the validate's own 0.840 slope → the net is COMPRESSED), but correcting it **LOSES**: 1250 permille measured **144-261-261 [0.412] over 666 games, −61.7 ±20.7 Elo, LOS 0.0%, H0 accepted**, negative from the very first sample. Reason: the margins were already calibrated in practice to the compressed net (gen3→gen7 were all validated with it), and **inflating the eval makes pruning MORE aggressive** (RFP fires on `staticEval − margin ≥ beta`) → unsound cutoffs. A compressed eval against fixed margins is equivalent to LARGER margins = safer pruning, and the engine prefers that. Knob removed. ⚠️ Calibrating it on artificial material positions previously gave a CONFIDENT BUT FALSE reading of "1.29× inflated" — always measure by regression over REAL positions. |
 | **3.2.1** | **No strength change (robustness patch)** | **Bot stability.** Diagnosis: the engine was NOT hanging (47+ games in a row, 9-13/hour); the failure was CPU oversubscription — with `Threads: 30` the process carries ~70 OS threads (ServerGC adds ~1 per core), which starved lichess-bot's Python/network thread and the next game's engine startup (**550 `protocol.initialize()` timeouts against a 60 s limit on 07-29**; 210 dropped connections on 07-30). Fixed in the bot config (`Threads` 30 → 24). Matchmaking time controls left as they were, bullet included: on Lichess a player's clock does NOT start until AFTER their first move, so the 2.5-7 s startup process costs no game time. Two REAL engine defects fixed here: (1) iteration depth had no cap in unlimited searches, so in a repetition position with a warm TT the loop spun uselessly (**depth 22→26 in 30 ms**) burning a core for the opponent's whole think time → now bounded by `MaxPly`; (2) a stalled search froze the command loop **with no trace at all** → it now emits `info string search still stopping after Ns` every second. 281/281 tests. |
-| **3.2.0** | **gen7 (NNUE-0.7) ~3080 ±40 CCRL (gauntlet 57.9% over 240 games vs a 2862–3281 field). vs gen5 +3.7 ±10.2 LOS 76.2% (parity); vs classical +28.5 ±13.0 LOS 100%** | **NNUE gen7 + human-opening pipeline.** Datagen seeds openings from an elite human book (chess.com >2800 + Lichess elite, 3.04M unique FENs via `pgnbook`) instead of random plies. gen7 promotes as **marginal** (generational rule Elo>0 and LOS≥75%). Human seeding did **not** raise strength over gen5 (neutral-to-slightly-positive); the value is the migrated data pipeline (the base for elite data) and pinning +28.5 vs classical (the ~+46 cascade sum over-counted: self-play Elo is not additive). Includes the 3.1.2 time fix. 210/210 tests. |
+| **3.2.0** | **gen7 (NNUE-0.7) ~3080 ±40 CCRL (gauntlet 57.9% over 240 games vs a 2862–3281 field). vs gen5 +3.7 ±10.2 LOS 76.2% (parity); vs classical +28.5 ±13.0 LOS 100%** | **NNUE gen7 + human-opening pipeline.** **CORRECTED 2026-07-31 — the human-opening seeding described here NEVER RAN.** `selfplay-gen7.noadata.manifest.json` records `"openingPlies": "8-9 random legal"`, as do all six earlier datasets; `books/human.fens` existed but `-Book` was never passed to the pipeline. **Therefore the conclusion "human seeding did not raise strength over gen5, so self-play is exhausted" is VOID** — human seeding was never tested and exhaustion was never shown. What survives: the `pgnbook` tooling is real and reusable, gen7 itself is a genuine net trained on genuine (random-opening) data, and the measured **+28.5 ±13.0 vs classical** and **~3080 ±40 CCRL** gauntlet results stand. The real cause of five flat generations is network capacity and data volume — see BLOCK 12. Includes the 3.1.2 time fix. 210/210 tests. |
 | **3.1.2** | **SPRT vs v3.1.1 −5.0 ±27.7 LOS 36.3% (283 games, 5+0.05) — neutral; justified by the direct 8.5s→1.68s** | **Time fix + easy-move.** Mid-iteration cap extended to single-thread; easy-move fires at `\|score\|≥700` stable for ≥6 iterations. Measured: 8.5s→1.68s in a decisive endgame at 5+5, equal positions unchanged. 210/210 tests. |
 | **3.1.1** | **~3050 CCRL (no Elo change)** | **Cold-start fix (ReadyToRun AOT).** `PublishReadyToRun=true` removes the per-process cold JIT: startup ~25 s → ~7 s (uci+isready cycle ~13 s cold / ~8 s warm). NNUE warmup depth 6 → 1. No search, eval or Elo change — a latency fix for lichess-bot. |
 | **3.1.0** | **The embedded gen5 net measures ~3050 ±40 CCRL (gauntlet 51.0% over 240 games vs a 2862–3281 field, single-threaded — the NNUE's 1st CC calibrationRL). Lazy SMP: `Threads=1` byte-identical to 3.0.0 (1,307,077 nodes exactly); node scaling ~7.6× at 8 threads; SMP measures +253 Elo `Threads=30` vs `Threads=1` (20+0.2, LOS 100%, CCRL field gauntlet pending)** | **Lazy SMP discard parallel search.** N workers search the same root sharing ONE transposition table (lock-free by benign roots: 32-bit key verification + pseudo-legality vetting torn reads); search stack, histories, board (`Board.Clone()`) and evaluator are per-thread (NNUE shares the read-only network with its own accumulators; classical gets a fresh instance). The main worker owns time management and reports `info`; at the end the workers vote on the move (score-weighted, with mate handling). ICU `Threads` 1–32. **SMP time fix** (instability averaged over the pool + bounded soft deadline + node-level mid-iteration cap at 1.5× the soft budget): bounds a weighthit clock spike over a warm TT (forced recapture 22-37s → ≤~5s, max 5.2s over 10 runs). Verified: no crashes and legal moves at 1–32 threads with Classical and NNUE. 205/205 tests |
@@ -211,7 +240,7 @@ The earlier attempt (v2.4.6) failed on a safe-checks bug. These components are i
 
 ### ✅ 4D.5 — Adaptive time management (v2.6.4) — DONE AND **SUPERSED BY v2.6.5**
 
-**Status: CLOSED. This is not pending work and it is NOT to be redone.** It carried a 🔄 — the only one in the document, against 16 ✅ and 2 ❌ — left over from when it was still in the air. Corrected on 2026-07-23.
+**Status: CLOSED. This is not pending work and it is NOT to be redone.** It carried a — the only one in the document, against 16 ✅ and 2 ❌ — left over from when it was still in the air. Corrected on 2026-07-23.
 
 **It is not marked plain green because not one line of this sub-version survives in the code** (verified 2026-07-23): the 85% increment was replaced by the reference's full folding (`inc * (mtg - 1)`; `TimeManager.cs` itself says *"instead of the flat per-move percentage of earlier versions"*), the per-ply adaptive horizon **never actually executed** and its sabotaging constant `AssumedMovesToGo` no longer exists, and the instability extension was reverted to −5.7 Elo before v2.6.5 brought in the reference's dynamic factors, which do implement it and do measure. Redoing it would mean reinstalling a home-made scheduler on top of a measured reference port: a step backwards.
 
@@ -677,7 +706,33 @@ Before generating data, verify that the inference code is complete:
 
 ## BLOCK 8 — NNUE with high-level human game positions (v3.2.0)
 
-**Status: IN PROGRESS (infrastructure ready 2026-07-29) · Awaiting PGN downloads**
+> ## CORRECTION 2026-07-31 — THIS BLOCK WAS NEVER ACTUALLY EXECUTED
+>
+> **Verified fact:** every dataset on disk — `selfplay-gen2` through `selfplay-gen7` — records
+> `"openingPlies": "8-9 random legal"` in its manifest. **No generation was ever seeded from a
+> human book.** The datagen writes `book:<path>` whenever `--book` is supplied
+> (`tools/NoaChess.DataGen/Program.cs`), and not one manifest carries it.
+>
+> **Root cause:** the pipeline was correct and the book existed. `Noa-NnueGen.ps1` declares
+> `[string] $Book = ""` and only appends `--book` when non-empty; `books/human.fens` (206 MB) was
+> built 2026-07-30 00:37, and the gen7 datagen ran ten hours later **without the `-Book` argument**.
+> The manifest recorded the truth; the documentation recorded the intention.
+>
+> **What this invalidates:** the headline conclusion of v3.2.0 — *"human-opening seeding did NOT
+> raise strength over gen5, therefore pure self-play is exhausted"* — was measured on a net trained
+> on random-opening data. **The claim is unsupported in both directions:** human seeding was never
+> tested, and self-play exhaustion was never demonstrated by this experiment.
+>
+> **What remains true:** the nets themselves are real and were trained on real data. gen7 is
+> embedded in the shipped executable and its ~3080 CCRL is a genuine measured gauntlet result. Only
+> the *provenance claim* and the *conclusion drawn from it* were wrong.
+>
+> **Superseded by:** the real reason five consecutive generations landed flat is capacity and data
+> volume, not label provenance — see **BLOCK 12**, which replaces this block's premise entirely.
+> Book seeding survives as one input to BLOCK 12, now with a mandatory manifest assertion so an
+> unseeded run can never again be reported as a seeded one.
+
+**Status: SUPERSEDED BY BLOCK 12 (2026-07-31) · Infrastructure real and reusable, conclusion void**
 
 This block adds **diversity of positions** to the training without changing the label source.
 
@@ -721,9 +776,333 @@ python tools/training/nnue/train_nnue.py --data data/gen6_human.noadata ...
 
 ---
 
-## BLOCK 10 — Competition Opening Book (v4.0.0 — KEEPS AT THE END)
+## BLOCK 12 — NNUE architecture overhaul (v4.x) — THE ACTIVE CAMPAIGN
 
-**Status: PENDING · Order Note (2026-07-18): The reference does not have its own book** — in CCRL/TCEC, tournament-neutral books are used, so a custom book does not count towards our main metric. Furthermore, a competition book is tuned against the FINAL engine's strength profile (with NNUE); building one beforehand would require re-tuning. What is needed before NNUE is the SEED position book for the datagen (UHO style) — that lives in 6B, not here.
+**Status: PLANNED (opened 2026-07-31) · Branch `4.0.0` · Supersedes blocks 7, 8 and the "more
+generations" strategy entirely**
+
+### Why a major version
+
+This campaign deliberately breaks the **frozen** C#↔Python model contract (schema 2 / architecture
+id 1): new quantization (int8 L1), new topology (wider FT, output buckets), new format version.
+Every prior rule about that contract being immutable is lifted **for this campaign only**, and
+re-frozen at v4.2.0. It also replaces the in-RAM training pipeline and retires a UCI-visible
+subsystem. That is a major version by every criterion this project has used.
+
+### The diagnosis this campaign is built on
+
+Five consecutive generations (gen3 → gen7) landed flat: +4.5, then +1.9, then +34 (gen5, over an
+inflated 1495-game link), then gen6 failed to promote, then gen7 at +3.7 parity. Deepening labels
+24k → 28k nodes bought +3.7 Elo. **That is the signature of a saturated network, not of exhausted
+data.** The measured facts:
+
+| Dimension | NoaChess today | Reference-class engines | Ratio |
+|---|---|---|---|
+| Feature transformer width | **128** | 1024 | **8× narrower** |
+| Output buckets | **1** | 8 (by piece count) | — |
+| Positions per generation | **13.1 M** | billions across training | **~100× fewer** |
+| Samples seen per run | **~550 M** (7 gens × 6 epochs) | tens of billions | **~50× fewer** |
+| Net file size | **5.7 MB** | 45–70 MB | — |
+| L1 arithmetic | int16 (`VPMADDWD`) | int8 (`VPDPBUSD`/emulated) | **2–4× slower** |
+
+**The cost model that justified staying narrow does not survive arithmetic.**
+`NnueInference.cs` asserts the L1 dot product is "THE cost of NNUE eval". At FT=128 / L1=32 that
+product is 32 × 256 = **8,192 int16 MACs ≈ 512 AVX2 instructions per evaluation** — far too small
+to dominate anything at 446k NPS. If evaluation really is ~50% of runtime, the cost is somewhere
+else: **feature-transformer row traffic** (5.8 MB of weights, random access by feature index, no
+chance of staying in L2) and **king-bucket accumulator refreshes**. Those are fixable; width is
+only unaffordable if you never fix them.
+
+### Ordering rule for this campaign
+
+Capacity is worthless without data, and data is unusable without a streaming loader. Therefore
+**infrastructure first, data second, capacity third, search last** — and no width increase is
+attempted before the profile exists.
+
+---
+
+### ✅ v4.0.0 — Foundation — DONE (2026-07-31, no Elo claim, shipped net unchanged)
+
+**Gate MET.** Streaming reproduces in-RAM training (val 0.052585 vs 0.052003, ~1% apart = shuffle
+trajectory noise). Strength provably unchanged: the embedded net is still arch-1 gen7, and a
+fixed-depth suite searches 193,746 nodes exactly, before and after. 222/222 tests.
+
+**THE MEASUREMENT — the assertion was wrong.** `nnueprofile` (new, non-UCI) reports isolated
+per-primitive costs times real call counts from an instrumented search. gen7 at ft=128/l1=32:
+
+| | share |
+|---|---|
+| L1 dot product | **26.2%** |
+| Feature-transformer row traffic | **73.8%** |
+
+`NnueInference.cs` had claimed for two versions that the L1 dot product was *"THE cost of NNUE
+eval"*. It is roughly a quarter — and that claim is exactly what justified keeping the net narrow in
+v3.2.0. The width decision had been resting on a cost model that does not survive arithmetic.
+
+Those are the FIRST-RUN numbers, before the accumulator work below. The shipped build reads
+**43.4% / 56.6%**, because making the feature-transformer primitives cheaper raised the dot
+product's share. Both are correct at their own point in time; expect the second pair when running
+`nnueprofile` today.
+
+**Accumulator updates — profile-driven fix, with an honest negative result.** The profile caught
+`MoveFeature` at 387 ns for 8 vector additions: `new Vector<short>(array, index)` bounds-checks every
+iteration and the JIT does not hoist it. Rewritten with `Vector256.LoadUnsafe` over a ref taken once:
+MoveFeature 387.2 → **154.9 ns** (2.5×), Add/Subtract 270.9 → **145.0 ns**, CopyFrom 138.2 → **62.2
+ns**, attributed NNUE total −40%. **End-to-end wall time did not move** (730-767 ms across six
+alternating runs of both builds, fully overlapping, node counts identical). The bottleneck is
+**memory latency on a 5.5 MB feature table accessed near-randomly**, not instruction count. Recorded
+as measured, and the profiler now prints this caveat itself so its attribution table is never read as
+a promise of what an optimisation will return.
+
+**int8 L1 (architecture 2).** Evaluation **1039.9 → 774.7 ns (−25%)**, NPS 243.7k → 268.7k. Moving
+the weights is free — export already clipped them to ±127 while storing int16. The real change is
+QA 255 → 127, a CORRECTNESS constraint: `VPMADDUBSW` sums two products into an int16 lane that
+saturates, so QA=255 gives 64,770 > 32,767 (wrong) and QA=127 gives 32,258 < 32,767 (exact, always).
+Loader refuses arch-2 with QA > 127; exporter re-checks the bound against actual weights (gen7 uses
+65.9% of headroom). Arch 1 stays fully supported and re-exporting gen7 as arch 1 reproduces the
+shipped payload **byte-identically**. **The embedded net stays arch 1**: QA=127 changes eval enough
+to change search (193,746 → 140,008 nodes), which is strength-relevant and belongs behind an SPRT in
+v4.2.0, where the net is retrained at QA=127 rather than re-quantised after the fact.
+
+**Accumulator cache (finny table).** Refresh **4407 → 110 ns (40-52× cheaper)**, 99.6% served from
+cache, 5.5 rows touched instead of ~32. Keyed by king SQUARE, not bucket: two squares sharing a
+bucket are horizontal mirrors whose `Orient()` differs, so a bucket-keyed cache would blend two
+feature spaces. At ft=128 refreshes are only 6-7% of NNUE work, so this is insurance for v4.2.0
+rather than a speedup today — at ft=1024 the same rebuild is 8× more expensive.
+
+**Streaming dataset — the ceiling is gone.** Features decode once into memory-mapped `.npy` shards
+and stream; chunk order shuffled globally, buffers shuffled internally, reads stay sequential.
+Leftover rows are CARRIED into the next buffer, not dropped (dropping a partial batch per buffer
+loses data every epoch — measured 0.29% with a small buffer). Verified against the in-RAM decode:
+**0 duplicates, exact subset of the training range, only the final tail dropped (< one batch), 0
+validation leakage.**
+
+**Provenance gate.** Datagen prints an unmissable `PROVENANCE:` line every run, and `--require-book`
+turns operator intent into a checked precondition — exits with code 2 immediately instead of 13
+hours later. This is the BLOCK 8 failure turned into a machine check.
+
+**Also fixed (pre-existing, would have destroyed a run):** a validation split smaller than one batch
+yields no batches → `nan` loss → no epoch "improves" → the checkpoint was written with
+`"model": None`, losing the entire training run and only failing later at export.
+
+**Original plan, for the record:**
+
+- **Profile the evaluation properly.** Separate dot-product / FT row traffic / accumulator refresh
+  cost. Every subsequent decision depends on this number. Nothing else in this version starts until
+  it exists.
+- **int8 L1 quantization.** Move activations and L1 weights to int8, using `VPMADDUBSW`+`VPMADDWD`
+  (the AVX2 path — the target CPU is Zen+, so no VNNI and no AVX-512). Halves weight bandwidth and
+  doubles per-element throughput. Requires a matching change in `export_model.py` and a new
+  architecture id.
+- **Accumulator cache** ("finny table") for king-bucket refreshes, so a king move no longer forces a
+  full recomputation of a perspective.
+- **Streaming dataset.** `dataset.py` currently loads everything into RAM behind a 120 M-record cap
+  (`train_nnue.py --max-records`). That cap is an architectural ceiling that makes a billion-position
+  dataset impossible. Replace with memory-mapped chunked reads and a shuffle buffer.
+- **Manifest assertion (regression guard for the BLOCK 8 failure).** The pipeline must FAIL LOUDLY
+  when a run claims book seeding and the manifest does not record it. A provenance claim that is not
+  machine-checked is a claim that will eventually be false.
+- Format version bump; parity test between scalar and SIMD retained as the correctness gate.
+
+### v4.1.0 — Data scale — PIPELINE DONE (2026-07-31), corpus generation pending
+
+**Gate: ≥ 300 M positions on disk, manifest-verified provenance, and a 128-wide control net trained
+on it to isolate the data axis from the capacity axis.** The tooling is shipped and verified end to
+end; the gate itself needs 2-3 days of datagen, which is machine time, not code.
+
+**The wall that had to come down first.** Feature decoding ran at **13,816 records/s** in a
+per-record Python loop — **6 hours for 300M positions, 10 for 500M**, paid again on every change to
+the data mix. `decode_block` does the same arithmetic with numpy over whole blocks: **169,366
+records/s, 12× faster, 300M in 29 minutes.** The scalar `record_to_features` stays as the definition
+of correctness and the vectorised path is asserted equal to it over 50,000 real records (0
+mismatches) — a decoder that is fast and subtly wrong would poison every net trained after it.
+
+**Sharded, crash-safe, resumable datagen.** A NOADATA file is only valid once its header is patched
+at the end of the run, so a crash at hour 40 of a 3-day run destroyed everything. `--shard-size`
+closes each shard as it fills (header patched, manifest written, SHA recorded); `--resume` continues
+after the shards already on disk. Shards roll BETWEEN games, never inside one, because records are
+game-ordered and the train/val tail cut depends on it. `--positions N` targets corpus size directly,
+which is what is actually being specified — `--games` only approximates it.
+
+**`corpus` audit subcommand.** Reports composition by source and verifies each shard off disk
+(header vs derived count, schema, manifest presence), samples the label distribution, and warns on
+the >20%-zero-scores signature of the old label bug. Opens shared, so a corpus can be audited while
+a datagen is still writing it. Run against the existing data it states in one line what took five
+generations to find: **84,697,234 positions across 7 datasets, every one `openings=8-9 random
+legal`.**
+
+**`Noa-DataScale.ps1`** runs the campaign in phases 0→4. Phase 1 mixes 45% bulk self-play / 20%
+opening seeds / 35% middlegame seeds and passes `--require-book` on every seeded arm. Phase 3 trains
+at **width unchanged**, which is what isolates the data axis — changing width and data together is
+exactly what made block 8 uninterpretable.
+
+#### ✅ PHASE 0 MEASURED (2026-08-01) — the premise held, and by a landslide
+
+Two arms matched on **total search work**, not position count (at 28k nodes a position costs ~4.7×
+what it costs at 6k, so equal counts would have meant 32 hours against 7 — and would have answered a
+question nobody asks, since the campaign gets a compute budget rather than a position quota):
+
+| arm | positions | nodes/move | node-work |
+|---|---|---|---|
+| `fast6k` | 20,001,946 | 6,000 | 1.2e11 |
+| `deep28k` | 4,288,192 | 28,000 | 1.2e11 |
+
+Identical architecture, hyperparameters and teacher. **Result: `fast6k` +182.2 ±16.6 Elo, LOS 100%**
+(1167-307-312 over 1786 games, 10+0.1). **The campaign runs at 6,000 nodes — confirmed, not assumed.**
+
+**The magnitude matters more than the direction.** +182 Elo is not "deep labels add little": it is
+that **4.3M positions cannot train this net at all**. The feature transformer alone holds
+22,528 × 128 ≈ 2.9M parameters, so the deep arm had ~1.5 positions per parameter and was broken from
+the start. This is the strongest confirmation yet that the network is starved of DATA rather than of
+label quality — and it explains retroactively why gen3 through gen7 landed flat while node counts
+were being raised 14k → 20k → 24k → 28k. Every one of those generations tuned the axis that does not
+matter at this size.
+
+**It does NOT prove 6,000 is optimal**, only that it beats 28,000 decisively. Both arms sit deep in
+the starved regime, so the slope cannot be extrapolated to the 300-500M range where returns must
+diminish. A third arm at 3,000 nodes / 40M positions (same total work, ~7h) would say whether 6,000
+is the plateau or still climbing — that choice doubles or halves the campaign corpus for the same
+hours.
+
+**Original plan, for the record:**
+
+- **Drop labelling depth to 5,000–8,000 nodes.** At this network size quantity beats label quality by
+  a wide margin, and the current 28,000 nodes buys almost nothing (+3.7 Elo measured). This is
+  roughly 5× more positions per hour of machine time.
+- Target **300–500 M positions**, mixing: bulk self-play, book-seeded openings (`human.fens`,
+  now actually passed), middlegame seeds (`human_mid.fens`, ply 20–40), and the elite WDL-anchored
+  set (`elite_wdl.fens`, ~9.8 M positions carrying real human game outcomes — the one signal in the
+  entire pipeline the engine cannot manufacture for itself).
+- The 128-wide control net answers the question BLOCK 8 failed to answer: **does data alone move
+  strength?** Whatever it measures is honest, because the manifest now proves what went in.
+
+### v4.2.0 — Capacity — ARCHITECTURE DONE (2026-08-01), nets pending
+
+**Gate: SPRT vs v4.1.0 at the real time control, with NPS reported alongside Elo.** The architecture,
+the cross-language verification and the width measurement are shipped; the nets themselves need
+training. Strength unchanged so far: **exactly 193,746 nodes**, the same as v4.0.0 and v4.1.0.
+
+**Output buckets (architecture 3).** The head is replicated per bucket, selected by piece count, so
+the net gets a per-phase readout instead of one linear map serving a 32-piece opening and a 4-piece
+ending alike. **Almost free at runtime**: only ONE bucket is evaluated per call, so per-evaluation
+arithmetic is exactly the arch-2 cost; only the head's weight table grows, from 16 KB to 128 KB
+against a 5.5 MB feature transformer. That ratio is why buckets ship before any width increase.
+Selection is `clamp((pieceCount - 1) * buckets / 32, 0, buckets - 1)`, defined in exactly one
+function per language.
+
+**Verified across the language boundary, not assumed.** Bucket formula: C# golden values asserted in
+tests, Python run against the same table, identical everywhere and in range over piece counts 0-40 ×
+1-16 buckets. End-to-end: a Python-trained bucketed net exported as arch 3, evaluated on three
+positions spanning buckets 7/0/5, gives **18 / 80 / 62** in the engine and **18 / 80 / 62** from the
+new `verify_export.py`, which reproduces the integer forward pass from the exported FILE. Backward
+compatibility: gen7 re-exports as arch 1 **byte-identically** (sha `3c7e94a9…`).
+
+**Pricing width without training anything.** The cost of a width is a property of the SHAPES, not of
+the weights, so `nnuewidth` synthesises shape-accurate nets and times them — the cost curve in
+seconds instead of days. Preliminary, on a loaded machine:
+
+| ft | eval | vs 128 | accumulator move | vs 128 |
+|---|---|---|---|---|
+| 128 | 898.6 ns | 1.00× | 28.6 ns | 1.00× |
+| 256 | 1361.1 ns | **1.51×** | 44.6 ns | 1.56× |
+| 512 | 2370.0 ns | **2.64×** | 83.8 ns | 2.93× |
+
+Cost rises **sub-linearly**: doubling the transformer costs ~1.5×, not 2×, because packing and the
+output layer do not scale. A materially better trade than the "wider is counterproductive"
+assumption v3.2.0 rested on. The first version of the sweep reported 256 as FASTER than 128, which
+is impossible; the estimator now takes the minimum of five repetitions and the report prints its own
+sanity check, because a table that does not rise with width is noise and must not be believed.
+
+**Buckets are measurable NOW, on existing data.** Width needs the new corpus; buckets do not, since
+they add head capacity rather than input capacity and 84.7M positions already fits eight small
+heads. `Noa-Buckets.ps1` trains two arms differing ONLY in `--out-buckets` (1 vs 8) and
+`sprt_buckets.bat` plays them off. Both arms are trained fresh rather than reusing gen7 as control,
+which would confound buckets with gen7's different hyperparameters.
+
+**Original plan, for the record:**
+
+- **Widen FT 128 → 512 → 1024**, one step at a time, measuring NPS at each. Stop where the
+  strength-per-NPS curve turns over — but measure it, do not assume it as v3.2.0 did.
+- **8 output buckets** selected by piece count. Only the final head is duplicated (32→1 per bucket),
+  so the runtime cost is negligible and the specialisation is real. Best effort/reward ratio in the
+  whole campaign: roughly 90 lines across `model.py`, `export_model.py` and `NnueInference.cs`.
+- Deeper head with squared clipped activation if the profile permits.
+- Re-freeze the C#↔Python contract at this point, parity-verified as before.
+
+### v4.3.0 — Search
+
+**Gate: the BLOCK measured as a block, then ablated. Not one SPRT per term.**
+
+- **Complete the correction histories.** Only `PawnCorrectionHistory` exists today. Add minor-piece,
+  major-piece, non-pawn (per colour) and continuation correction histories. Cheap tables, the
+  pattern is already implemented once.
+- **THE "COUPLED BUNDLE" PLAN WAS WITHDRAWN 2026-08-01, BEFORE ANY MACHINE TIME WAS SPENT ON IT.**
+
+  The plan said: re-enter statScore in LMR, cutNode, double extensions and multi-level continuation
+  history *as a bundle*, on the argument that each is worth only +2–5 Elo alone — below the
+  resolution of an 8,000-game SPRT — and that they are worth more together.
+
+  **The argument does not survive the evidence already in this repository.** These were not
+  sub-resolution results:
+
+  | Feature | What was actually measured |
+  |---|---|
+  | statScore in LMR | **Three** variants against v2.8.3-class baselines: −18 Elo (H0); −4.8 ±11.4 (LLR −2.89, H0); +4.2 ±9.1 flat over 3000 games. `AlphaBetaSearch.cs` records the conclusion: *do not re-add without a new mechanism; the direct form is settled* |
+  | Double extensions (5E) | **Four** SPRTs, all at or below equality, −19.7 / −12.5 the worst |
+  | Multi-level continuation history (5G) | **Four** builds: −33.9 → −10.9 → [0.496] → −4.2. Per-distance tables, gravity and the depth≥6 gate were all built and tested |
+  | cutNode | Isolated term cut at both magnitudes, −4.0 / −7.1 (H0) |
+
+  A supporting premise was also wrong: the plan assumed statScore had failed because the butterfly
+  table was miscalibrated and that v2.8.3 later fixed the calibration. It did not — those three
+  measurements were taken **after** the gravity fix.
+
+  **The coupling rule itself remains sound as a general principle** (a genuinely sub-resolution term
+  cannot be measured alone), but it was applied here to features that were cut for being clearly
+  negative, with root causes identified at the time. Building them would have burned days of machine
+  time against evidence that already existed.
+
+- **What IS still defensible, as a targeted change rather than a bundle:** 5G's final result was
+  exact equity, and its root cause was identified — *the hard killer/counter ordering bands sit above
+  all history*, so no history refinement below them can express itself. Addressing those bands is the
+  "new mechanism" the code demands before history-in-ordering is retried. One coherent change with a
+  stated mechanism, not four resurrections. Still speculative; still needs its own SPRT.
+
+### Deferred within this campaign (deliberately not in the critical path)
+
+- **Delete the classical evaluator** (~2,300 lines across `ClassicalEvaluator`, `EvaluationParams`,
+  `PawnStructureEvaluator`, `PieceSquareTables`, `Winnable`, `MaterialImbalance`). Worth **0 Elo
+  directly**; the value is focus and test surface, and it removes the standing temptation to keep
+  tuning a superseded path (see §FINAL REVIEW, which still holds King Safety Phase B and
+  KingProtector "for after NNUE" — this closes that door). Costs nothing at runtime today and is
+  the only independent sanity check on NNUE output, so it is scheduled **last and opportunistically**,
+  never as a blocker.
+- **Speed work beyond the NNUE path.** The v2.8.4 investigation found the engine ~50% eval-bound;
+  the other ~50% is search and movegen and has never been profiled. Worth revisiting only once
+  v4.2.0 lands, and **not** via native interop — see "What NOT to try again".
+
+### Expected outcome
+
+| Version | Lever | Expected Elo |
+|---|---|---|
+| v4.0.0 | Foundation | **0** (unlocks the rest) |
+| v4.1.0 | Data scale | +80 to +150 |
+| v4.2.0 | Capacity (width + buckets) | **+150 to +300** |
+| v4.3.0 | Search bundle | +60 to +110 |
+
+Realistic destination: **~3080 → 3300–3450 CCRL.** The overwhelming majority of the remaining gap
+to reference-class strength lives in the network and the data, not in the search and not in the
+implementation language.
+
+---
+
+## BLOCK 10 — Competition Opening Book (v4.9.0 — DEFERRED, was v4.0.0)
+
+**Status: DEFERRED behind BLOCK 12 (2026-07-31)** — the v4.0.0 slot now belongs to the NNUE
+architecture overhaul, which is where the measurable Elo is. A competition book remains worth
+roughly nothing against the project's primary metric (see the order note below) and should not
+consume machine time or attention until the v4.x campaign has run its course.
+
+**Order Note (2026-07-18): The reference does not have its own book** — in CCRL/TCEC, tournament-neutral books are used, so a custom book does not count towards our main metric. Furthermore, a competition book is tuned against the FINAL engine's strength profile (with NNUE); building one beforehand would require re-tuning. What is needed before NNUE is the SEED position book for the datagen (UHO style) — that lives in 6B, not here.
 
 ### Philosophy
 
@@ -774,6 +1153,8 @@ NoaChess's book **doesn't seek variety—it seeks to win**. If one variation sco
 
 ### What NOT to try again
 
+- **Rewriting hot blocks in C++ via interop** (raised 2026-07-31, rejected without measurement being needed). Four reasons, in order of weight: (1) the single-executable requirement is a standing project decision — Syzygy was written as a ~1250-line managed port specifically to avoid a native DLL; (2) the NNUE hot path already runs AVX2 intrinsics through `System.Runtime.Intrinsics`, and RyuJIT emits the same machine instructions MSVC would, so the theoretical gain there is ~0; (3) a managed→native transition per leaf evaluation costs more than it saves unless the whole search moves, which is a rewrite and not "certain blocks"; (4) the arithmetic — roughly +50–70 Elo per DOUBLING of NPS means a generous 15% gain is worth ~+10 Elo, against a campaign (BLOCK 12) worth 10–30× that. If native codegen is ever genuinely wanted, the answer that preserves every constraint is **NativeAOT**, measurable with a fixed-node bench in an afternoon and with no architectural risk. What would reopen this: a profile identifying a specific hot loop where RyuJIT codegen is measurably and substantially worse.
+- **More self-play generations at ~13 M positions per generation** (retired 2026-07-31). gen3 → gen7 landed flat; deepening labels 24k → 28k nodes bought +3.7 Elo. The limit is network capacity and dataset volume, not label depth or label provenance. Superseded by BLOCK 12.
 - **King safety with safe checks without strict masking** — attempted on v2.4.6, −77 Elo. The coverage mask must include ALL defenders. See memory `king-safety-fase-b-cut.md`.
 - **Tuning mobility with Texel Tuner** — spurious EG signal, converges to negative values. Use reference values ​​directly.
 - **Multiple terms in a single SPRT** — if it fails, you don't know which one is the culprit. One term = one SPRT, always.
@@ -853,5 +1234,9 @@ NoaChess's book **doesn't seek variety—it seeks to win**. If one variation sco
 | **3.2.1** | **Bot Stability — ✅ DONE** — depth stop in ponder + STALL visible; `Threads` 30→24 in the bot config | no strength change | = ~3080 |
 | **3.3.0** | **Cut by matte tested — ✅ DONE** — matte at 1: 1074 ms → 22 ms. NNUE scale **CUTTED** (−61.7, H0) | +3.3 ±23.1 (523p, neutral); published by behavior | = ~3080 |
 | **3.4.0** | **Block 11: Elite Data — Infrastructure DONE, Data in Generation.** Two Independent Paths: **(C)** Middlegame Seeds (`pgnbook --min-ply 20 --max-ply 40`) so that self-play starts where games are decided, not just in openings — it didn't need code, the flags already existed; **(C+)** **elite WDL anchoring**: `pgnbook --with-result` writes `FEN;R` and the new mode `datagen --label-book` It labels each position with **(score from our search, ACTUAL result of the human game)**, without self-play. This is the only pipeline signal the engine cannot generate on its own: the self-play WDL is its own opinion played to the end, which is why the lambda sweep found it useless (0.750 → 0.338). **This is NOT learning by imitation**: the human contributes neither evaluation nor play, only the position and who won. The manifest records `mode` and `wdlSource` so that a labeled dataset is never confused with self-play | TBD | — |
-| 4.0.0 | Competition Opening Book (optional — the reference does not have its own book; tournaments use neutral books) | — | tournament |
-| 4.5.0+ | Strength Extras | — | — |
+| **4.0.0** | **BLOCK 12 — Foundation — ✅ DONE.** Measured the cost model and overturned it (L1 dot 26.2%, FT row traffic 73.8%). int8 L1 arch 2 (eval −25%, QA→127 forced by the VPMADDUBSW saturation bound, arch 1 still byte-identical). Accumulator cache 40-52× cheaper refreshes. Accumulator updates 1.9-2.5× faster in isolation with NO end-to-end change — the bottleneck is memory latency, not instructions. Streaming dataset removes the 120 M-record RAM ceiling. Provenance gate (`--require-book`) turns the BLOCK 8 failure into a machine check. Pre-existing checkpoint-loss bug fixed | **no Elo claim** — gate MET (streaming val 0.052585 vs 0.052003; 193,746 nodes unchanged) | = ~3080 |
+| **4.1.0** | **BLOCK 12 — Data scale — PIPELINE DONE, corpus pending.** Vectorised feature decoding (12×: 6 h → 29 min for 300M) removed the wall; sharded/resumable datagen removed the multi-day crash cliff; `corpus` audits provenance off disk; `Noa-DataScale.ps1` phases 0→4 with phase 0 testing the volume-beats-depth premise before days are spent | infrastructure only, no Elo claim yet | +80 to +150 expected once the corpus is built |
+| **4.2.0** | **BLOCK 12 — Capacity — ARCHITECTURE DONE, nets pending.** Output buckets (arch 3, head replicated per bucket, only one evaluated per call), cross-language verification (`verify_export.py`, exact agreement 18/80/62 across buckets), and `nnuewidth` which prices width from shapes alone: **256 = 1.51×, 512 = 2.64×, sub-linear**. Buckets measurable now on existing data via `Noa-Buckets.ps1` | architecture only, no Elo claim yet | **+150 to +300 expected once trained** |
+| **4.3.0** | **BLOCK 12 — Search (PLANNED).** Complete correction histories (minor/major/non-pawn/continuation — only pawn exists today), then re-enter statScore, cutNode, double extensions and multi-level continuation history **as a bundle**, per the golden coupling rule | TBD | +60 to +110 expected |
+| 4.9.0 | Competition Opening Book — DEFERRED behind BLOCK 12 (the reference does not have its own book; tournaments use neutral books, so it does not move the primary metric) | — | tournament |
+| 5.0.0+ | Strength Extras (competition profiles, reproducible release manifest, deterministic bench checksum) | — | — |
