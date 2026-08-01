@@ -14,7 +14,7 @@ public static class EvaluationParams
     //      anchor; knight..queen were texel-retuned (v2.6.8) WITH the
     //      material-imbalance polynomial active, so the polynomial's average
     //      synergies moved out of the base values (equal mg/eg offsets over
-    //      PeSTO: N +60, B +94, R +226, Q +473 — see MaterialImbalance). ----
+    //      PeSTO: N +60, B +94, R +226, Q +473 - see MaterialImbalance). ----
     public static readonly int[] MaterialMg = [82, 357, 399, 603, 1248, 0];
     public static readonly int[] MaterialEg = [94, 301, 331, 638, 1159, 0];
 
@@ -31,7 +31,7 @@ public static class EvaluationParams
     // more than going from 7 to 8. Values are the reference tables times
     // 100/208 (the reference-to-NoaChess unit scale), then re-centered by
     // subtracting the entry at the typical mobility count (knight 4, bishop 6,
-    // rook 7, queen 14 — the SPRT-validated baselines of the old linear term).
+    // rook 7, queen 14 - the SPRT-validated baselines of the old linear term).
     // The raw tables carry a big positive offset at typical mobility (rook +59
     // eg, queen +63 eg) that the reference absorbs in its own piece values;
     // injected as-is it silently inflates NoaChess's texel-tuned material
@@ -136,7 +136,7 @@ public static class EvaluationParams
     // A rook on the 7th rank cuts the enemy king off and attacks its pawns.
     public static Score RookOnSeventh = new(19, 17);
 
-    // ---- 4E piece terms — scaled ×0.48 from reference ----
+    // ---- 4E piece terms - scaled ×0.48 from reference ----
 
     // TrappedRook: rook on the home rank with ≤3 mobility squares is a
     // positional error. Applied ×1 when castling rights remain, ×2 when not.
@@ -148,7 +148,7 @@ public static class EvaluationParams
     public static Score RookOnClosedFile = new(5, 2);
 
     // LongDiagonalBishop: bishop can see ≥2 center squares (d4/d5/e4/e5) through
-    // pawns — it dominates the long diagonal. ref S(45,0) ×0.48.
+    // pawns - it dominates the long diagonal. ref S(45,0) ×0.48.
     public static Score LongDiagonalBishop = new(22, 0);
 
     // KingProtector: penalty per Chebyshev distance of a minor piece from its own
@@ -157,7 +157,7 @@ public static class EvaluationParams
     // PeSTO PSTs it double-counts king-distance and its Eg component cancels the
     // outpost bonuses (KnightOutpost +18 Eg − 4×dist Eg ≈ 0 at dist 4), which
     // collapsed play at long TC (~-111 Elo in the 2.6.5 gauntlet).
-    // ref {S(9,9), S(7,9)} ×0.48 would be {(4,4),(3,4)} — do not re-enable
+    // ref {S(9,9), S(7,9)} ×0.48 would be {(4,4),(3,4)} - do not re-enable
     // without an SPRT that proves it.
     public static Score[] KingProtector =
     [
@@ -165,7 +165,7 @@ public static class EvaluationParams
     ];
 
     // MinorBehindPawn: bonus when a bishop or knight has a pawn (either color)
-    // directly in front of it — it is shielded / blockades. ref S(18,3) ×0.48.
+    // directly in front of it - it is shielded / blockades. ref S(18,3) ×0.48.
     public static Score MinorBehindPawn = new(9, 1);
 
     // BishopPawns: penalty per own pawn on the bishop's color, indexed by the
@@ -178,7 +178,7 @@ public static class EvaluationParams
     ];
 
     // BishopXRayPawns: penalty per enemy pawn on the bishop's diagonal (x-ray,
-    // ignoring blockers) — they restrict the bishop's scope. ref S(4,5) ×0.48.
+    // ignoring blockers) - they restrict the bishop's scope. ref S(4,5) ×0.48.
     public static Score BishopXRayPawns = new(2, 2);
 
     // BishopOutpost: bishop permanently settled on a pawn-protected outpost
@@ -208,7 +208,7 @@ public static class EvaluationParams
     // ---- Knight outposts ----
     // A knight on a hole in the enemy camp (relative ranks 4-6, protected by a
     // friendly pawn, no enemy pawn can ever kick it) is a permanent asset.
-    // Texel-tuned value (v2.4.0, jointly with the PeSTO PSTs) — NOT the
+    // Texel-tuned value (v2.4.0, jointly with the PeSTO PSTs) - NOT the
     // generic ×0.48 of ref S(54,34): halving it to (26,16) measurably lost
     // Elo in the 2.6.5 SPRT runs. Keep the tuned value.
     public static Score KnightOutpost = new(51, 18);
@@ -230,7 +230,7 @@ public static class EvaluationParams
     // The reference works in internal units where PawnValueEg = 208 equals the
     // 100 cp it reports over UCI; NoaChess evaluates directly in ~centipawns
     // (PeSTO). Every reference constant ported here is therefore multiplied by
-    // 100/208 = 0.48 — porting the raw numbers made every threat term twice as
+    // 100/208 = 0.48 - porting the raw numbers made every threat term twice as
     // strong as intended and cost Elo (SPRT trended negative). This applies to
     // EVERY value ported from the reference evaluation.
     //
@@ -282,7 +282,7 @@ public static class EvaluationParams
     // count of the old model) and no support. ref S(11,51) ×0.48.
     public static Score Doubled = new(5, 25);
     // DoubledEarly: extra penalty for a doubled pawn while no enemy pawn is
-    // fixed yet (no own pawn rams or restrains them) — early doubling is
+    // fixed yet (no own pawn rams or restrains them) - early doubling is
     // harder to justify because the structure is still fluid. ref S(17,7) ×0.48.
     public static Score DoubledEarly = new(8, 3);
     // Isolated: no friendly pawn on adjacent files. ref S(1,20) ×0.48.
@@ -298,12 +298,12 @@ public static class EvaluationParams
     // backward case only off the rook files). ref S(15,18) ×0.48.
     public static Score WeakUnopposed = new(7, 9);
     // Connected: supported and/or phalanx pawns, by relative rank. RAW
-    // reference units — the formula v = Connected[r]*(2 + phalanx - opposed)
+    // reference units - the formula v = Connected[r]*(2 + phalanx - opposed)
     // + 22*support is computed in reference units and converted ×0.48 at the
     // end (eg = v*(r-2)/4 before conversion).
     public static readonly int[] Connected = [0, 5, 7, 11, 23, 48, 87, 0];
     // Blocked pawn on relative rank 5-6 (indexed rank-4): a rammed pawn deep
-    // in the enemy camp cramps the defense — small bonus that turns positive
+    // in the enemy camp cramps the defense - small bonus that turns positive
     // in the endgame on rank 6. ref {S(-19,-8), S(-7,3)} ×0.48. Added as-is.
     public static Score[] BlockedPawnRank =
     [

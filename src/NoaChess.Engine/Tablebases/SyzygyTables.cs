@@ -14,7 +14,7 @@ namespace NoaChess.Engine.Tablebases;
 // build-time dependency on a C toolchain, which this machine does not have.
 //
 // The file format is unforgiving: every index is computed with exact integer
-// arithmetic over piece placements, and a wrong index does not crash — it
+// arithmetic over piece placements, and a wrong index does not crash - it
 // returns a WRONG result that looks perfectly valid, which the search then
 // trusts absolutely. That is strictly worse than having no tablebases at all.
 // The port is therefore differential-tested against an independent prober over
@@ -76,7 +76,7 @@ internal static class SyzygyTables
     private static void BuildTables()
     {
         // MapB1H1H7[]: squares strictly BELOW the a1-h8 diagonal, numbered
-        // 0..27 in plain square order. The numbering IS the file format — it
+        // 0..27 in plain square order. The numbering IS the file format - it
         // is not an implementation detail that can be reorganised.
         int code = 0;
         for (int sq = 0; sq < 64; sq++)
@@ -104,7 +104,7 @@ internal static class SyzygyTables
         // with the first king ON the a1-h8 diagonal require the second not to
         // be above it (otherwise it is a mirror of one already counted).
         // Pairs with BOTH kings on the diagonal are numbered last, exactly as
-        // the reference does — the ordering is part of the file format.
+        // the reference does - the ordering is part of the file format.
         var bothOnDiagonal = new List<(int idx, int sq)>();
         code = 0;
         for (int idx = 0; idx < 10; idx++)

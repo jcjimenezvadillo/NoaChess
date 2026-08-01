@@ -60,7 +60,7 @@ public class SyzygyIntegrationTests
     }
 
     // Every expectation below was DERIVED from an independent prober rather
-    // than reasoned by hand — three hand-written fixtures in the first draft
+    // than reasoned by hand - three hand-written fixtures in the first draft
     // were wrong (two were illegal positions with the side not to move already
     // in check, one missed that Rxh1 simply wins the rook).
     [SyzygyTheory]

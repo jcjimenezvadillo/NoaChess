@@ -14,7 +14,7 @@ namespace NoaChess.Engine.Heuristics;
 //   4. Killer moves (quiet refutations from sibling nodes).
 //   5. Counter move (the quiet refutation of the opponent's LAST move).
 //   6. Remaining quiet moves, ranked by history + continuation history.
-//   7. Losing captures (SEE < 0) — tried last: they are usually just blunders,
+//   7. Losing captures (SEE < 0) - tried last: they are usually just blunders,
 //      but occasionally a sacrifice, so they cannot be skipped entirely here.
 public static class MovePicker
 {
@@ -53,7 +53,7 @@ public static class MovePicker
 
     // Sorts 'moves' in place, best candidates first. Allocation-free: the
     // scores live in the MoveList's parallel array and an insertion sort keeps
-    // them together with the moves (n is small — typically 20-45 — so
+    // them together with the moves (n is small - typically 20-45 - so
     // insertion sort beats fancier algorithms here).
     public static void Order(MoveList moves, Board board, Move ttMove,
                              KillerTable killers, HistoryTable history, int ply) =>
@@ -97,7 +97,7 @@ public static class MovePicker
 
     // Scores moves[from..Count) as captures/promotions and sorts the range.
     // Winning/equal captures land above 0, losing captures in a deeply
-    // negative band — the caller uses the sign as the "losers start here" cue.
+    // negative band - the caller uses the sign as the "losers start here" cue.
     public static void ScoreAndSortCaptures(MoveList moves, int from, Board board,
                                             CaptureHistory? captureHistory = null)
     {
@@ -112,7 +112,7 @@ public static class MovePicker
 
     // Scores moves[quietsFrom..Count) as quiets (killers, counter move,
     // history), then sorts moves[sortFrom..Count). sortFrom may sit earlier
-    // than quietsFrom so unserved losing captures merge into the same order —
+    // than quietsFrom so unserved losing captures merge into the same order -
     // their band is far below any quiet score, so they sink to the very end.
     public static void ScoreAndSortQuiets(MoveList moves, int quietsFrom, int sortFrom,
                                           Board board, KillerTable killers, HistoryTable history,

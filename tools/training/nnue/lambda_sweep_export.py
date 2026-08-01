@@ -17,7 +17,7 @@ def main():
         ckpt = HERE / f"checkpoints/{tag}.pt"
         out  = HERE / f"../../../models/nnue/{tag}.noannue"
         if not ckpt.exists():
-            print(f"SKIP {tag}.pt — not found")
+            print(f"SKIP {tag}.pt - not found")
             continue
         print(f"Exporting {tag} ...", end=" ", flush=True)
         cmd = [

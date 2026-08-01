@@ -12,7 +12,7 @@ namespace NoaChess.Engine.Transposition;
 //
 // 5F design (reference scheme at our entry size):
 // - CLUSTERED: the low key bits select a 4-entry cluster (64 bytes, one cache
-//   line — a probe reads the whole cluster for one memory access). Four
+//   line - a probe reads the whole cluster for one memory access). Four
 //   candidate slots per position instead of one means far fewer useful
 //   entries destroyed by index collisions.
 // - AGED: each new search bumps a 5-bit generation. Zero is reserved for an
@@ -133,7 +133,7 @@ public sealed class TranspositionTable
             bestMove = target.BestMove;
 
         // Keep the deeper result when re-storing the same position, unless
-        // the new one is exact (a real full-window value always wins) —
+        // the new one is exact (a real full-window value always wins) -
         // the reference's overwrite rule. Eval-only refreshes (bound None)
         // never clobber a real same-position entry.
         if (sameKey)

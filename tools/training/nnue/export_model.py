@@ -78,7 +78,7 @@ def main():
     # Default 1, NOT OUT_BUCKETS: a checkpoint without this key was trained
     # before buckets existed, so it genuinely has one head. Defaulting to the
     # current module constant would build a model whose shape does not match
-    # the saved weights and fail to load — or worse, load a reshaped mess.
+    # the saved weights and fail to load - or worse, load a reshaped mess.
     buckets = max(1, ckpt_args.get("out_buckets", 1))
 
     # The architecture follows the checkpoint unless overridden: exporting a
@@ -104,7 +104,7 @@ def main():
     # EmbeddingBag rows are feature-major already; drop the padding row.
     ft_w = quantize(model.ft.weight[:INPUT_SIZE], qa, np.int16, 32767, "ftWeights")
     ft_b = quantize(model.ft_bias, qa, np.int16, 32767, "ftBias")
-    # nn.Linear stores weight as [out, in] — exactly the row-per-output layout
+    # nn.Linear stores weight as [out, in] - exactly the row-per-output layout
     # the C# dot product expects.
     # Both l1 (buckets*l1_out rows) and out (one row per bucket) are already
     # bucket-major in the module, which is exactly the C# payload layout.
@@ -115,7 +115,7 @@ def main():
     out_b = quantize(model.out.bias, qa * QB, np.int32, 2**31 - 1, "outBias")
 
     # Guard the saturation bound with the ACTUAL exported values, not just the
-    # nominal limits — a future change to clip_weights must not be able to make
+    # nominal limits - a future change to clip_weights must not be able to make
     # the kernel wrong without this failing first.
     if arch != ARCH_INT16_L1:
         worst = 2 * qa * int(np.abs(l1_w.astype(np.int32)).max())

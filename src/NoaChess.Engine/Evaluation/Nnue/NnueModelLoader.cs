@@ -6,7 +6,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 
 // Parses and validates a .noannue model file (see NnueModelHeader for the
 // layout). Validation is strict: magic, version, schema, architecture,
-// dimensions, payload length and SHA-256 must all match — a corrupt or
+// dimensions, payload length and SHA-256 must all match - a corrupt or
 // incompatible model is rejected with a descriptive error instead of being
 // allowed to play nonsense chess.
 public static class NnueModelLoader
@@ -57,7 +57,7 @@ public static class NnueModelLoader
         ushort qb = BinaryPrimitives.ReadUInt16LittleEndian(bytes[34..]);
         ushort outputScale = BinaryPrimitives.ReadUInt16LittleEndian(bytes[36..]);
         // Offset 38 was padding before v4.2.0, so legacy files read 0 here and
-        // are treated as unbucketed — old models keep loading unchanged.
+        // are treated as unbucketed - old models keep loading unchanged.
         ushort headerBuckets = BinaryPrimitives.ReadUInt16LittleEndian(bytes[38..]);
         ulong payloadLength = BinaryPrimitives.ReadUInt64LittleEndian(bytes[40..]);
         ReadOnlySpan<byte> expectedSha = bytes[48..80];

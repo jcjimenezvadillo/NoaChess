@@ -21,7 +21,7 @@ namespace NoaChess.Engine.Evaluation.Classical;
 //
 // Why a cache: pawns move rarely, so consecutive positions in the search tree
 // almost always share the exact same pawn formation. The structure score is
-// stored under the board's pawn-only Zobrist key and the hit rate is huge —
+// stored under the board's pawn-only Zobrist key and the hit rate is huge -
 // the (moderately expensive) computation below runs only on formation changes.
 // The cached value is a tapered Score (middlegame + endgame).
 public sealed class PawnStructureEvaluator
@@ -47,7 +47,7 @@ public sealed class PawnStructureEvaluator
     internal static readonly ulong[,] PassedPawnMask = new ulong[2, 64];
 
     // True when the pawn on 'sq' has no enemy pawns ahead on its own or the
-    // adjacent files — the same test the cached evaluation uses.
+    // adjacent files - the same test the cached evaluation uses.
 
     static PawnStructureEvaluator()
     {
@@ -131,7 +131,7 @@ public sealed class PawnStructureEvaluator
     // now plus, for pawns that are neither blocked nor backward, every square
     // they could ever attack while advancing. A blocked or backward pawn will
     // never advance past its blockade, so it cannot evict a piece parked ahead
-    // of its file — those pawns only contribute their current attacks.
+    // of its file - those pawns only contribute their current attacks.
     private static ulong PawnAttacksSpan(Color us, ulong ourPawns, ulong theirPawns, ulong ownAttacks)
     {
         bool white = us == Color.White;
@@ -236,7 +236,7 @@ public sealed class PawnStructureEvaluator
             bool backward = (neighbours & levelOrBehind) == 0
                 && (leverPush | blocked) != 0;
 
-            // Scoring chain — the branches are mutually exclusive on purpose:
+            // Scoring chain - the branches are mutually exclusive on purpose:
             // a pawn is either connected, isolated (no neighbours) or backward.
             if ((support | phalanx) != 0)
             {
@@ -272,7 +272,7 @@ public sealed class PawnStructureEvaluator
             }
 
             // Unsupported pawns: doubled directly behind an own pawn, and the
-            // weak lever (attacked by two enemy pawns — whichever way we
+            // weak lever (attacked by two enemy pawns - whichever way we
             // recapture, we lose the exchange of pawns).
             if (support == 0)
             {
@@ -285,7 +285,7 @@ public sealed class PawnStructureEvaluator
             if (blocked != 0 && relativeRank >= 4)
                 score += EvaluationParams.BlockedPawnRank[relativeRank - 4];
 
-            // Passed pawn — reference definition, wider than the classic mask
+            // Passed pawn - reference definition, wider than the classic mask
             // test. A pawn is passed when one of three conditions holds:
             //   (a) no stoppers at all except pawns we can capture right now
             //       (levers);
@@ -293,7 +293,7 @@ public sealed class PawnStructureEvaluator
             //       attack our stop square) and our phalanx outnumbers them;
             //   (c) the only stopper is the blocker directly in front, we are
             //       on relative rank 5+, and a supporting pawn can safely step
-            //       up to offer the freeing trade (candidate passer — refined
+            //       up to offer the freeing trade (candidate passer - refined
             //       further by the piece-aware blocked-passer filter).
             // A pawn behind an own pawn on the same file is never passed.
             ulong ownAhead = ourPawns & PassedPawnMask[(int)color, sq] & FileMask[file];
@@ -314,7 +314,7 @@ public sealed class PawnStructureEvaluator
         }
 
         // Connected passers: each passer with a friendly passer on an adjacent
-        // file gets a bonus — together they escort each other home.
+        // file gets a bonus - together they escort each other home.
         ulong p = passers;
         while (p != 0)
         {

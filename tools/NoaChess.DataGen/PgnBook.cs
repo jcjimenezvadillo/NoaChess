@@ -5,7 +5,7 @@ namespace NoaChess.DataGen;
 
 // `pgnbook` subcommand: turns human PGN databases (Lichess elite, chess.com GMs)
 // into an opening-seed book of FENs. For each game it replays the main line and
-// records the position at a random ply in [min-ply, max-ply] — a diverse but
+// records the position at a random ply in [min-ply, max-ply] - a diverse but
 // REALISTIC set of opening/early-middlegame positions to seed the datagen with,
 // replacing the "8-9 random legal moves" that over-sample junk positions.
 //

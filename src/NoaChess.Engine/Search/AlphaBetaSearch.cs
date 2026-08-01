@@ -13,7 +13,7 @@ namespace NoaChess.Engine.Search;
 //
 // - PVS (Principal Variation Search): only the first move of each node is
 //   searched with the full (alpha, beta) window. The rest get a "null window"
-//   (alpha, alpha+1) — the cheapest possible way to prove "this move is NOT
+//   (alpha, alpha+1) - the cheapest possible way to prove "this move is NOT
 //   better than what we already have", which is true for almost all of them.
 //   Only the rare move that beats alpha is re-searched with the real window.
 // - Null Move Pruning: before trying real moves, let the opponent move twice
@@ -113,7 +113,7 @@ public sealed class AlphaBetaSearch
     // score that has held for several iterations is not going to change, so the
     // engine plays it on a small fraction of the optimum instead of burning the
     // whole budget. Without this it spent 8.5 s at 5+5 on an obvious recapture
-    // whose forced mate it had already seen — bleeding the clock while an
+    // whose forced mate it had already seen - bleeding the clock while an
     // instant-moving opponent banked time. Tunable by SPRT.
     private const int EasyMoveMargin = 700;       // |score| (cp) that counts as decisive
     private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
@@ -121,7 +121,7 @@ public sealed class AlphaBetaSearch
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
 
     // Proven-short-mate stop (clock mode). Once a completed iteration proves a
-    // forced mate in <= 3 plies for us — which cannot get materially shorter —
+    // forced mate in <= 3 plies for us - which cannot get materially shorter -
     // or that we are mated in <= 2 (no longer defense exists), searching on is
     // pointless: stop and play it. This is the NARROW exception to the "never
     // break on mate scores" rule below: LONG mates still deepen (finding
@@ -149,12 +149,12 @@ public sealed class AlphaBetaSearch
 
     // Set when the evaluator keeps incremental state (NNUE accumulators):
     // the search notifies it around every make/unmake. Null for stateless
-    // evaluators (classical) — one branch-predicted null check per node.
+    // evaluators (classical) - one branch-predicted null check per node.
     private IIncrementalEvaluator? _incremental;
 
     // The transposition table. A standalone search owns a fresh 64 MB table; a
     // Lazy SMP helper worker instead SHARES the main worker's table (that shared
-    // memory is the whole point — threads cross-pollinate through it).
+    // memory is the whole point - threads cross-pollinate through it).
     private readonly TranspositionTable _tt;
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
@@ -165,7 +165,7 @@ public sealed class AlphaBetaSearch
     // Key for the continuation correction table: the (piece, destination) of
     // the move that reached this node, or 0 at the root and after a null move
     // where no such move exists. Kept next to the call sites so the update and
-    // the lookup can never end up keyed differently — filing an observation
+    // the lookup can never end up keyed differently - filing an observation
     // under one key and reading it back under another is silent and permanent.
     private ulong ContinuationCorrectionKey(int ply)
         => ply > 0 && _stackPiece[ply - 1] >= 0
@@ -200,7 +200,7 @@ public sealed class AlphaBetaSearch
     private readonly int[] _stackEval = new int[MaxPly + 2];
 
     // statScore of the move played to REACH each ply: 2x butterfly history plus
-    // the move's continuation history, minus an offset — in OUR history units.
+    // the move's continuation history, minus an offset - in OUR history units.
     // The child consults [ply-1]: a parent move the tables love means the
     // parent line keeps refuting things, so the child skips NMP (the fail-high
     // is already cheap without a null probe) and its RFP margin leans on it.
@@ -209,7 +209,7 @@ public sealed class AlphaBetaSearch
     // statScore-derived thresholds. The reference values are in ITS history
     // units (tables gravity-capped at 14365/29952); ours accumulate depth^2
     // with far smaller magnitudes (measured 2026-07-17: butterfly p99 3218,
-    // contHist p99 630 — combined statScore range ~0.28x the reference's), so
+    // contHist p99 630 - combined statScore range ~0.28x the reference's), so
     // every threshold is scaled by that measured ratio, and value-producing
     // divisors additionally by the x0.48 value-unit rule.
     private const int StatScoreOffset = 1250; // reference  4433 x 0.28
@@ -254,13 +254,13 @@ public sealed class AlphaBetaSearch
     // Reductions are accumulated in 1024ths of a ply and truncated once, at the
     // point of use. The reference keeps its whole reduction pipeline in fixed
     // point for a reason: every one of its adjusters is a FRACTION of a ply.
-    // Truncating per term — which an integer table forces — makes each adjuster
+    // Truncating per term - which an integer table forces - makes each adjuster
     // three to ten times too coarse, and eight of them stack into swings the
     // reference never applies. That granularity is the unnamed "ecosystem" the
     // 5C adjuster suite kept measuring against.
     private const int LmrScale = 1024;
 
-    // NO history-informed LMR adjustment, on measured evidence — the line is
+    // NO history-informed LMR adjustment, on measured evidence - the line is
     // closed, not merely unimplemented. Three variants of "let LMR read the
     // butterfly history" were tested against v2.8.3-class baselines and land on
     // a monotone curve by how much reduction they remove:
@@ -272,8 +272,8 @@ public sealed class AlphaBetaSearch
     // base reductions are milder than the reference's, so a history term here is
     // redundant with the killer/counter shallowing already applied and only costs
     // nodes. (For most of the engine's life this line shipped as
-    // clamp(hist/16384, -2, 2) and was arithmetically DEAD — the butterfly table
-    // is bounded at 7183 so it returned 0 at every node — which is the third
+    // clamp(hist/16384, -2, 2) and was arithmetically DEAD - the butterfly table
+    // is bounded at 7183 so it returned 0 at every node - which is the third
     // inert-threshold bug of that family and is why it was investigated at all.)
     // Do not re-add without a new mechanism; the direct form is settled.
 
@@ -358,7 +358,7 @@ public sealed class AlphaBetaSearch
     private bool _stopped;
 
     // Set when the SOFT budget expires at a root-move boundary. Unlike a hard
-    // stop, everything searched so far in the iteration is fully valid — the
+    // stop, everything searched so far in the iteration is fully valid - the
     // iteration just does not continue with the remaining root moves. Without
     // this cut, an iteration started 1 ms before the soft limit would run all
     // the way to the hard limit (4x soft), overspending on nearly every move
@@ -366,7 +366,7 @@ public sealed class AlphaBetaSearch
     private bool _softStopped;
 
     // Standalone search: owns a fresh 64 MB transposition table (the historical
-    // behaviour — one search, one table).
+    // behaviour - one search, one table).
     public AlphaBetaSearch(IPositionEvaluator evaluator)
         : this(evaluator, new TranspositionTable(sizeMb: 64)) { }
 
@@ -448,13 +448,13 @@ public sealed class AlphaBetaSearch
         bool clockMode = limits.SoftTimeMs < limits.HardTimeMs;
 
         // Terminal root: checkmate or stalemate on the board. There is nothing
-        // to search and, crucially, nothing to return — the iterative-deepening
+        // to search and, crucially, nothing to return - the iterative-deepening
         // loop below would spin through every depth without ever producing a
         // best move, and the caller would wait forever for a "bestmove" that
         // never comes. Answer at once with the game-theoretic score and a null
         // move; the UCI layer turns that into "bestmove 0000".
         // (Measured 2026-07-19: v2.7.2 and every earlier release hang outright
-        // on a stalemated position — a GUI sending one froze the engine.)
+        // on a stalemated position - a GUI sending one froze the engine.)
         MoveGenerator.GenerateLegalMoves(board, _rootMoves);
         if (_rootMoves.Count == 0)
             return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
@@ -464,13 +464,13 @@ public sealed class AlphaBetaSearch
         // Knowing the position is won is not enough to WIN it: with no distance
         // to steer by the engine shuffles and draws by the fifty-move rule. DTZ
         // supplies that gradient. The root move list is therefore restricted to
-        // the tablebase-optimal moves — win > draw > loss, and among wins the
+        // the tablebase-optimal moves - win > draw > loss, and among wins the
         // shortest distance to the next irreversible move.
         //
         // Deliberately a FILTER and not an early return. Returning the verdict
         // straight away would replace "mate in 3" with a plain tablebase win in
         // the UCI output, undoing the mate reporting added in v2.7.1. Filtering
-        // keeps the search running — so it still finds and announces the mate —
+        // keeps the search running - so it still finds and announces the mate -
         // while making it structurally impossible to play a move that throws
         // the win away.
         if (Tablebases.Syzygy.Available
@@ -482,7 +482,7 @@ public sealed class AlphaBetaSearch
         }
 
         // Forced move: with a single legal reply no amount of searching can
-        // change the choice — answer instantly and bank the whole budget.
+        // change the choice - answer instantly and bank the whole budget.
         // Only under a clock (analysis/movetime callers still want the eval).
         if (clockMode && legalRootMoveCount == 1)
             return new SearchResult(_rootMoves[0], 0, 0);
@@ -536,8 +536,8 @@ public sealed class AlphaBetaSearch
 
         // Cap the iteration depth at the search stack's own limit. Without it,
         // an unlimited search (ponder/infinite) in a position where every
-        // iteration returns instantly from the transposition table — a
-        // repetition dance with a warm TT — spins the loop through ever-higher
+        // iteration returns instantly from the transposition table - a
+        // repetition dance with a warm TT - spins the loop through ever-higher
         // depths that can no longer search anything, burning a core for the
         // whole of the opponent's thinking time. Observed in a bot game: depths
         // 22->26 completed in 30 ms with the node count barely moving. Beyond
@@ -600,13 +600,13 @@ public sealed class AlphaBetaSearch
                 // Interrupted mid-iteration. A SOFT stop lands on a root-move
                 // boundary, so every move searched so far (the previous best
                 // first, thanks to TT ordering) is complete and the partial
-                // result is reliable — use it. A HARD stop aborts mid-node:
+                // result is reliable - use it. A HARD stop aborts mid-node:
                 // the interrupted Negamax returns 0, so if it hit during the
                 // first root move, SearchRoot reports that move with score 0.
                 // Trusting that 0 silently zeroed the returned score of ~half
                 // of all node-limited searches (harmless to game play, which
                 // reports its score from completed-iteration progress and plays
-                // the same TT-first move — but it wrecked datagen labels, which
+                // the same TT-first move - but it wrecked datagen labels, which
                 // take the returned score). On a hard stop keep the last
                 // completed iteration's result; fall back to the partial only
                 // when no iteration has finished yet.
@@ -664,7 +664,7 @@ public sealed class AlphaBetaSearch
                 // First move of the game: no cross-move history to compare
                 // against, so use the neutral factor. (The reference maxes it
                 // at 1.5 here; combined with the early-depth reduction factor
-                // ~1.7 that tripled the first-move budget — visible clock
+                // ~1.7 that tripled the first-move budget - visible clock
                 // burn at short TC with no upside on an empty TT.)
                 double fallingEval = _bestPreviousAverageScore == ScoreNone
                     ? 1.0
@@ -673,7 +673,7 @@ public sealed class AlphaBetaSearch
                                  0.5, 1.5);
 
                 // Stability: if the best move has not changed for 10
-                // iterations the position is decided — spend less; the factor
+                // iterations the position is decided - spend less; the factor
                 // also carries over to the next move via previousTimeReduction.
                 timeReduction = lastBestMoveDepth + 9 < depth ? 1.37 : 0.65;
                 double reduction = (1.4 + _previousTimeReduction) / (2.15 * timeReduction);
@@ -681,7 +681,7 @@ public sealed class AlphaBetaSearch
                 // Instability: each root best-move change (decayed per
                 // iteration) extends the budget. Neutral on the first move of
                 // the game: on an empty TT the root flaps between near-equal
-                // openings, and that flapping carries no urgency signal —
+                // openings, and that flapping carries no urgency signal -
                 // extending for it just burns the clock before the game starts.
                 double bestMoveInstability = _bestPreviousAverageScore == ScoreNone
                     ? 1.0
@@ -719,7 +719,7 @@ public sealed class AlphaBetaSearch
                 // Mid-iteration overshoot guard. The root-boundary soft-stop
                 // (SearchRoot) only fires BETWEEN root moves, so a single deep
                 // root move begun near the budget edge can run for many seconds
-                // to the loose hard maximum before the next check — a won
+                // to the loose hard maximum before the next check - a won
                 // position reaches high depth almost instantly, so this burned
                 // 8.5 s at 5+5 on an obvious recapture whose mate was already
                 // seen (and 22-37 s on a ponderhit at 30 threads). Tighten the
@@ -747,11 +747,11 @@ public sealed class AlphaBetaSearch
             }
         }
 
-        // Extreme fallback (e.g. cancelled before depth 1 finished — a cold
+        // Extreme fallback (e.g. cancelled before depth 1 finished - a cold
         // process under a tiny first-move budget): never return "no move" while
         // legal moves exist. Instead of the FIRST generated move (move ordering
         // makes that a rook-pawn push, which looks absurd), pick the move with
-        // the best static eval — a one-ply search that costs one eval per legal
+        // the best static eval - a one-ply search that costs one eval per legal
         // move and guarantees a sane reply even when the real search never ran.
         if (best.BestMove == Move.None)
         {
@@ -858,7 +858,7 @@ public sealed class AlphaBetaSearch
                 break;
 
             // Soft time boundary: root moves are the only place where the
-            // search can stop "gracefully" — everything searched so far is
+            // search can stop "gracefully" - everything searched so far is
             // complete and usable. The deadline is the dynamically modulated
             // budget from the previous iteration (see FindBestMove). Requires
             // at least one searched move and never fires at depth 1 (a full
@@ -1166,7 +1166,7 @@ public sealed class AlphaBetaSearch
 
         // ---- Internal Iterative Reductions ----
         // No TT move at a node that deserves real depth means either the
-        // position was never searched or its entry was overwritten — move
+        // position was never searched or its entry was overwritten - move
         // ordering will be poor and the full depth is not worth its cost.
         // Search one ply shallower; if the node matters, a later (deeper)
         // visit will find a TT move waiting and search it properly.
@@ -1192,7 +1192,7 @@ public sealed class AlphaBetaSearch
         // A TT hit serves the cached eval instead of running the evaluator
         // (the big 5F speedup: revisits pay one cluster read, not a full
         // evaluation); a miss caches what we compute in an eval-only entry so
-        // the NEXT visit — often via IIR or a re-search — skips it too.
+        // the NEXT visit - often via IIR or a re-search - skips it too.
         int rawStaticEval;
         int staticEval;
         if (inCheck)
@@ -1218,7 +1218,7 @@ public sealed class AlphaBetaSearch
         }
 
         // ---- Improvement / improving ----
-        // How much our static eval gained over our previous position — two
+        // How much our static eval gained over our previous position - two
         // plies back, or four when the previous position was a check. Feeds
         // the NMP entry margin as a value and everything else as the boolean
         // improving flag. The cold-start default (+83cp, the reference's 173
@@ -1237,11 +1237,11 @@ public sealed class AlphaBetaSearch
         // ---- Reverse futility pruning (a.k.a. static null move) ----
         // If our static eval is so far above beta that even conceding a healthy
         // margin per remaining ply keeps us above it, the opponent will avoid
-        // this line — return without searching. Only at shallow depth and away
+        // this line - return without searching. Only at shallow depth and away
         // from mate scores, where the static eval is a trustworthy proxy.
         // An improving eval is trending up and can be trusted one depth-step
         // sooner (reference: margin × (depth - improving)); the parent move's
-        // statScore leans on the margin — after a well-reputed parent move the
+        // statScore leans on the margin - after a well-reputed parent move the
         // cut comes easier, after a maligned one it needs more headroom.
         if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
             && excluded == Move.None
@@ -1252,7 +1252,7 @@ public sealed class AlphaBetaSearch
 
         // ---- Null Move Pruning (with verification search) ----
         // "Pass" the turn: if the opponent moving twice in a row still cannot
-        // bring us below beta, no real move will either — prune the branch.
+        // bring us below beta, no real move will either - prune the branch.
         // Reference entry condition: non-PV only, never in check or right
         // after another null (the position must re-anchor between passes),
         // never without non-pawn material (zugzwang), only when the static
@@ -1262,11 +1262,11 @@ public sealed class AlphaBetaSearch
         // verification search the verifying side cannot null again below
         // nmpMinPly (a false null cutoff must not verify itself).
         // Entry: the previously validated shape (any node at depth >= 3, no
-        // eval precondition — a cheap probe everywhere). The reference gates
+        // eval precondition - a cheap probe everywhere). The reference gates
         // entry on staticEval >= beta plus a depth/improvement/complexity
         // margin and a statScore filter; measured here, that gating grows the
         // tree ~30% at equal tactics because our classical eval is noisy
-        // relative to the search — probes at eval-below-beta nodes keep
+        // relative to the search - probes at eval-below-beta nodes keep
         // finding real cutoffs the gate would forbid. Revisit with NNUE.
         if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
             && board.HasNonPawnMaterial(board.SideToMove)
@@ -1276,7 +1276,7 @@ public sealed class AlphaBetaSearch
             // depth - 3 - depth/4). The reference's deeper dynamic R
             // (min((eval-beta)/168, 7) + depth/3 + 4 - (complexity > 861))
             // is DEFERRED to 5C+: its null probes bottom out in quiescence
-            // across depths 3-7, and OUR quiescence is captures-only — the
+            // across depths 3-7, and OUR quiescence is captures-only - the
             // reference's generates CHECKS at the first qs ply, which is what
             // keeps its shallow null cutoffs tactically safe (measured here:
             // WAC 249-251/300 vs 257-259 with the old R, and verification
@@ -1298,7 +1298,7 @@ public sealed class AlphaBetaSearch
             if (nullScore >= beta && nullScore < MateBound)
             {
                 // Mate-range null scores never cut (the guard above): a mate
-                // "found" after passing a move is exactly the unproven kind —
+                // "found" after passing a move is exactly the unproven kind -
                 // falling through to the real search keeps forced mates visible
                 // at the depth they deserve (measured: the reference's cap-to-
                 // beta hid a WAC mate-in-4 through depth 17 on our search).
@@ -1403,8 +1403,8 @@ public sealed class AlphaBetaSearch
         // ---- Singular extension detection ----
         // A TT move whose stored score is trustworthy gets a verification
         // search: all OTHER moves are searched shallower against a lowered
-        // window. If none comes close, the TT move is "singular" — the only
-        // move holding the position — and deserves an extra ply, because
+        // window. If none comes close, the TT move is "singular" - the only
+        // move holding the position - and deserves an extra ply, because
         // getting forced lines right is what wins/saves games.
         int singularExtension = 0;
         if (depth >= 8 && excluded == Move.None && ttMove != Move.None
@@ -1428,7 +1428,7 @@ public sealed class AlphaBetaSearch
         // Legality is checked lazily at make time (like quiescence does), and
         // generation itself is staged so a node that cuts off early never pays
         // for moves it does not reach:
-        //   stage 0: the TT move alone, vetted by IsPseudoLegal — no generation.
+        //   stage 0: the TT move alone, vetted by IsPseudoLegal - no generation.
         //   stage 1: captures/promotions, sorted; served while SEE-good.
         //   stage 2: quiet moves (sorted with any unserved losing captures,
         //            which sink to the very end by score band).
@@ -1511,7 +1511,7 @@ public sealed class AlphaBetaSearch
             // The move's combined history signal (2x butterfly + continuation
             // history) and the depth it would actually receive after LMR:
             // the shallow-pruning margins below scale with the REDUCED depth
-            // (reference lmrDepth), not the nominal one — a move that will be
+            // (reference lmrDepth), not the nominal one - a move that will be
             // probed shallow anyway is pruned against that shallower horizon.
             int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
             int moveHistory = 2 * _history.Get(stm, move)
@@ -1533,7 +1533,7 @@ public sealed class AlphaBetaSearch
             {
                 // Late move pruning: once enough quiet moves have been tried at
                 // low depth, the remaining ones are very unlikely to be best.
-                // In a worsening position quiet moves rarely save the node —
+                // In a worsening position quiet moves rarely save the node -
                 // halve the count before the cut (reference LMP shape).
                 int lmpThreshold = 3 + depth * depth;
                 if (!improving) lmpThreshold /= 2;
@@ -1543,15 +1543,15 @@ public sealed class AlphaBetaSearch
                 // Futility pruning (reference parent-node shape): if the static
                 // eval plus a margin that grows with the LMR-reduced depth
                 // cannot reach alpha, the quiet move will not rescue the node.
-                // The move's own history buys a reprieve — a move the tables
+                // The move's own history buys a reprieve - a move the tables
                 // like must not be pruned on eval alone (values 106/145 at
                 // their x0.48 equivalents, history divisor unit-rescaled).
                 // Futility pruning: if even a generous per-ply margin over the
                 // static eval cannot lift it to alpha, a quiet move will not
-                // rescue the node — skip it. The reference's lmrDepth-scaled
+                // rescue the node - skip it. The reference's lmrDepth-scaled
                 // reshape (106 + 145*lmrDepth up to lmrDepth 13) is DEFERRED
                 // to 5C: it presupposes the reference's larger LMR reductions
-                // (which keep its lmrDepth systematically lower) — measured
+                // (which keep its lmrDepth systematically lower) - measured
                 // here, both the x0.48 and the raw margins made forced mates
                 // invisible (WAC.001 mate-in-4: found at d13 before, hidden
                 // past d17 / 100M nodes with the reshape in either scale).
@@ -1619,7 +1619,7 @@ public sealed class AlphaBetaSearch
                     int r = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
                     if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
-                    // No butterfly-history term here — three variants were tested
+                    // No butterfly-history term here - three variants were tested
                     // and rejected; see the LmrReductions block above. "This move
                     // is good" is expressed only through the killer/counter
                     // shallowing below, which is measured net positive.
@@ -1636,7 +1636,7 @@ public sealed class AlphaBetaSearch
                     // NO cutNode reduction term. The reference's largest LMR
                     // adjuster (r += 4026 at cut nodes) was measured at two
                     // magnitudes and rejected both times: 4026 (~3.9 plies) at
-                    // −4.0 ±10.8 H0, 1536 (~1.5 plies) at −7.1 ±12.5 H0 — losing
+                    // −4.0 ±10.8 H0, 1536 (~1.5 plies) at −7.1 ±12.5 H0 - losing
                     // ~5 Elo regardless of strength, the two intervals overlapping.
                     // Most likely our cut-node classification is noisier than the
                     // reference's (no IIR, thinner node-type discipline), so the
@@ -1651,7 +1651,7 @@ public sealed class AlphaBetaSearch
                     // Scaled ×0.34 so the base is ~1 ply instead of ~3: at 3 plies
                     // it would floor our milder reductions to zero at every ttPv
                     // node and the conditionals would stop modulating. The cutNode
-                    // sub-term is dropped — our cut-node signal is too noisy to
+                    // sub-term is dropped - our cut-node signal is too noisy to
                     // trust (see above). Conditionals gated on ttHit so ttValue and
                     // ttDepth are real.
                     if (ttPv)
@@ -1666,7 +1666,7 @@ public sealed class AlphaBetaSearch
                     }
 
                     // Position is worsening: the remaining moves are even less
-                    // likely to be good — reduce them one extra ply.
+                    // likely to be good - reduce them one extra ply.
                     if (!improving) r += LmrScale;
 
                     reduction = r / LmrScale;
@@ -1726,7 +1726,7 @@ public sealed class AlphaBetaSearch
                         // ordering heuristics feed on. The cutoff move gets a
                         // bonus everywhere (killers, counter move, butterfly
                         // and continuation history); the quiets tried before
-                        // it get a malus — they had their chance and failed.
+                        // it get a malus - they had their chance and failed.
                         if (isQuiet)
                         {
                             _killers.Store(ply, move);
@@ -1783,7 +1783,7 @@ public sealed class AlphaBetaSearch
         // No legal move was made: mate or stalemate. The ply is added to the
         // mate score so the engine prefers the SHORTEST mate and, when mated,
         // drags it out as long as possible. In singular verification mode the
-        // excluded TT move is the only legal move — report a fail-low so the
+        // excluded TT move is the only legal move - report a fail-low so the
         // caller marks it singular (never a mate score: the move exists).
         if (searched == 0)
             return excluded != Move.None ? alpha
@@ -1832,7 +1832,7 @@ public sealed class AlphaBetaSearch
     // IN CHECK the node follows a completely different path, matching the
     // reference. This is CORRECTNESS, not a strength tweak: the previous
     // captures-only version got all four parts wrong, and every capture that
-    // gives check lands the opponent in exactly this node — so the hole sat on
+    // gives check lands the opponent in exactly this node - so the hole sat on
     // the main line of every tactical sequence, and every caller that verifies
     // a capture through quiescence (ProbCut, null-move probes, multi-cut) was
     // reading those wrong scores as proof.
@@ -1854,7 +1854,7 @@ public sealed class AlphaBetaSearch
     // callers receive the tightest bound this node actually established.
     //
     // NOT ported here, deliberately: the reference's tuned quiescence constants
-    // — stand-pat beta softening (441/583 and 462/562 in 1024ths), futilityBase
+    // - stand-pat beta softening (441/583 and 462/562 in 1024ths), futilityBase
     // = staticEval + 306, the moveCount > 2 cut, and its SEE >= -74 threshold
     // (ours prunes at SEE >= 0). Those are heuristic constants and the project
     // rule is that they do not transfer without their ecosystem; they get their
@@ -1913,7 +1913,7 @@ public sealed class AlphaBetaSearch
         {
             // "Stand pat": the side to move is never forced to capture, so the
             // static evaluation is a floor for its score. If even doing nothing
-            // beats beta, the opponent will avoid this line — cut immediately.
+            // beats beta, the opponent will avoid this line - cut immediately.
             int rawEval = _evaluator.Evaluate(board);
             bestScore = _corrections.Correct(board, rawEval, ContinuationCorrectionKey(ply));
             if (bestScore >= beta)
@@ -1946,7 +1946,7 @@ public sealed class AlphaBetaSearch
             // reported mate.
             // Pruning, reference Step 6. Entirely skipped while in check: any
             // of these may be the only legal move, and pruning it could turn a
-            // save or a draw into a reported mate. Promotions are exempt too —
+            // save or a draw into a reported mate. Promotions are exempt too -
             // the piece changes mid-sequence, which the swap algorithm cannot
             // model, and an underpromotion is sometimes the only move that
             // avoids stalemate, delivers mate or dodges a fork. All four
@@ -1956,7 +1956,7 @@ public sealed class AlphaBetaSearch
             if (!inCheck && !move.IsPromotion)
             {
                 // Futility: even winning the piece standing on the destination
-                // square, plus a generous margin, cannot reach alpha — the
+                // square, plus a generous margin, cannot reach alpha - the
                 // capture is pointless. bestScore is raised to the futility
                 // value so the fail-soft bound stays honest (reference).
                 int futilityValue = futilityBase + PieceValueQs[(int)(move.Flag == MoveFlag.EnPassant
@@ -2026,7 +2026,7 @@ public sealed class AlphaBetaSearch
         {
             // In check with no legal reply: checkmate. The ply is added so the
             // engine prefers the SHORTEST mate and, when mated, drags out the
-            // longest defense — the same convention the main search uses.
+            // longest defense - the same convention the main search uses.
             if (inCheck)
                 return -MateScore + ply;
 
@@ -2045,7 +2045,7 @@ public sealed class AlphaBetaSearch
     // sides) by walking the transposition table: play the best move, look up
     // the resulting position's stored best move, and repeat. The PV may be
     // shorter than the search depth when TT entries were overwritten. Each
-    // stored move is validated against the legal moves of the position — a
+    // stored move is validated against the legal moves of the position - a
     // TT index collision could otherwise inject a corrupt move.
     private Move[] ExtractPv(Board board, Move firstMove, int maxLength)
     {

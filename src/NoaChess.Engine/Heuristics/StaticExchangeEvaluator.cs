@@ -4,7 +4,7 @@ namespace NoaChess.Engine.Heuristics;
 
 // Static Exchange Evaluation (SEE): answers "if the whole capture sequence on
 // this square is played out with both sides always recapturing with their
-// LEAST valuable attacker, who ends up ahead, and by how much?" — without
+// LEAST valuable attacker, who ends up ahead, and by how much?" - without
 // touching the board.
 //
 // It replaces MVV-LVA as the tactical judge of a capture: QxP looks great to
@@ -13,7 +13,7 @@ namespace NoaChess.Engine.Heuristics;
 // quiescence, and skipping tactically bad captures at shallow search depths.
 //
 // Implementation: the classic "swap algorithm". A gain list is filled as if
-// every capture happened, then folded backwards with negamax logic — at each
+// every capture happened, then folded backwards with negamax logic - at each
 // step the side to move may STOP capturing if continuing loses material.
 // Sliding attackers hidden behind the piece that just captured ("x-rays") are
 // discovered automatically because attackers are recomputed against the
@@ -27,8 +27,8 @@ public static class StaticExchangeEvaluator
     // Fast check: does this capture lose more than 'threshold' centipawns?
     // Shortcut first: capturing an equal-or-higher-valued victim can never
     // lose material (worst case: victim won, attacker lost, net >= 0), so
-    // the full swap algorithm — comparatively expensive, and this is called
-    // for every capture at every node — only runs for "upward" captures
+    // the full swap algorithm - comparatively expensive, and this is called
+    // for every capture at every node - only runs for "upward" captures
     // like QxP or RxN.
     public static bool LosesAtLeast(Board board, Move move, int threshold = 0)
     {

@@ -10,11 +10,11 @@ namespace NoaChess.Engine.TimeManagement;
 //   modulates it every iteration with dynamic factors (falling eval, best-move
 //   stability, best-move instability) and stops when the elapsed time exceeds
 //   the modulated target (see AlphaBetaSearch).
-// - maximumTime: the absolute deadline — the search aborts mid-iteration.
+// - maximumTime: the absolute deadline - the search aborts mid-iteration.
 //
 // Two time-control shapes are supported:
-// 1) x basetime (+ z increment)          — "sudden death", bullet/blitz/rapid
-// 2) x moves in y seconds (+ z increment) — classical, GUI sends "movestogo"
+// 1) x basetime (+ z increment)          - "sudden death", bullet/blitz/rapid
+// 2) x moves in y seconds (+ z increment) - classical, GUI sends "movestogo"
 //
 // The whole increment is folded into the usable time over the assumed move
 // horizon (inc * (mtg - 1)), instead of the flat per-move percentage of
@@ -42,7 +42,7 @@ public static class TimeManager
         {
             // x basetime (+ z increment): the target share grows slowly with
             // the game ply (openings are cheap, middlegames deserve time) and
-            // is capped at 20% of the actual remaining clock — with a healthy
+            // is capped at 20% of the actual remaining clock - with a healthy
             // increment timeLeft can exceed the clock itself. Larger
             // increments allow using a little extra.
             double optExtra = Math.Clamp(1.0 + 12.0 * incrementMs / time, 1.0, 1.12);
@@ -57,7 +57,7 @@ public static class TimeManager
             // optimum: at 3+2 the raw formula budgets ~7.5s per opening move
             // (~19s once the dynamic factors extend it), starving the
             // middlegame. Without an opening book the first moves are the
-            // cheapest of the game — shrink their share and let the ply curve
+            // cheapest of the game - shrink their share and let the ply curve
             // take over from ~move 10.
             optScale *= Math.Min(1.0, 0.55 + gamePly * 0.025);
         }
@@ -84,7 +84,7 @@ public static class TimeManager
         // geometrically instead of stabilizing the spend around the
         // increment. Observed in Arena bullet (2+1): 3-4s per move in the
         // middlegame bleeding 2-3s net each move, then 1-2s moves (hard
-        // deadline ~4s!) with 5s on the clock — time losses in won positions.
+        // deadline ~4s!) with 5s on the clock - time losses in won positions.
         // Bound the target by inc + clock/16 and the hard deadline by
         // inc + clock/4: every move stays affordable, and near-exhausted
         // clocks stabilize around the increment instead of flagging.
