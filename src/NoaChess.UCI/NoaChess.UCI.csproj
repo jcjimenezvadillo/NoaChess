@@ -17,7 +17,7 @@
     <!-- Server GC collects in background threads instead of blocking the
          search thread for a full stop-the-world pause. Workstation GC (the
          default for console apps) can freeze the whole process for a
-         noticeable moment on a Gen2 collection — invisible to the search's
+         noticeable moment on a Gen2 collection - invisible to the search's
          node-count-based time check (the thread is literally not running),
          which can eat into the clock in short time controls. This showed up
          as an unexplained multi-second stall with NNUE active in bullet. -->
@@ -49,7 +49,7 @@
     <PublishReadyToRun>true</PublishReadyToRun>
     <!-- No debug symbols in the distributed build: the published folder
          contains exactly one file, the exe. Crash stack traces lose source
-         line numbers, which is fine for distribution — debugging happens on
+         line numbers, which is fine for distribution - debugging happens on
          regular builds, which keep full symbols. -->
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
