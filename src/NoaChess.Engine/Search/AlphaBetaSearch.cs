@@ -69,6 +69,30 @@ public sealed class AlphaBetaSearch
     private int _tbMaxMen;
     private int _tbMinProbeDepth = 1;
 
+    // Time-manager diagnostic, enabled with NOA_TM_DEBUG=1. Off by default and
+    // read once, so a released build pays a single boolean test per iteration.
+    private static readonly bool TimeDebug =
+        Environment.GetEnvironmentVariable("NOA_TM_DEBUG") == "1";
+
+    // SETTLED 2026-08-02 with NOA_TM_DEBUG, and it settled the opposite way to
+    // the first guess. The scheduler is NOT under-spending: traced across
+    // consecutive middlegame moves at 3+1 it spends 2591-13052 ms against an
+    // optimum near 5500, averaging about 107% of target, and the dynamic
+    // factors swing the budget by 5x between a quiet move (fe 0.500) and a
+    // dangerous one (fe 1.500, instability 2.033) exactly as intended.
+    //
+    // The earlier "it spends half its target" reading came from measuring
+    // moves 1-20 only, which is the opening damp doing its job by design. Do
+    // not draw conclusions about the time manager from opening plies.
+    //
+    // Where the clock actually goes unused in real games, in order of size:
+    // the bot's own two overhead settings (uci_options.MoveOverhead is
+    // reserved x52, so 600 instead of 30 costs 25% of the bullet budget -
+    // measured optimum 3189 -> 2345 ms; and lichess-bot subtracts its own
+    // move_overhead from the clock it reports), the easy-move rule spending
+    // 12% once the score passes 700 cp, and games simply ending before the
+    // clock does. The first two are configuration, not engine.
+
     // How far past the optimum the dynamic factors may extend the soft budget
     // under Lazy SMP. Single-thread searches are not capped here at all; they
     // are already bounded by the hard maximum. See the clamp in FindBestMove.
@@ -743,6 +767,17 @@ public sealed class AlphaBetaSearch
                     && lastBestMoveDepth + EasyMoveStableDepth <= depth)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
 
+                // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.
+                // Prints the target, every factor applied to it, and what has
+                // actually been spent, so a disagreement between the arithmetic
+                // and the behaviour is visible instead of guessed at.
+                if (TimeDebug)
+                    Console.Out.WriteLine(
+                        $"info string TM d={depth} soft={_softTimeMs} fe={fallingEval:F3}"
+                      + $" red={reduction:F3} inst={bestMoveInstability:F3}"
+                      + $" total={totalTime:F0} elapsed={ElapsedMs}"
+                      + $" softDl={_softDeadlineMs} maxT={_maxTimeMs} hardT={_hardTimeMs}");
+
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
                 if (ElapsedMs > totalTime)
@@ -962,10 +997,20 @@ public sealed class AlphaBetaSearch
         TbHits++;
 
         // The ranking covered every root move, so whatever survives below is
-        // game-theoretically optimal. From here the search must run WITHOUT
+        // game-theoretically optimal. From here the search runs WITHOUT
         // tablebase scores (see the probe guard in Negamax): it is the only
         // thing left that can tell two equally-winning moves apart.
-        _rootInTb = true;
+        //
+        // Only for a DECISIVE root, though. A flat score is a problem when it
+        // hides which win is fastest; on a drawn position zero is simply the
+        // truth, and switching the probe off would make the search report a
+        // fantasy evaluation for a position the tables call dead. Measured on
+        // 8/8/8/4k3/8/8/4KNN1/8 w (K+N+N vs K, which cannot be forced): +531
+        // instead of 0. The move stayed safe because the filter still ran, but
+        // the score feeds the UCI output and anything reading it, including the
+        // draw-offer rule in the bot.
+        _rootInTb = Tablebases.Syzygy.ProbeWdl(board, out var rootWdl)
+                 && rootWdl is Tablebases.WdlScore.Win or Tablebases.WdlScore.Loss;
 
         // Keep every move with the best TB rank, so the search still gets a
         // choice among equally optimal continuations.

@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## 2026-08-02 (v4.3.0.2, follow-up) - the time-manager question, settled by instrumentation
+
+The working hypothesis all day was that the scheduler under-spends the clock. **It does not, and the way that was established matters more than the answer.**
+
+`NOA_TM_DEBUG=1` makes the iterative-deepening loop print its target, every factor applied to it and what has actually been spent. Off by default, so a released build pays one static boolean test per iteration.
+
+Traced across consecutive middlegame moves at 3+1:
+
+```
+jug 16: soft=5748 fe=0.500 red=0.940 inst=1.000 total= 2703 -> spent  4060 ms
+jug 17: soft=5896 fe=1.500 red=0.940 inst=1.000 total= 8317 -> spent 12481 ms
+jug 18: soft=5815 fe=0.500 red=1.982 inst=2.033 total=11630 -> spent 13052 ms
+jug 21: soft=5497 fe=0.500 red=0.940 inst=1.000 total= 2585 -> spent  2591 ms
+```
+
+It spends 2591 to 13052 ms against an optimum near 5500, **averaging about 107% of target**, and the dynamic factors swing the budget fivefold between a quiet move and a dangerous one. That is the scheduler working, not failing.
+
+The same trace shows the v4.3.0.2 SMP cap earning its place: on move 18, `total=11630` against `soft=5815` is exactly the new 2x bound. Under the old 1x bound that entire extension - on the one move where the eval was falling *and* the best move was flapping - would have been discarded.
+
+### Where the earlier reading came from
+
+Measuring moves 1-20 only. That range is the opening damp doing its job by design, and generalising from it to the whole game produced a confident, wrong conclusion. The source now records that so the next person does not repeat it.
+
+### Where the clock actually goes unused, in order of size
+
+The bot's two overhead settings, then the easy-move rule, then games simply ending before the clock does. `uci_options.MoveOverhead` is reserved x52 across the move horizon, so 600 instead of 30 costs a quarter of the bullet budget - measured optimum 3189 -> 2345 ms at 60+1 - and lichess-bot subtracts its own `move_overhead` from the clock it reports before the engine ever sees it. **Both are configuration. No engine change was warranted, and none was made.**
+
+### Also
+
+The tablebase probe is now disabled only for a **decisive** root. On a drawn one the flat score is the truth, and switching the probe off made the search report a fantasy evaluation for a dead position: +531 on `8/8/8/4k3/8/8/4KNN1/8 w`, K+N+N vs K, which cannot be forced. The move stayed safe because the root filter still ran, but that score feeds the UCI output and the draw-offer rule in the bot.
+
+### An experiment that did not survive
+
+Raising the falling-eval floor 0.5 -> 0.65. A 30% change moved the median spend by 5 ms, ruling the floor out as the binding constraint. Reverted rather than shipped unmeasured.
+
 ## 2026-08-02 (v4.3.0.2) - the tablebases and the clock were throwing play away
 
 **NOT MEASURED BY SPRT YET.** The data-scale campaign owns the machine; `sprt_timeman_smp.bat` is ready and deliberately runs at `Threads=4`, because the third defect below is a no-op on a single thread and a single-threaded SPRT would measure nothing. Every claim here is a bench reproduction, not an Elo figure.
