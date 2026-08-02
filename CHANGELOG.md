@@ -1,5 +1,56 @@
 # CHANGELOG
 
+## 2026-08-02 (v4.3.0.2) - the tablebases and the clock were throwing play away
+
+**NOT MEASURED BY SPRT YET.** The data-scale campaign owns the machine; `sprt_timeman_smp.bat` is ready and deliberately runs at `Threads=4`, because the third defect below is a no-op on a single thread and a single-threaded SPRT would measure nothing. Every claim here is a bench reproduction, not an Elo figure.
+
+Four defects, all of them found by watching the bot play on Lichess and all reproduced on the bench before a line was changed. Three of them made the engine play *worse than it would have with the feature switched off*, which is the class of bug that hides longest: nothing crashes, nothing is slow, the move is simply wrong.
+
+### 1. Tablebase scores are flat, so the search could not find the fastest win (v4.3.0.1)
+
+The in-search Syzygy probe returns `TbWin - ply` for **every** winning continuation. Promoting to a queen and promoting to a rook therefore scored identically, and so did delivering mate now versus circling for another ten moves. On `8/P7/8/8/8/8/8/K6k` the principal variation wandered back to the square it had started from.
+
+Whenever the root itself is resolved by the tables the root move list is already restricted to game-theoretically optimal moves, so the win cannot be thrown away no matter what the search decides. `AlphaBetaSearch` now records that in `_rootInTb` and skips the probe inside the search entirely, leaving ordinary evaluation and mate distance to choose among the moves the tables call equal. `tbhits` over that search fall from 53 to 1, and the variation now walks the enemy king to the edge.
+
+### 2. The DTZ root filter was giving material away
+
+DTZ is the distance to the next **irreversible** move, not to mate. On a board with no pawns and nothing of the opponent's to capture, the only move that can shorten it is letting the opponent capture one of ours. In K+Q+Q vs K that makes hanging a queen the "DTZ-optimal" move, and restricting the root to DTZ-optimal moves *forced* the engine to play it.
+
+Same binary, same position, only the tables switched:
+
+```
+FEN 8/8/8/5K2/8/2k5/8/4q1q1 b - - 6 81
+tables off -> e1e7, score mate 3     both queens kept
+tables on  -> e1e5, score cp 1283    the queen goes
+```
+
+The tables were making the engine worse. The filter now ranks by **WDL**, which still cannot throw the win away, and only falls back to DTZ once the halfmove clock reaches `DtzUrgencyClock` (50) and progress towards a zeroing move is what actually saves the game. That position is now mate in 3.
+
+The two fixes are coupled: WDL ranking leaves several moves on the table, and the search can only choose sensibly among them because fix 1 stopped the flat scores.
+
+### 3. MoveOverhead could switch the clock off entirely
+
+`MoveOverhead` is reserved across the whole move horizon, so `MoveOverhead x 52` at the default. With 600 in a 30+0 game that is more than the clock exists: `30000 - 31200` is negative, the `Math.Max(1, ...)` clamped the usable time to **one millisecond**, and the engine played an entire ultrabullet game in about seven seconds. Measured over the bot's games that day: median 0.00 s per move, 97% of the clock unused.
+
+The reservation is now capped at half the clock. Sane configurations come out bit for bit identical (`MoveOverhead 30` at 180+2: 276,440 ms before and after); only the pathological case changes, from 1 ms of usable time to 15,000. Reserving overhead must slow the engine down, never switch it off.
+
+### 4. The Lazy SMP cap made the time manager one-sided
+
+The multi-thread safety clamp bounded the modulated budget at the optimum itself. Since the bot never runs on one thread, that meant **every reduction applied in full while every extension was discarded**: a falling eval and a flapping best move, the two signals that mean "this position is dangerous, look harder", could not buy a single millisecond. The engine could only ever think less than its target, never more.
+
+Measured across 49 games on 2026-08-02: it finished with **73% to 98% of its clock unused** depending on the time control, with **zero losses on time**. The cap now sits at twice the optimum (`SmpExtensionCap`), isolated in one constant so the value can be tuned by SPRT without touching anything else. The hard maximum and the mid-iteration guard remain the real brakes.
+
+### Also here
+
+- `SyzygyIntegrationTests.SearchRoot_DoesNotRegenerateMovesAfterTablebaseFiltering` no longer pins an exact move. Under WDL ranking the filter deliberately leaves the search a choice, so the test now asserts the property it actually cares about: that the position reached is still won.
+- `EngineBenchmarks` stopped compiling when architecture 3 made `ArchitectureId` required and turned `OutBias` into an array. It had been taking the whole solution build down with it since v4.2.0.
+
+### What this does not fix
+
+The clock is still under-used outside the pathological case. The easy-move rule spends 12% of the budget once the score passes 700 cp with a stable best move, which in won games is nearly always, and that was itself introduced on the back of an SPRT. It stays until another SPRT says otherwise.
+
+Two configuration values on the bot side also matter and are not engine changes: `uci_options.MoveOverhead` belongs at 30, not 600, and lichess-bot's own `move_overhead` subtracts a further second from the clock it reports to the engine.
+
 ## 2026-08-01 (v4.3.0) - BLOCK 12 search, part 1: the complete correction histories
 
 **MEASURED: +25.7 ±16.4 Elo vs v4.2.0, LOS 99.9%, SPRT H1 accepted** (280-212-429 over 921 games at 10+0.1, LLR 2.97 against a 2.94 bound). Same gen7 net embedded on both sides, so the difference is the search and nothing else - and since v4.2.0 is strength-identical to v3.3.0, this is **the first real Elo of the v4.x campaign, measured against the ~3080 engine**.

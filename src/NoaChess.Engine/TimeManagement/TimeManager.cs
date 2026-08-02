@@ -29,10 +29,20 @@ public static class TimeManager
         // Maximum move horizon of 50 moves.
         int mtg = movesToGo is int m && m > 0 ? Math.Min(m, 50) : 50;
 
+        // Overhead reserved for the whole horizon. Capped at half the clock:
+        // the reservation is MoveOverhead x 52 at the default horizon, so a
+        // large MoveOverhead silently swallows a short clock whole. Measured
+        // 2026-08-02 with MoveOverhead 600 in a 30+0 game: 30000 - 600*52 is
+        // negative, the Math.Max below clamped it to 1 ms, and the engine
+        // played the entire game in about seven seconds at roughly one
+        // millisecond per move. Reserving overhead must slow the engine down,
+        // never switch it off.
+        long overhead = Math.Min(moveOverheadMs * (2L + mtg), time / 2);
+
         // Time usable over the whole horizon: the clock plus the increments
-        // that will keep coming back, minus overhead for each expected move.
+        // that will keep coming back, minus that overhead.
         // Kept > 0 since it is used as a divisor.
-        long timeLeft = Math.Max(1, time + incrementMs * (mtg - 1) - moveOverheadMs * (2L + mtg));
+        long timeLeft = Math.Max(1, time + incrementMs * (mtg - 1) - overhead);
 
         // optScale is the fraction of timeLeft to target for this move;
         // maxScale is the multiplier from optimum to the hard deadline.
