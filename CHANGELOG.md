@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## 2026-08-03 (v4.3.0.3) - the endgame filter fix, fixed
+
+v4.3.0.2 stopped the DTZ root filter from giving material away by ranking root moves with WDL below a halfmove-clock threshold. **That fixed one bug and created another**, and a real game found it the same evening.
+
+Against zipfile_chess-bot ([lichess.org/HUAC6sVf](https://lichess.org/HUAC6sVf), 60+2), K+N+3P against a bare king:
+
+```
+123. Nc3 Kb2  124. Kc5 Ka1  125. Nb1 Ka2  126. Kd6 Ka1  127. Nc3 Kb2
+128. Nd1+ Ka1 129. Ne3 Kb1  130. Nc2 Kc1  131. Nb4 Kb1  132. Kc6 Ka1
+   ... twenty moves of knight and king going nowhere ...
+143. f6! Kb1  144. f7 Ka2  145. f8=Q Kb1  146. Qf1+ Ka2  147. Qa1# 1-0
+```
+
+Twenty wasted moves, then the halfmove counter crossed the threshold, DTZ engaged, and the pawn walked in for mate in five. Everything needed to win was already there; only the reason to make progress was missing. WDL ranking keeps every move that preserves the win and says nothing about which one advances, so the search had no gradient at all.
+
+### The distinction that was missing
+
+DTZ steers towards the next irreversible move, and that is **exactly what a won endgame wants when there is a pawn to push**: the push zeroes the counter and is genuine progress towards promotion. DTZ is only harmful with no pawns of ours and nothing of theirs to capture, because then the only way to shorten it is to let the opponent take one of our pieces - the K+Q+Q vs K queen sacrifice of v4.3.0.2.
+
+So the rule is now about pawns, not about the clock: **our own pawns present, DTZ always; no pawns, WDL until the fifty-move counter makes progress the thing that saves the win.**
+
+All three behaviours are correct together for the first time:
+
+| Position | before v4.3.0.2 | v4.3.0.2 | v4.3.0.3 |
+|---|---|---|---|
+| K+N+pawns vs K | promotes | **20 moves shuffling** | **mate in 5** |
+| K+Q+Q vs K | **sacrifices the queen** | mate in 3 | mate in 3 |
+| K+P vs K | queens | queens | queens |
+
+308 tests. The game is cited in the source with its URL, so the next person to touch this filter can see what each version actually did.
+
 ## 2026-08-02 (v4.3.0.2, follow-up) - the time-manager question, settled by instrumentation
 
 The working hypothesis all day was that the scheduler under-spends the clock. **It does not, and the way that was established matters more than the answer.**
