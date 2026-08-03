@@ -37,7 +37,11 @@ Raising the falling-eval floor 0.5 -> 0.65. A 30% change moved the median spend 
 
 ## 2026-08-02 (v4.3.0.2) - the tablebases and the clock were throwing play away
 
-**NOT MEASURED BY SPRT YET.** The data-scale campaign owns the machine; `sprt_timeman_smp.bat` is ready and deliberately runs at `Threads=4`, because the third defect below is a no-op on a single thread and a single-threaded SPRT would measure nothing. Every claim here is a bench reproduction, not an Elo figure.
+**MEASURED +9.8 Elo, 95% CI [-1.9, +21.6], LOS 95.0%** over 1094 games at 60+1 against v4.3.0 (193-162-739). Run at `Threads=4` on purpose: the fourth defect below is a no-op on a single thread, so a single-threaded SPRT would have measured nothing.
+
+**Read that interval honestly.** It touches zero at the bottom, so this is not a proven gain and the SPRT was stopped before it concluded, at a point where resolving it would have cost another one to two days of machine time that the data-scale campaign needs more. What it does establish is the thing that actually needed ruling out: letting the SMP budget extend to twice the optimum **does not cost anything**, and the centre of the distribution is positive.
+
+The 67.6% draw rate is itself informative: two versions that differ in very few positions. Of the four defects, three fire only in endgames that barely occur across a thousand bullet games; the fourth acts on every move and is what the number really measures.
 
 Four defects, all of them found by watching the bot play on Lichess and all reproduced on the bench before a line was changed. Three of them made the engine play *worse than it would have with the feature switched off*, which is the class of bug that hides longest: nothing crashes, nothing is slow, the move is simply wrong.
 
