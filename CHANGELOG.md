@@ -34,7 +34,9 @@ Over 40 searches of that position - every clock budget from 100 ms to 120 s, 1 a
 
 ### Measured on the side: the NNUE is not SIMD-invariant
 
-While chasing this, the same position at the same depth gave different scores and sometimes different moves depending on the vector path (`AVX2` / `no AVX2` / no intrinsics): -776 / -792 / -799 cp on move 51, -1174 / -1135 / -1217 on move 52. The macOS bot runs the x64 build under Rosetta 2, which has no AVX2, so it plays on the scalar path. Not the cause of this bug, but a real defect - a parity test across the three paths is pending.
+While chasing this, the same position at the same depth gave different scores and sometimes different moves depending on the vector path (`AVX2` / `no AVX2` / no intrinsics): -776 / -792 / -799 cp on move 51, -1174 / -1135 / -1217 on move 52. A build should not change its mind because of the vector width, so this is a real defect and a parity test across the three paths is pending.
+
+It is **not**, however, affecting the bot. The first reading of it was wrong: the macOS host was assumed to be Apple Silicon running the x64 build under Rosetta 2 (no AVX2, hence the scalar path), and that assumption was never checked. It is an **Intel** Mac - the arm64 build refuses to start on it with `bad CPU type in executable` - so it takes the same AVX2 path as Windows. Verified rather than argued: `go depth 20` from the start position at `Threads=1` returns **identical node counts, scores and PV on both machines** (12,066,208 nodes, cp 46). The two hosts are the same engine bit for bit; games played on either are equally good evidence. The parity defect matters for a future non-AVX2 target, not for anything deployed today.
 
 ### The ponder audit
 
