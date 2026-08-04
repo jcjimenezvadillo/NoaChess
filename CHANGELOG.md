@@ -98,6 +98,14 @@ middlegame 180+2  2909 ms  2909 ms   unchanged
 
 K+N+N vs K scores +5.58 instead of 0. The move is safe because the root filter keeps only drawing moves, but the number is wrong and the bot's draw-offer rule reads it. The cause is known: the in-search probe requires a zeroed halfmove counter, which in a pawnless endgame never happens again after the root. The fix is to report the tablebase verdict as the root score, which touches the search's return value and was not worth rushing.
 
+### SPRT vs v4.3.0.4
+
+`sprt_ponderhit_noreg.bat`, 60+1, ponder on for both sides, `elo0=-5 elo1=0` (a non-regression bound, not a strength claim - the ponderhit and root-move fixes are correctness fixes, not features up for a vote). Stopped by hand once the trend was unambiguous, not run to the SPRT's own bound:
+
+**Elo difference: 55.5 ± 39.6, LOS: 99.7%, DrawRatio: 59.2%. LLR 0.736 (25.0% of the way to +2.94), rising monotonically with no dip.**
+
+Mixes both fixes together - the ponder-credit cap and the root fail-low exclusion were not isolated separately. The direction confirms the diagnosis: v4.3.0.3 relaunched a starved search on every long ponder, and this pairing (both sides pondering, 60+1) is exactly where that bug bit hardest.
+
 ## 2026-08-03 (v4.3.0.3) - the endgame filter fix, fixed
 
 v4.3.0.2 stopped the DTZ root filter from giving material away by ranking root moves with WDL below a halfmove-clock threshold. **That fixed one bug and created another**, and a real game found it the same evening.
