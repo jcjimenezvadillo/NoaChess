@@ -44,3 +44,13 @@ Notes:
 - gen5's +34 is the deeper-labels payoff (14000→20000 nodes). Its absolute CCRL
   placement (~3050) comes from the field gauntlet; the internal-vs-classical step
   is skipped for gen5 because the gauntlet is the more direct placement.
+
+**Status as of v4.3.0.4 (2026-08-04): still gen7, unchanged since v3.2.0.**
+Everything shipped between v3.2.0 and v4.3.0.4 - Lazy SMP, complete correction
+histories, output buckets, the ponderhit and root-move fixes - is search or
+scheduling, not training, so this table has nothing new to record. The next
+entry here is gated on the data-scale campaign (`Noa-DataScale.ps1`): phase 0
+already measured the current net as **data-starved by +182 Elo** at equal
+compute (20M positions @ 6000 nodes beat 4.3M @ 28000 nodes, LOS 100%), which
+is why the campaign trains at 6000 nodes instead of pushing label depth
+further - see [README](README.md) and [CHANGELOG](CHANGELOG.md).
