@@ -20,7 +20,7 @@ public class PieceTermsTests
     [Fact]
     public void TrappedRook_PenalizesRookTrappedByOwnKing()
     {
-        // White rook h1, king g1, pawns g2/h2 — rook has 0 mobility squares
+        // White rook h1, king g1, pawns g2/h2 - rook has 0 mobility squares
         // (g1 = own king excluded; h2 = own dull pawn excluded) and is on rank 1.
         // Compare to a rook freely on a4 with the king on e1.
         int trapped = Eval("4k3/8/8/8/8/8/6PP/6KR w - - 0 1");
@@ -154,7 +154,7 @@ public class PieceTermsTests
     public void WeakQueen_NotFiredWithTwoBlockersBetween()
     {
         // Two white pieces between the black rook (d8) and the white queen (d4):
-        // a pawn on d6 and the queen — the queen is NOT the lone blocker, so no
+        // a pawn on d6 and the queen - the queen is NOT the lone blocker, so no
         // WeakQueen penalty. Compare to the lone-blocker case which is penalized.
         int twoBlockers = Eval("3r2k1/8/3P4/8/3Q4/8/8/4K3 w - - 0 1");
         int loneBlocker = Eval("3r2k1/8/8/8/3Q4/8/8/4K3 w - - 0 1");
@@ -173,7 +173,7 @@ public class PieceTermsTests
     {
         // White knight on e5 outpost (protected by d4). One position adds own
         // pawns on the kingside wing (f2,g2,h2); the other has them on the far
-        // queenside (a2,b2) — off the knight's wing. The knight with pawns on its
+        // queenside (a2,b2) - off the knight's wing. The knight with pawns on its
         // own wing should get more UncontestedOutpost endgame value... but material
         // differs, so just verify the term is applied without crashing and both
         // positions stay in a sane range.

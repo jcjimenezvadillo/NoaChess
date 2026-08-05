@@ -10,11 +10,11 @@ namespace NoaChess.Engine.TimeManagement;
 //   modulates it every iteration with dynamic factors (falling eval, best-move
 //   stability, best-move instability) and stops when the elapsed time exceeds
 //   the modulated target (see AlphaBetaSearch).
-// - maximumTime: the absolute deadline — the search aborts mid-iteration.
+// - maximumTime: the absolute deadline - the search aborts mid-iteration.
 //
 // Two time-control shapes are supported:
-// 1) x basetime (+ z increment)          — "sudden death", bullet/blitz/rapid
-// 2) x moves in y seconds (+ z increment) — classical, GUI sends "movestogo"
+// 1) x basetime (+ z increment)          - "sudden death", bullet/blitz/rapid
+// 2) x moves in y seconds (+ z increment) - classical, GUI sends "movestogo"
 //
 // The whole increment is folded into the usable time over the assumed move
 // horizon (inc * (mtg - 1)), instead of the flat per-move percentage of
@@ -29,10 +29,20 @@ public static class TimeManager
         // Maximum move horizon of 50 moves.
         int mtg = movesToGo is int m && m > 0 ? Math.Min(m, 50) : 50;
 
+        // Overhead reserved for the whole horizon. Capped at half the clock:
+        // the reservation is MoveOverhead x 52 at the default horizon, so a
+        // large MoveOverhead silently swallows a short clock whole. Measured
+        // 2026-08-02 with MoveOverhead 600 in a 30+0 game: 30000 - 600*52 is
+        // negative, the Math.Max below clamped it to 1 ms, and the engine
+        // played the entire game in about seven seconds at roughly one
+        // millisecond per move. Reserving overhead must slow the engine down,
+        // never switch it off.
+        long overhead = Math.Min(moveOverheadMs * (2L + mtg), time / 2);
+
         // Time usable over the whole horizon: the clock plus the increments
-        // that will keep coming back, minus overhead for each expected move.
+        // that will keep coming back, minus that overhead.
         // Kept > 0 since it is used as a divisor.
-        long timeLeft = Math.Max(1, time + incrementMs * (mtg - 1) - moveOverheadMs * (2L + mtg));
+        long timeLeft = Math.Max(1, time + incrementMs * (mtg - 1) - overhead);
 
         // optScale is the fraction of timeLeft to target for this move;
         // maxScale is the multiplier from optimum to the hard deadline.
@@ -42,7 +52,7 @@ public static class TimeManager
         {
             // x basetime (+ z increment): the target share grows slowly with
             // the game ply (openings are cheap, middlegames deserve time) and
-            // is capped at 20% of the actual remaining clock — with a healthy
+            // is capped at 20% of the actual remaining clock - with a healthy
             // increment timeLeft can exceed the clock itself. Larger
             // increments allow using a little extra.
             double optExtra = Math.Clamp(1.0 + 12.0 * incrementMs / time, 1.0, 1.12);
@@ -57,7 +67,7 @@ public static class TimeManager
             // optimum: at 3+2 the raw formula budgets ~7.5s per opening move
             // (~19s once the dynamic factors extend it), starving the
             // middlegame. Without an opening book the first moves are the
-            // cheapest of the game — shrink their share and let the ply curve
+            // cheapest of the game - shrink their share and let the ply curve
             // take over from ~move 10.
             optScale *= Math.Min(1.0, 0.55 + gamePly * 0.025);
         }
@@ -84,7 +94,7 @@ public static class TimeManager
         // geometrically instead of stabilizing the spend around the
         // increment. Observed in Arena bullet (2+1): 3-4s per move in the
         // middlegame bleeding 2-3s net each move, then 1-2s moves (hard
-        // deadline ~4s!) with 5s on the clock — time losses in won positions.
+        // deadline ~4s!) with 5s on the clock - time losses in won positions.
         // Bound the target by inc + clock/16 and the hard deadline by
         // inc + clock/4: every move stays affordable, and near-exhausted
         // clocks stabilize around the increment instead of flagging.

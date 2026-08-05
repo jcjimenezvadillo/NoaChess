@@ -130,13 +130,13 @@ def record_to_features(rec):
 #
 # record_to_features above is the readable reference and stays the definition of
 # correctness. It is also a per-record Python loop running at ~14k records/s,
-# which is 6 hours for 300M positions and 10 for 500M — the volume BLOCK 12
+# which is 6 hours for 300M positions and 10 for 500M - the volume BLOCK 12
 # needs. That is not a tuning problem, it is a wall: every change to the data
 # mix would cost most of a day before training could even start.
 #
 # This decodes whole blocks with numpy instead. The bit twiddling is identical;
 # only the loop moves from Python into vectorised operations. decode_block is
-# asserted equal to record_to_features over random records by the parity test —
+# asserted equal to record_to_features over random records by the parity test -
 # a decoder that is fast and subtly wrong would poison every net trained after
 # it, exactly the class of failure that cost gen7.
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ def decode_block(records):
 
     occupancy = np.ascontiguousarray(records["occupancy"])
     # Bit i of the occupancy is square i, so little bit order gives squares in
-    # ascending order — the same order the nibbles were written in.
+    # ascending order - the same order the nibbles were written in.
     bits = np.unpackbits(occupancy.view(np.uint8).reshape(n, 8), axis=1, bitorder="little")
     row_idx, square = np.nonzero(bits)          # row-major: rows in order, squares ascending
     row_idx = row_idx.astype(np.int64)
@@ -265,7 +265,7 @@ def precompute_features(records, cache_path=None, log_every=250_000):
 #
 # WHY. precompute_features above builds dense arrays in RAM: 32 int16 per
 # perspective, plus score and result, is ~136 bytes per record. train_nnue.py
-# therefore carried a --max-records safety cap of 120M, which is ~16 GB — and
+# therefore carried a --max-records safety cap of 120M, which is ~16 GB - and
 # that cap is an ARCHITECTURAL CEILING, not a tuning knob. BLOCK 12 targets
 # 300-500M positions on the way to a billion; at 136 bytes each that is 40-136
 # GB and simply cannot be an in-RAM array on this machine.
@@ -280,7 +280,7 @@ def precompute_features(records, cache_path=None, log_every=250_000):
 # and several chunks are read into a buffer that is then shuffled internally.
 # That mixes well across the whole file while keeping reads sequential. The
 # NOADATA format stores records game by game, so a chunk is a run of related
-# positions — which is exactly why the in-buffer shuffle matters and why the
+# positions - which is exactly why the in-buffer shuffle matters and why the
 # buffer holds many chunks rather than one.
 # ---------------------------------------------------------------------------
 
@@ -305,7 +305,7 @@ def build_feature_shards(path, log_every=250_000, force=False):
 
     The mtime check is not optional bookkeeping. Keying a feature cache on mere
     existence is what silently trained gen7 on stale random-opening features
-    after the dataset had been regenerated under the same name — the run looked
+    after the dataset had been regenerated under the same name - the run looked
     healthy and measured the wrong net. Provenance has to be checked, never
     assumed.
     """
@@ -334,7 +334,7 @@ def build_feature_shards(path, log_every=250_000, force=False):
     # Block-decoded with numpy (v4.1.0): ~170k records/s against ~14k for the
     # per-record Python loop, i.e. 30 minutes for 300M positions instead of 6
     # hours. Blocks are bounded so peak memory stays flat regardless of dataset
-    # size — the whole point of the streaming path.
+    # size - the whole point of the streaming path.
     block = 1_000_000
     print(f"decoding {n:,} records -> {directory}", flush=True)
     start_time = time.time()
@@ -390,11 +390,11 @@ class FeatureStore:
             count = len(stm)
             if count == 0:
                 # A shard whose header still says zero records was never
-                # finalized — the datagen was interrupted while writing it. It
+                # finalized - the datagen was interrupted while writing it. It
                 # reads as empty rather than corrupt, so it would silently
                 # contribute nothing; say so instead of letting it look fine.
                 print(f"WARNING: {path} holds 0 records (interrupted shard, never "
-                      f"finalized). It contributes nothing — re-run the datagen "
+                      f"finalized). It contributes nothing - re-run the datagen "
                       f"with --resume, or drop the file.")
                 continue
             train_count = count - int(count * val_fraction)

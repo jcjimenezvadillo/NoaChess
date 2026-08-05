@@ -5,7 +5,7 @@ namespace NoaChess.Engine.Heuristics;
 // Capture history: for every (mover piece, destination, captured piece type)
 // it accumulates how often that capture turned out best. Where MVV-LVA ranks
 // captures by static material logic alone, this table learns from actual
-// search outcomes — QxP may be the biggest victim gain on the board and still
+// search outcomes - QxP may be the biggest victim gain on the board and still
 // be a known lemon in this structure. Introduced for quiescence ordering and
 // now shared by the main capture picker; the same signal is also available to
 // ProbCut and capture futility when those selective paths are enabled.
@@ -16,7 +16,7 @@ public sealed class CaptureHistory
 {
     // Bound of the gravity update. Sized so a strong
     // history signal (~65% of the bound) is comparable to the 7x victim-value
-    // term it is added to in ProbCut ordering — the same ratio the reference
+    // term it is added to in ProbCut ordering - the same ratio the reference
     // keeps between its bound (10692) and 7x its queen value.
     private const int MaxScore = 4096;
 

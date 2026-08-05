@@ -8,7 +8,7 @@ using NoaChess.UCI;
 // The banner is a friendly identification for a human launching the exe by
 // hand in a terminal. It is emitted ONLY when stdin is a real console: a GUI
 // or bot (lichess-bot, Arena, cutechess) pipes stdin, and a strict UCI reader
-// must see NOTHING before the protocol starts at "uci" — any text before the
+// must see NOTHING before the protocol starts at "uci" - any text before the
 // first "id"/"uciok" can desync or hang it. Console.IsInputRedirected is true
 // exactly when the input is piped, so the guard keeps the console output clean
 // for every automated driver while preserving the banner for interactive use.

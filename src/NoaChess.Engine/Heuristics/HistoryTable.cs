@@ -16,8 +16,8 @@ public sealed class HistoryTable
     // how far it already is, which keeps the table symmetric: the previous rule
     // grew on the positive side until a GLOBAL halving rescale fired, but
     // clamped individually on the negative side. Measured, that left the table
-    // heavily right-skewed — median -8 against a mean of +71.8, only 25% of
-    // entries positive, and a tail reaching 6086 — so any consumer that reads
+    // heavily right-skewed - median -8 against a mean of +71.8, only 25% of
+    // entries positive, and a tail reaching 6086 - so any consumer that reads
     // the raw value saw a few moves dominate everything.
     //
     // The bound has to BE the operating range for gravity to do anything. At

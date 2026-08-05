@@ -73,7 +73,7 @@ public class QuiescenceTests
     {
         // Ra8# is a genuine back-rank mate: the rook is out of the king's
         // reach, f8/h8 stay on the rook's rank and f7/g7/h7 are black's own
-        // pawns. (A rook landing on h8 instead would simply hang to Kxh8 —
+        // pawns. (A rook landing on h8 instead would simply hang to Kxh8 -
         // the trap the first draft of this test fell into.)
         var board = new Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1");
         var result = _engine.FindBestMove(board, depth: 3);
@@ -104,7 +104,7 @@ public class QuiescenceTests
         // both on the rook's rank, f2/g2/h2 are white's own pawns, and no
         // white piece can interpose on f1.
         // The bishop recaptures from a5 (its path opens as the queen leaves
-        // d2) and does NOT attack g1 from e1 — so white survives a piece down
+        // d2) and does NOT attack g1 from e1 - so white survives a piece down
         // instead of being mated. A quiescence that applies SEE pruning while
         // in check throws this move away and invents a mate.
         var board = new Board("k7/8/8/b7/8/8/3Q1PPP/4r1K1 w - - 0 1");
@@ -119,7 +119,7 @@ public class QuiescenceTests
     public void StalemateAtTheHorizonScoresAsDraw()
     {
         // Classic stalemate: black king a8, white king a6, white queen c7.
-        // Black to move has no legal move and is NOT in check — the score
+        // Black to move has no legal move and is NOT in check - the score
         // must be 0, not the crushing material advantage white owns.
         var board = new Board("k7/2Q5/K7/8/8/8/8/8 b - - 0 1");
         var result = _engine.FindBestMove(board, depth: 2);
@@ -169,7 +169,7 @@ public class QuiescenceTests
     {
         // Quiet Italian position where Bxf7+ is available: a capture that
         // gives check. The node it leads to is exactly where the old
-        // quiescence was broken — it stood pat on a checked position — and
+        // quiescence was broken - it stood pat on a checked position - and
         // the sacrifice is unsound here (Kxf7 just wins the bishop), so the
         // engine must decline it and stay near equality.
         // (An earlier draft used a Scholar's-mate position by accident, where

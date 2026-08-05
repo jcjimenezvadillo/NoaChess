@@ -4,7 +4,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 //
 // WHY THIS EXISTS: NnueInference used to assert that the L1 dot product was
 // "THE cost of NNUE eval". At FT=128 / L1=32 that product is 32 x 256 = 8,192
-// int16 MACs, roughly 512 AVX2 instructions per evaluation — far too small to
+// int16 MACs, roughly 512 AVX2 instructions per evaluation - far too small to
 // dominate anything at 446k NPS. The v4.2.0 decision to widen the feature
 // transformer must not be taken against an unmeasured cost model a second
 // time, so the cost is now measured instead of assumed.

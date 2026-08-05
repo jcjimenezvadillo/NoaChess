@@ -10,7 +10,7 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // Two tables per piece: a MIDDLEGAME table and an ENDGAME table. The final
 // value is interpolated by the game phase (tapered eval). This is what lets
 // the king score +30 for castling with queens on the board yet +25 for
-// standing on e4 once it is a king-and-pawn endgame — a single-phase table
+// standing on e4 once it is a king-and-pawn endgame - a single-phase table
 // can only ever pick one of those.
 //
 // Started from the well-known PeSTO tables (public domain, derived from

@@ -8,12 +8,12 @@ using NoaChess.Core;
 namespace NoaChess.Engine.Evaluation.Nnue;
 
 // One accumulator: the pre-activation output of the feature transformer for
-// BOTH perspectives. This is the "efficiently updatable" part of NNUE — when
+// BOTH perspectives. This is the "efficiently updatable" part of NNUE - when
 // a move changes 2-4 features, the accumulator is patched by adding and
 // subtracting a couple of weight rows instead of recomputing the sum of ~30.
 public sealed class NnueAccumulator
 {
-    // [perspective, ftOutputs] — White = 0, Black = 1.
+    // [perspective, ftOutputs] - White = 0, Black = 1.
     public readonly short[][] Values;
 
     // A perspective becomes invalid when ITS king moves (every feature of the
@@ -56,7 +56,7 @@ public sealed class NnueAccumulator
     //
     // A weight row is FtOutputs int16 wide and is added to / subtracted from the
     // accumulator several times per search node. The v4.0.0 profile measured
-    // this family at 73.8% of all NNUE work — more than the L1 dot product by a
+    // this family at 73.8% of all NNUE work - more than the L1 dot product by a
     // factor of three, and the exact opposite of what the old comment in
     // NnueInference asserted.
     //
@@ -114,7 +114,7 @@ public sealed class NnueAccumulator
     // Fused "a piece left removeIndex and arrived at addIndex": one pass over
     // the accumulator instead of a SubtractFeature + AddFeature pair, halving
     // the load/store traffic on 'values'. Every non-king move does exactly this
-    // for both perspectives, so it is the single most-executed update — and the
+    // for both perspectives, so it is the single most-executed update - and the
     // largest single line in the cost profile.
     public void MoveFeature(NnueNetwork network, Color perspective, int removeIndex, int addIndex)
     {

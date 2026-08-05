@@ -202,7 +202,7 @@ public sealed class UciLoop
             {
                 foreach (string line in _queue.GetConsumingEnumerable())
                 {
-                    // The ONLY place a full stdout can block — and it blocks only
+                    // The ONLY place a full stdout can block - and it blocks only
                     // this pump thread, never a producer.
                     try { _sink.WriteLine(line); _sink.Flush(); }
                     catch { /* GUI gone: keep draining so producers never block */ }
@@ -239,7 +239,7 @@ public sealed class UciLoop
                     if (!Dispatch(tokens))
                     {
                         quitReceived = true;
-                        LogLine("--", "quit received — read loop ends");
+                        LogLine("--", "quit received - read loop ends");
                         break;
                     }
                 }
@@ -249,7 +249,7 @@ public sealed class UciLoop
                 }
             }
             if (!quitReceived)
-                LogLine("--", "stdin EOF — read loop ends");
+                LogLine("--", "stdin EOF - read loop ends");
         }
         finally
         {
@@ -271,7 +271,7 @@ public sealed class UciLoop
                     break;
 
                 case "isready":
-                    // Must answer even while a search runs — the GUI uses it
+                    // Must answer even while a search runs - the GUI uses it
                     // as a heartbeat. The loop thread is free, so just reply.
                     if (!_embeddedNnueChecked)
                     {
@@ -303,7 +303,7 @@ public sealed class UciLoop
                 {
                     // Not UCI: measures where NNUE evaluation time actually
                     // goes (v4.0.0 foundation gate). The v4.2.0 width decision
-                    // must rest on this instead of on intuition — the previous
+                    // must rest on this instead of on intuition - the previous
                     // decision not to widen rested on a cost model that does
                     // not survive arithmetic. Forces single-threaded search so
                     // the unsynchronised counters stay meaningful.
@@ -316,7 +316,7 @@ public sealed class UciLoop
                 {
                     // Not UCI: measures what each feature-transformer width
                     // COSTS, using shape-accurate synthetic nets so no training
-                    // is needed. This is the v4.2.0 gate input — the width
+                    // is needed. This is the v4.2.0 gate input - the width
                     // decision must rest on measurement, and previously the
                     // measurement did not exist. Run on an idle machine.
                     WaitForSearchToFinish(suppressBestmove: true);
@@ -350,7 +350,7 @@ public sealed class UciLoop
                 case "ponderhit":
                     // The opponent played the predicted move: everything the
                     // ponder search stored in the TT is valid. Silently stop
-                    // it and relaunch as a normal timed search — the warm TT
+                    // it and relaunch as a normal timed search - the warm TT
                     // makes the early iterations nearly free, and the time
                     // already pondered is charged against the new budget so
                     // a long ponder answers almost instantly.
@@ -377,7 +377,7 @@ public sealed class UciLoop
 
     // Cancels and joins any running search. Called before commands that touch
     // the board or the engine: a search still running would race with them.
-    // 'suppressBestmove' silences the aborted search's answer — used when the
+    // 'suppressBestmove' silences the aborted search's answer - used when the
     // GUI moved on (new position / new game / ponderhit) and a late bestmove
     // would be misattributed to the new context.
     private void WaitForSearchToFinish(bool suppressBestmove = false)
@@ -388,14 +388,14 @@ public sealed class UciLoop
             LogLine("--", $"waiting for search task (suppress={suppressBestmove})");
         _searchCts?.Cancel();
         // A faulted search task re-throws its exception here, on the UCI loop
-        // thread — which would kill the read loop and leave a zombie process
+        // thread - which would kill the read loop and leave a zombie process
         // (alive but deaf; Arena's Ctrl+N new game shows exactly this). The
         // search already reported the failure; the loop must survive it.
         //
         // The wait is UNBOUNDED by design (proceeding while a search still runs
         // would break ChessEngine's "one search at a time" contract), but a
         // search that ignored cancellation would hang the command loop with no
-        // trace at all — under lichess-bot, with concurrency 1, that silently
+        // trace at all - under lichess-bot, with concurrency 1, that silently
         // ends the bot's night. Report every stalled second so the failure is
         // diagnosable from the GUI/bot log instead of looking like a freeze.
         try
@@ -405,7 +405,7 @@ public sealed class UciLoop
                 for (int waitedSeconds = 0; !task.Wait(TimeSpan.FromSeconds(1)); waitedSeconds++)
                 {
                     _output.WriteLine("info string search still stopping after "
-                                    + $"{waitedSeconds + 1}s — cancellation not honoured");
+                                    + $"{waitedSeconds + 1}s - cancellation not honoured");
                     LogLine("--", $"STALL: search task not finishing after {waitedSeconds + 1}s");
                 }
             }
@@ -415,7 +415,7 @@ public sealed class UciLoop
         _suppressBestmove = false;
     }
 
-    // "nnueprofile [depth]" — not UCI. Prints the NNUE cost breakdown that the
+    // "nnueprofile [depth]" - not UCI. Prints the NNUE cost breakdown that the
     // v4.0.0 gate is defined against. Runs single-threaded: the profiling
     // counters are deliberately unsynchronised, and a parallel search would
     // both corrupt them and blur the per-primitive attribution.
@@ -466,7 +466,7 @@ public sealed class UciLoop
         }
     }
 
-    // "nnuewidth [w1,w2,...] [l1] [buckets]" — not UCI. Defaults sweep the
+    // "nnuewidth [w1,w2,...] [l1] [buckets]" - not UCI. Defaults sweep the
     // widths BLOCK 12 is choosing between.
     private void HandleNnueWidth(string[] tokens)
     {
@@ -639,14 +639,40 @@ public sealed class UciLoop
         // Clock-managed searches only (soft < hard): movetime/depth/nodes
         // budgets are explicit GUI requests and stay untouched.
         if (ponderedMs > 0 && limits.SoftTimeMs < limits.HardTimeMs)
-            limits = limits with
-            {
-                ElapsedOffsetMs = Math.Min(ponderedMs, Math.Max(0, limits.HardTimeMs - 100)),
-            };
+        {
+            // Charge at most HALF the soft budget, never more.
+            //
+            // The credit used to be clamped against the HARD budget only,
+            // leaving 100 ms of it. But iterative deepening is driven by the
+            // SOFT budget, so a ponder longer than that budget made the search
+            // start already past its deadline and break straight after depth 1.
+            // Measured 2026-08-04 at 60+1 (soft budget about 2.5 s), pondering
+            // for the stated time and then sending ponderhit:
+            //
+            //   pondered   500 ms -> depth 16, 4646 ms searching
+            //   pondered  2000 ms -> depth 15, 3550 ms
+            //   pondered  5000 ms -> depth 11,    5 ms
+            //   pondered 10000 ms -> depth  1,    5 ms
+            //
+            // The longer the opponent thought, the shallower the reply, which
+            // against slow bots is most moves of the game. It produced real
+            // blunders on Lichess: RZwdbv4z move 23 Qh3 at depth 1 with 41 s
+            // still on the clock, and several more the same night.
+            //
+            // Charging the full pondered time is right for a scheduler that
+            // CONTINUES the pondered search, as the reference does. This engine
+            // relaunches instead, inheriting only the transposition table, so
+            // the pondered depth has to be re-established and that needs time.
+            // Half the soft budget is enough to reach the previous depth over a
+            // warm table while still answering visibly faster than a fresh move.
+            long maxCredit = Math.Min(limits.SoftTimeMs / 2,
+                                      Math.Max(0, limits.HardTimeMs - 100));
+            limits = limits with { ElapsedOffsetMs = Math.Min(ponderedMs, maxCredit) };
+        }
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
         // "bestmove" until the GUI resolves the search with "stop" or
-        // "ponderhit" — even if the search finishes on its own (a forced mate
+        // "ponderhit" - even if the search finishes on its own (a forced mate
         // breaks iterative deepening in milliseconds, which happens all the
         // time in pondered positions near the end of a game). A bestmove
         // leaked here desyncs the GUI: Arena consumes it as the answer to the
@@ -667,6 +693,20 @@ public sealed class UciLoop
             return $"mate {(AlphaBetaSearch.MateScore - score + 1) / 2}";
         if (score < -mateBound)
             return $"mate {-(AlphaBetaSearch.MateScore + score + 1) / 2}";
+
+        // Tablebase verdicts live in their own band just below the mate range
+        // (AlphaBetaSearch.TbWin), deliberately so they are never announced as
+        // a mate the engine has not proven. Left raw they came out as
+        // "cp 98872" - about 988 pawns - on the eval bar and in everything that
+        // reads the score, including the bot's resign and draw-offer rules.
+        // Report the conventional saturated value, keeping the ply ordering so
+        // a win found sooner still scores higher.
+        const int tbBand = AlphaBetaSearch.TbWin - 256;
+        if (score > tbBand)
+            return $"cp {20_000 - (AlphaBetaSearch.TbWin - score)}";
+        if (score < -tbBand)
+            return $"cp {-20_000 + (AlphaBetaSearch.TbWin + score)}";
+
         return $"cp {score}";
     }
 
@@ -695,7 +735,7 @@ public sealed class UciLoop
         var stopwatch = Stopwatch.StartNew();
 
         // Kept for the "ponder" hint: the second move of the last full PV is
-        // the opponent reply we expect — the GUI needs it to ponder at all.
+        // the opponent reply we expect - the GUI needs it to ponder at all.
         Move[] lastPv = [];
 
         // One "info" line per completed depth (standard UCI progress output).
@@ -744,7 +784,7 @@ public sealed class UciLoop
         // soft-stopped partial iteration may have improved past the last
         // completed PV). When it does not, predict ANY legal reply instead of
         // omitting the hint: Arena's Permanent Brain stalls its whole game
-        // controller on a bare bestmove — it waits forever for the ponder
+        // controller on a bare bestmove - it waits forever for the ponder
         // position, the engine's clock runs out, and not even a new game
         // recovers until the engine process is restarted (seen in the
         // 2026-07-14 traffic log). A wrong prediction is harmless: a ponder

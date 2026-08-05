@@ -4,8 +4,8 @@ namespace NoaChess.Engine.Heuristics;
 
 // The full set of correction histories and the rule that combines them (v4.3.0).
 //
-// Each table estimates the SAME quantity — the residual between static
-// evaluation and searched score — from a different structural key, so the
+// Each table estimates the SAME quantity - the residual between static
+// evaluation and searched score - from a different structural key, so the
 // combination is a weighted average rather than a sum. Summing independent
 // estimates of one quantity would over-correct whenever they agreed, which is
 // exactly when they are most trustworthy.
@@ -18,7 +18,7 @@ namespace NoaChess.Engine.Heuristics;
 //
 // This matters more than it looks. If the new tables were folded in by plain
 // averaging, an empty table would pull the correction toward zero and quietly
-// shrink a validated behaviour by a factor of six — and then a failed SPRT
+// shrink a validated behaviour by a factor of six - and then a failed SPRT
 // would be unattributable between "the new keys are useless" and "we damaged
 // the old one". Making the change additive keeps the measurement clean.
 public sealed class CorrectionHistorySet
@@ -88,7 +88,7 @@ public sealed class CorrectionHistorySet
     // Key for the continuation table: the (piece, destination) of the move that
     // reached this position. Unlike the other keys this describes HOW the
     // position was arrived at rather than what is on the board, which is a
-    // genuinely different axis — the same position reached by a quiet
+    // genuinely different axis - the same position reached by a quiet
     // regrouping and by a forcing capture tends to be misjudged differently.
     //
     // +1 keeps the key non-zero, since 0 is the caller's sentinel for "no

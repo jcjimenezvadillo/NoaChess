@@ -11,7 +11,7 @@ namespace NoaChess.Engine.Tests;
 // distribution of the history and continuation-history tables after real
 // searches, to calibrate the statScore thresholds ported from the reference
 // (its tables are gravity-capped at 14365/29952; ours accumulate depth^2 with
-// a 2^20 clamp — the unit ratio must be measured, not guessed).
+// a 2^20 clamp - the unit ratio must be measured, not guessed).
 public class HistoryScaleProbe
 {
     [Fact]

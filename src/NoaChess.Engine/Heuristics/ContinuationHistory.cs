@@ -5,7 +5,7 @@ namespace NoaChess.Engine.Heuristics;
 // Continuation history: like the classic history heuristic, but conditioned on
 // the PREVIOUS move. Indexed by (previous mover piece, previous destination,
 // current mover piece, current destination), it learns "after the opponent
-// plays THIS, THAT reply keeps refuting" — a much sharper signal than the
+// plays THIS, THAT reply keeps refuting" - a much sharper signal than the
 // global (from, to) butterfly history, because the best reply to h7-h5 is
 // rarely the best reply to d7-d5 even from the same square.
 //
@@ -24,7 +24,7 @@ public sealed class ContinuationHistory
     //
     // Deliberately NOT the reference's 30000. That constant sits four times above
     // where our values live, so adopting it would activate gravity AND quadruple
-    // the scale this table contributes to move ordering and to the RFP guard —
+    // the scale this table contributes to move ordering and to the RFP guard -
     // two effects in one measurement. The v2.8.3 lesson applies: formula fidelity
     // is not semantic fidelity, so the bound is measured rather than copied.
     private const int MaxScore = 8192;
@@ -46,7 +46,7 @@ public sealed class ContinuationHistory
         => Update(prevPiece, prevTo, piece, to, depth * depth);
 
     // Punishes quiet replies that were searched before the cutoff move and
-    // failed to produce it — they sink in the ordering next time.
+    // failed to produce it - they sink in the ordering next time.
     public void AddMalus(int prevPiece, int prevTo, int piece, int to, int depth)
         => Update(prevPiece, prevTo, piece, to, -depth * depth);
 
