@@ -69,6 +69,43 @@ public sealed class AlphaBetaSearch
     private int _tbMaxMen;
     private int _tbMinProbeDepth = 1;
 
+    // Time-manager diagnostic, enabled with NOA_TM_DEBUG=1. Off by default and
+    // read once, so a released build pays a single boolean test per iteration.
+    private static readonly bool TimeDebug =
+        Environment.GetEnvironmentVariable("NOA_TM_DEBUG") == "1";
+
+    // SETTLED 2026-08-02 with NOA_TM_DEBUG, and it settled the opposite way to
+    // the first guess. The scheduler is NOT under-spending: traced across
+    // consecutive middlegame moves at 3+1 it spends 2591-13052 ms against an
+    // optimum near 5500, averaging about 107% of target, and the dynamic
+    // factors swing the budget by 5x between a quiet move (fe 0.500) and a
+    // dangerous one (fe 1.500, instability 2.033) exactly as intended.
+    //
+    // The earlier "it spends half its target" reading came from measuring
+    // moves 1-20 only, which is the opening damp doing its job by design. Do
+    // not draw conclusions about the time manager from opening plies.
+    //
+    // Where the clock actually goes unused in real games, in order of size:
+    // the bot's own two overhead settings (uci_options.MoveOverhead is
+    // reserved x52, so 600 instead of 30 costs 25% of the bullet budget -
+    // measured optimum 3189 -> 2345 ms; and lichess-bot subtracts its own
+    // move_overhead from the clock it reports), the easy-move rule spending
+    // 12% once the score passes 700 cp, and games simply ending before the
+    // clock does. The first two are configuration, not engine.
+
+    // How far past the optimum the dynamic factors may extend the soft budget
+    // under Lazy SMP. Single-thread searches are not capped here at all; they
+    // are already bounded by the hard maximum. See the clamp in FindBestMove.
+    private const double SmpExtensionCap = 2.0;
+
+    // Halfmove clock from which the root filter switches from WDL ranking to
+    // DTZ ranking. Below it the fifty-move rule is far enough away that steering
+    // by distance-to-zeroing costs more than it protects (see
+    // FilterRootMovesByTablebase); above it, reaching an irreversible move is
+    // what keeps the win. 50 plies leaves 50 more before the draw, and DTZ for a
+    // won position of six men or fewer is comfortably inside that.
+    private const int DtzUrgencyClock = 50;
+
     // True once the root position itself was resolved by the tablebases and the
     // root move list was ranked by DTZ. It disables tablebase probing INSIDE the
     // search, which is what lets the search choose between moves the tables call
@@ -691,12 +728,25 @@ public sealed class AlphaBetaSearch
                 // Multi-thread safety cap on the soft deadline. Under the
                 // shared-TT races the dynamic factors (falling-eval, reduction,
                 // instability) can inflate at once and spike the budget toward
-                // the hard maximum on a trivial move. Bound the EXTENSION at the
-                // optimum: a stable move still reduces below it (the reduction
-                // factors apply untouched) but the spike can no longer blow the
-                // clock. Single-thread (count 1) is untouched.
-                if (SearchThreadCount > 1 && totalTime > _softTimeMs)
-                    totalTime = _softTimeMs;
+                // the hard maximum on a trivial move.
+                //
+                // This used to clamp at the optimum itself, which made the whole
+                // scheduler one-sided: every reduction applied in full while
+                // every extension was thrown away, because the bot always runs
+                // with more than one thread. The engine could only ever think
+                // LESS than the target, never more, so a falling eval or a
+                // flapping best move - the two signals that say "this position
+                // is dangerous, look harder" - did nothing at all. Measured
+                // 2026-08-02 over 49 games on the Mac: it finished with 73% to
+                // 98% of the clock unused depending on the time control, and
+                // zero losses on time.
+                //
+                // Bound the extension at twice the optimum instead. The spike is
+                // still contained (the hard maximum sits at 4x to 7x, and the
+                // mid-iteration _maxTimeMs guard below is the real brake), but
+                // the position-danger signals can once again buy thinking time.
+                if (SearchThreadCount > 1 && totalTime > _softTimeMs * SmpExtensionCap)
+                    totalTime = _softTimeMs * SmpExtensionCap;
 
                 // Easy move: a decisively winning/losing score (including a
                 // found mate/tablebase result, whose magnitude is far above the
@@ -708,6 +758,17 @@ public sealed class AlphaBetaSearch
                     && Math.Abs(score) >= EasyMoveMargin
                     && lastBestMoveDepth + EasyMoveStableDepth <= depth)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
+
+                // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.
+                // Prints the target, every factor applied to it, and what has
+                // actually been spent, so a disagreement between the arithmetic
+                // and the behaviour is visible instead of guessed at.
+                if (TimeDebug)
+                    Console.Out.WriteLine(
+                        $"info string TM d={depth} soft={_softTimeMs} fe={fallingEval:F3}"
+                      + $" red={reduction:F3} inst={bestMoveInstability:F3}"
+                      + $" total={totalTime:F0} elapsed={ElapsedMs}"
+                      + $" softDl={_softDeadlineMs} maxT={_maxTimeMs} hardT={_hardTimeMs}");
 
                 // Stop if past the modulated budget; otherwise it becomes the
                 // deadline the next iteration's root-boundary checks use.
@@ -893,17 +954,54 @@ public sealed class AlphaBetaSearch
             return;
 
         Span<int> ranks = stackalloc int[n];
-        if (!TryRankRootMovesByDtz(board, ranks, out int bestRank)
-            && !TryRankRootMovesByWdl(board, ranks, out bestRank))
+
+        // WDL by default, DTZ only when the fifty-move rule is close enough to
+        // matter.
+        //
+        // DTZ is the distance to the next IRREVERSIBLE move, not to mate. On a
+        // board with no pawns and nothing of the opponent's to capture, the
+        // only move that can shorten it is letting the opponent capture one of
+        // OUR pieces. In K+Q+Q vs K that makes hanging a queen the
+        // "DTZ-optimal" move, and restricting the root to DTZ-optimal moves
+        // forced the engine to play it. Measured 2026-08-02 on
+        // 8/8/8/5K2/8/2k5/8/4q1q1 b: mate in 3 with the tables switched off, a
+        // queen sacrifice with them on. Same binary, same position.
+        //
+        // WDL ranking keeps every move that preserves the game-theoretic
+        // result, so the win still cannot be thrown away, and the search picks
+        // the fastest mate among them (it can, now that _rootInTb stops the
+        // flat in-search tablebase scores). DTZ only takes over once the
+        // halfmove clock is high enough that making progress towards a zeroing
+        // move is what actually saves the win.
+        int bestRank;
+        bool ranked;
+        if (board.HalfmoveClock >= DtzUrgencyClock)
+            ranked = TryRankRootMovesByDtz(board, ranks, out bestRank)
+                  || TryRankRootMovesByWdl(board, ranks, out bestRank);
+        else
+            ranked = TryRankRootMovesByWdl(board, ranks, out bestRank)
+                  || TryRankRootMovesByDtz(board, ranks, out bestRank);
+
+        if (!ranked)
             return;
 
         TbHits++;
 
         // The ranking covered every root move, so whatever survives below is
-        // game-theoretically optimal. From here the search must run WITHOUT
+        // game-theoretically optimal. From here the search runs WITHOUT
         // tablebase scores (see the probe guard in Negamax): it is the only
         // thing left that can tell two equally-winning moves apart.
-        _rootInTb = true;
+        //
+        // Only for a DECISIVE root, though. A flat score is a problem when it
+        // hides which win is fastest; on a drawn position zero is simply the
+        // truth, and switching the probe off would make the search report a
+        // fantasy evaluation for a position the tables call dead. Measured on
+        // 8/8/8/4k3/8/8/4KNN1/8 w (K+N+N vs K, which cannot be forced): +531
+        // instead of 0. The move stayed safe because the filter still ran, but
+        // the score feeds the UCI output and anything reading it, including the
+        // draw-offer rule in the bot.
+        _rootInTb = Tablebases.Syzygy.ProbeWdl(board, out var rootWdl)
+                 && rootWdl is Tablebases.WdlScore.Win or Tablebases.WdlScore.Loss;
 
         // Keep every move with the best TB rank, so the search still gets a
         // choice among equally optimal continuations.

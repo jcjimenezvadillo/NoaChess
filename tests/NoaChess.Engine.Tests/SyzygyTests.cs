@@ -129,7 +129,18 @@ public class SyzygyIntegrationTests
 
         var result = engine.FindBestMove(board, depth: 1);
 
-        Assert.Equal("c6b7", result.BestMove.ToString());
+        // The exact move is deliberately not pinned. Below the DTZ urgency
+        // clock the root filter ranks by WDL, so every move that preserves the
+        // win survives and the search is free to choose among them. What must
+        // still hold is that SearchRoot played one of the kept moves instead of
+        // regenerating the full list behind the filter's back, and the way to
+        // check that is to confirm the position it reached is still won.
+        board.MakeMove(result.BestMove);
+        bool probed = Syzygy.ProbeWdl(board, out var wdl);
+        board.UnmakeMove();
+
+        Assert.True(probed);
+        Assert.Equal(WdlScore.Loss, wdl); // lost for the side now to move
     }
 
     [SyzygyFact]
