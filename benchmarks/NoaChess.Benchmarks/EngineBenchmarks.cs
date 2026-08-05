@@ -88,6 +88,7 @@ public class NnueBenchmarks
         int ftOut = 128, l1Out = 32;
         _network = new NoaChess.Engine.Evaluation.Nnue.NnueNetwork
         {
+            ArchitectureId = 1,
             FtInputs = NoaChess.Engine.Evaluation.Nnue.NnueFeatureIndex.InputSize,
             FtOutputs = ftOut,
             L1Outputs = l1Out,
@@ -99,7 +100,7 @@ public class NnueBenchmarks
             L1Weights = Fill(new short[l1Out * 2 * ftOut], rng),
             L1Bias = new int[l1Out],
             OutWeights = Fill(new short[l1Out], rng),
-            OutBias = 0,
+            OutBias = new int[1],
             Sha256 = "bench"
         };
         _evaluator = new NoaChess.Engine.Evaluation.Nnue.NnueEvaluator(_network);

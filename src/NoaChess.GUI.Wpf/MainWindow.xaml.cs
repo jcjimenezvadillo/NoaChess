@@ -19,7 +19,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         // Window title carries the live engine version (single source of truth:
         // ChessEngine.Version, the same constant the UCI "id name" uses), so it
-        // always shows the current version after a rebuild — no manual editing.
+        // always shows the current version after a rebuild - no manual editing.
         Title = $"NoaChess {ChessEngine.Version}";
         // The promotion selector is injected as a service so the ViewModel
         // does not depend on WPF windows.
@@ -28,7 +28,7 @@ public partial class MainWindow : Window
 
         // Show the changelog modal once the window is up (it needs a live
         // Owner to center on). Being modal, the board is only reachable
-        // after closing it — the user always sees what version this is.
+        // after closing it - the user always sees what version this is.
         Loaded += (_, _) => new ChangelogDialog { Owner = this }.ShowDialog();
     }
 

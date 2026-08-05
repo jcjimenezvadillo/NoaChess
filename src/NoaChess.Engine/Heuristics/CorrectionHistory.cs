@@ -5,7 +5,7 @@ namespace NoaChess.Engine.Heuristics;
 // One correction-history table: the learned residual between static evaluation
 // and searched scores, indexed by (side to move, some structural key).
 //
-// WHY IT WORKS. A static evaluator has systematic biases, not just random ones —
+// WHY IT WORKS. A static evaluator has systematic biases, not just random ones -
 // it misjudges particular structures the same way every time it meets them.
 // Those structures recur across many branches of a search, so the difference
 // between what the evaluator said and what the search actually found is worth

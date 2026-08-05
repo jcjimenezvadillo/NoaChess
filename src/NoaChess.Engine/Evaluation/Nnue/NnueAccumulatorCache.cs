@@ -19,13 +19,13 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // HOW. For each (perspective, king square) the cache keeps the accumulator it
 // last produced together with the exact piece placement that produced it. A
 // refresh then applies only the difference between the cached placement and
-// the current one — in a real search, usually a handful of rows rather than 32.
+// the current one - in a real search, usually a handful of rows rather than 32.
 //
 // KEYED BY KING SQUARE, NOT BY BUCKET. Two king squares sharing a bucket are
 // horizontal mirrors of each other (the bucket table is symmetric), and the
 // mirror changes Orient(), hence every feature index. Keying by bucket alone
 // would mix two different feature spaces into one entry. 64 squares x 2
-// perspectives costs 128 entries: 32 KB at FT=128, 256 KB at FT=1024 — per
+// perspectives costs 128 entries: 32 KB at FT=128, 256 KB at FT=1024 - per
 // thread, which is the correct scope since each search thread owns its own
 // evaluator and therefore its own cache.
 //

@@ -72,7 +72,7 @@ public class ThreatsTests
     {
         // White pawn d3 can push to d4 (safe, unoccupied) and would then
         // attack the black knight on e5. With the knight on e7 instead, the
-        // push threatens nothing — compare the white threat term directly.
+        // push threatens nothing - compare the white threat term directly.
         Score pushThreat = ThreatsOf("4k3/8/8/4n3/8/3P4/8/4K3 w - - 0 1", Color.White);
         Score noThreat = ThreatsOf("4k3/4n3/8/8/8/3P4/8/4K3 w - - 0 1", Color.White);
 

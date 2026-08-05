@@ -5,9 +5,9 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // Second-degree polynomial material imbalance (Tord Romstad's formula, ported
 // from the reference material tables). Instead of valuing each piece in
 // isolation, it scores every PAIR of pieces: synergies between our own pieces
-// (QuadraticOurs — e.g. knights gain value with more of our pawns on the
+// (QuadraticOurs - e.g. knights gain value with more of our pawns on the
 // board, a second rook is worth less than the first) and interactions with
-// the enemy's material (QuadraticTheirs — e.g. our queen is strong against
+// the enemy's material (QuadraticTheirs - e.g. our queen is strong against
 // rooks, our knight fights well against many enemy pawns).
 //
 // The bishop pair is modelled as an "extended piece" at index 0 with count
@@ -36,7 +36,7 @@ namespace NoaChess.Engine.Evaluation.Classical;
 // the ten piece counts, which only change on captures and promotions. The
 // reference caches the result in a material hash table; here a direct-mapped
 // cache keyed by the packed counts (same pattern as the shelter cache)
-// achieves the same reuse — the full polynomial only runs on a miss.
+// achieves the same reuse - the full polynomial only runs on a miss.
 public sealed class MaterialImbalance
 {
     // Piece indices inside the count arrays and tables:

@@ -3,7 +3,7 @@ using NoaChess.Core;
 
 namespace NoaChess.DataGen;
 
-// The NOADATA1 binary dataset format — the contract with
+// The NOADATA1 binary dataset format - the contract with
 // tools/training/nnue/dataset.py (keep both in sync).
 //
 // File header (64 bytes, little-endian):
@@ -12,7 +12,7 @@ namespace NoaChess.DataGen;
 //   12  4  feature schema id (u32) = 2 (see NnueFeatureIndex)
 //   16  4  score scale (u32) = 1 (scores are plain centipawns)
 //   20  4  record size (u32) = 40
-//   24  8  record count (u64) — patched on close
+//   24  8  record count (u64) - patched on close
 //   32  32 manifest SHA-256 (hash of the manifest.json written alongside)
 //
 // Record (40 bytes, little-endian):

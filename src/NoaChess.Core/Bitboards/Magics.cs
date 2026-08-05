@@ -12,7 +12,7 @@ namespace NoaChess.Core;
 // rays are collected in a "relevant mask" (up to 12 bits for rooks, 9 for
 // bishops). Multiplying the masked occupancy by a carefully chosen "magic"
 // constant makes the relevant bits collide into the TOP bits of the product,
-// which — shifted down — form a perfect index into a precomputed attack table:
+// which - shifted down - form a perfect index into a precomputed attack table:
 //
 //   attacks = table[((occupancy & mask) * magic) >> shift]
 //
@@ -20,7 +20,7 @@ namespace NoaChess.Core;
 // are tried until one maps every possible blocker subset to a distinct table
 // slot (or to slots that happen to share identical attack sets, which is
 // harmless). With a fixed RNG seed the search is deterministic and takes a
-// few tens of milliseconds at startup — cheaper to regenerate than to
+// few tens of milliseconds at startup - cheaper to regenerate than to
 // maintain 128 hardcoded constants.
 public static class Magics
 {
@@ -36,7 +36,7 @@ public static class Magics
     private static readonly MagicEntry[] RookTable = new MagicEntry[64];
     private static readonly MagicEntry[] BishopTable = new MagicEntry[64];
 
-    // PEXT replaces the whole mask-multiply-shift dance with one instruction —
+    // PEXT replaces the whole mask-multiply-shift dance with one instruction -
     // but only where that instruction is actually fast. On AMD Zen1/Zen+/Zen2
     // (family 0x17) PEXT is microcoded (~18 cycles vs ~3) and LOSES to the
     // magic lookup, so those CPUs keep the magic path. The static readonly
@@ -93,7 +93,7 @@ public static class Magics
     }
 
     // Explicit single-path lookups so tests can cross-validate BOTH paths on
-    // any BMI2 machine — a Zen+/Zen2 box never takes the PEXT branch in
+    // any BMI2 machine - a Zen+/Zen2 box never takes the PEXT branch in
     // production (UsePext is false there), yet must still verify it.
     public static bool PextTablesBuilt => RookTable[0].PextAttacks is not null;
 
@@ -123,7 +123,7 @@ public static class Magics
 
     private static MagicEntry BuildEntry(int square, (int df, int dr)[] directions, ref ulong rngState)
     {
-        // Relevant mask: ray squares EXCLUDING the board edge — a blocker on
+        // Relevant mask: ray squares EXCLUDING the board edge - a blocker on
         // the last square of a ray changes nothing (the ray ends there anyway),
         // so edge squares would only waste table space.
         ulong mask = RelevantMask(square, directions);
