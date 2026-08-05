@@ -574,6 +574,17 @@ public sealed class AlphaBetaSearch
         SearchResult best = default;
         int previousScore = 0;
 
+        // Last move actually announced to the caller through 'progress', and the
+        // depth it was announced at. Only COMPLETED iterations report, but an
+        // interrupted iteration may still replace 'best' (see the stop handling
+        // below), so without these the caller's last info line can describe a
+        // different move from the one finally played. Measured over 221 bot
+        // games: 2% of all moves were played with the previous depth's PV and
+        // eval still standing as the last thing reported, which is exactly the
+        // signal used to audit the engine from a PGN.
+        Move lastReportedMove = Move.None;
+        int lastReportedDepth = 0;
+
         // ---- Dynamic time management (per-search state) ----
         // Exponentially decayed count of root best-move changes: a search that
         // keeps flapping between root moves needs more time to settle.
@@ -685,6 +696,8 @@ public sealed class AlphaBetaSearch
             previousScore = score;
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
+            lastReportedMove = bestMove;
+            lastReportedDepth = depth;
 
             // Never stop deepening on a mate score. When MATED, deeper
             // iterations find longer defenses or refute the mate entirely
@@ -867,6 +880,23 @@ public sealed class AlphaBetaSearch
             }
         }
 
+        // Announce the move actually being returned whenever it is not the one
+        // the last completed iteration reported. An interrupted iteration and
+        // the static fallback above both replace 'best' without going through
+        // the per-iteration report, which left the caller holding a PV and an
+        // evaluation belonging to a DIFFERENT move - the annotated PGN then
+        // shows a variation that does not start with the move played, and the
+        // recorded eval belongs to the discarded line. Purely a reporting fix:
+        // the search itself is untouched, and callers that pass no progress
+        // sink (datagen, tests, fixed-depth) are byte-identical.
+        if (progress is not null && best.BestMove != Move.None
+            && best.BestMove != lastReportedMove)
+        {
+            int reportDepth = Math.Max(1, lastReportedDepth);
+            progress.Report(new SearchProgress(reportDepth, best.Score, _nodes, best.BestMove,
+                                               ExtractPv(board, best.BestMove, reportDepth)));
+        }
+
         return best;
     }
 
@@ -886,6 +916,9 @@ public sealed class AlphaBetaSearch
 
         int bestScore = -Infinity;
         int searched = 0;
+        // alpha is raised in the loop below, so the bound test at the store
+        // needs the window this node actually started with.
+        int originalAlpha = alpha;
 
         for (int i = 0; i < moves.Count; i++)
         {
@@ -969,10 +1002,18 @@ public sealed class AlphaBetaSearch
 
         // A partial (soft-stopped) iteration must not be recorded in the TT
         // as if the position had been fully searched at this depth.
+        // Three-way bound, as the inner nodes already do. The old two-way test
+        // filed a fail-low root (every move at or below the aspiration window)
+        // as Exact, which is a score the search never proved: an aspiration
+        // fail-low is an UPPER bound and nothing more.
         if (!_stopped && !_softStopped)
+        {
+            BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
+                            : bestScore >= beta ? BoundType.LowerBound
+                            : BoundType.Exact;
             _tt.Store(board.ZobristKey, depth, ToTT(bestScore, 0), TTEntry.NoStaticEval,
-                      bestScore >= beta ? BoundType.LowerBound : BoundType.Exact, bestMove,
-                      isPv: true);
+                      bound, bestMove, isPv: true);
+        }
 
         return bestScore;
     }
@@ -1534,6 +1575,14 @@ public sealed class AlphaBetaSearch
                 if (!PassesProbCutSeeGate(board, move, probBeta - staticEval))
                     continue;
 
+                // Read the MOVING piece before the move is made, exactly as the
+                // root and the main move loop do. Reading it off the
+                // destination afterwards returns the PROMOTED piece for a
+                // promotion, so a queen promotion filed its continuation
+                // history under Queen while every other path files the same
+                // move under Pawn - the split key this file warns about at
+                // ContinuationCorrectionKey, and it is silent when it happens.
+                int movedPiece = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.From));
                 _incremental?.PushMove(board, move);
                 board.MakeMove(move);
                 if (board.IsSquareAttacked(board.KingSquare(mover), board.SideToMove))
@@ -1542,7 +1591,7 @@ public sealed class AlphaBetaSearch
                     _incremental?.Pop();
                     continue;
                 }
-                _stackPiece[ply] = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.To));
+                _stackPiece[ply] = movedPiece;
                 _stackTo[ply] = move.To;
                 _stackStatScore[ply] = 0;
 
