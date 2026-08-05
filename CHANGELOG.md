@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## 2026-08-05 (v4.3.1) - the engine was playing one move and reporting another, on 2% of all moves
+
+### The audit that found it
+
+v4.3.0.4 closed one PV/bestmove mismatch by reading a single annotated game. This time the same check ran over **every game the bot has played since 2026-08-04**: 221 games, 9,570 annotated moves, comparing the first move of the PV variation that lichess-bot writes into `game_records/` against the move actually sent.
+
+| Version | Annotated moves | PV does not start with the move played |
+|---------|-----------------|----------------------------------------|
+| pre-fix (v4.3.0.3) | 5,268 | 138 (2.62%) |
+| v4.3.0.4 (gen7) | 1,832 | 35 (1.91%) |
+| v4.3.0.4 (gen8) | 2,470 | 53 (2.15%) |
+
+The rate barely moved across the v4.3.0.4 fix, so the root-move bound was never the whole story. And the mismatches land on exactly the moves worth auditing:
+
+```
+mv60  played Qxf7+   PV said a4     eval -9.50  d20
+mv47  played Qg1+    PV said Qd3+   eval -44.33 d18
+```
+
+An independent static material scan of the same games had already flagged `mv60 Qxf7+` as losing a queen with `a4` as the best alternative. **The engine's own principal variation named the right move and a different one was sent.**
+
+### The cause: a stop path that updates the answer without announcing it
+
+Only completed iterations report progress. The stop handling in `FindBestMove` replaces `best` with the interrupted iteration's result and breaks out without ever calling `progress.Report`, and the static fallback that guarantees a legal move does the same. The caller is then holding the PV, the depth and the evaluation of a **different move**: the last thing announced belongs to the previous depth.
+
+That is what put a variation starting with `a4` next to a played `Qxf7+`, and an evaluation of -9.50 that describes the discarded line rather than the move on the board.
+
+**The move selection itself is correct and was left alone.** In an interrupted iteration a move only takes the lead after beating alpha in a full-window re-search, and if the stop lands between the scout and that re-search the loop breaks before the unvalidated score can be accepted. The correlation between mismatches and blunders is a shared cause - time pressure produces both interrupted iterations and hard positions - not a causal link.
+
+So this is a **reporting fix worth no Elo**, and it is worth shipping anyway: reading the annotated PGN is how the last two real bugs were caught, and the channel was lying on 2% of moves, concentrated on the critical ones.
+
+### Three correctness fixes alongside it
+
+**The root filed fail-low scores as exact.** `SearchRoot` chose between `LowerBound` and `Exact` with a two-way test, so an iteration where every root move fell at or below the aspiration window was stored as an exact score the search had never proved. An aspiration fail-low is an upper bound and nothing else. The inner nodes already did the three-way test against their original alpha; the root now does the same.
+
+**ProbCut keyed continuation history off the wrong piece.** It read the piece type from the destination square *after* the move was made, where the root and the main move loop both read the moving piece from the origin *before*. The two agree for every move except a promotion, and ProbCut only admits queen promotions - so a queen promotion filed its observation under Queen while every other path reads that same move under Pawn. This file already warns about exactly this failure mode at `ContinuationCorrectionKey`: filing under one key and reading under another is silent and permanent.
+
+**Tablebase verdicts were announced as about 988 pawns.** The tablebase band sits just below the mate range on purpose, so the engine never claims a mate it has not proven - but that also puts it under the mate test in `FormatUciScore`, and the raw number went out as `cp 98872` to the eval bar and to everything reading the score, including the bot's resign and draw-offer rules. Reported as the conventional saturated value now, keeping the ply ordering so a win found sooner still scores higher.
+
+### Scope
+
+Search behaviour changes only through the two correctness fixes (what the root stores, and one history key), so node counts shift slightly; neither is a tuned change and neither has its own SPRT. Callers that pass no progress sink - datagen, tests, fixed-depth analysis - are byte-identical. 308 tests.
+
 ## 2026-08-04 (v4.3.0.4) - the ponder credit was starving the search, and the root could return a move its own search never endorsed
 
 ### The root move nothing had validated
