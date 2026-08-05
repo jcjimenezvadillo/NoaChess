@@ -639,10 +639,36 @@ public sealed class UciLoop
         // Clock-managed searches only (soft < hard): movetime/depth/nodes
         // budgets are explicit GUI requests and stay untouched.
         if (ponderedMs > 0 && limits.SoftTimeMs < limits.HardTimeMs)
-            limits = limits with
-            {
-                ElapsedOffsetMs = Math.Min(ponderedMs, Math.Max(0, limits.HardTimeMs - 100)),
-            };
+        {
+            // Charge at most HALF the soft budget, never more.
+            //
+            // The credit used to be clamped against the HARD budget only,
+            // leaving 100 ms of it. But iterative deepening is driven by the
+            // SOFT budget, so a ponder longer than that budget made the search
+            // start already past its deadline and break straight after depth 1.
+            // Measured 2026-08-04 at 60+1 (soft budget about 2.5 s), pondering
+            // for the stated time and then sending ponderhit:
+            //
+            //   pondered   500 ms -> depth 16, 4646 ms searching
+            //   pondered  2000 ms -> depth 15, 3550 ms
+            //   pondered  5000 ms -> depth 11,    5 ms
+            //   pondered 10000 ms -> depth  1,    5 ms
+            //
+            // The longer the opponent thought, the shallower the reply, which
+            // against slow bots is most moves of the game. It produced real
+            // blunders on Lichess: RZwdbv4z move 23 Qh3 at depth 1 with 41 s
+            // still on the clock, and several more the same night.
+            //
+            // Charging the full pondered time is right for a scheduler that
+            // CONTINUES the pondered search, as the reference does. This engine
+            // relaunches instead, inheriting only the transposition table, so
+            // the pondered depth has to be re-established and that needs time.
+            // Half the soft budget is enough to reach the previous depth over a
+            // warm table while still answering visibly faster than a fresh move.
+            long maxCredit = Math.Min(limits.SoftTimeMs / 2,
+                                      Math.Max(0, limits.HardTimeMs - 100));
+            limits = limits with { ElapsedOffsetMs = Math.Min(ponderedMs, maxCredit) };
+        }
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
         // "bestmove" until the GUI resolves the search with "stop" or

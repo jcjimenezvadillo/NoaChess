@@ -98,13 +98,17 @@ public sealed class AlphaBetaSearch
     // are already bounded by the hard maximum. See the clamp in FindBestMove.
     private const double SmpExtensionCap = 2.0;
 
-    // Halfmove clock from which the root filter switches from WDL ranking to
-    // DTZ ranking. Below it the fifty-move rule is far enough away that steering
-    // by distance-to-zeroing costs more than it protects (see
-    // FilterRootMovesByTablebase); above it, reaching an irreversible move is
-    // what keeps the win. 50 plies leaves 50 more before the draw, and DTZ for a
-    // won position of six men or fewer is comfortably inside that.
-    private const int DtzUrgencyClock = 50;
+    // Soft budget for a root the tablebases have already decided. The move is
+    // guaranteed optimal by the root filter before the search starts, so the
+    // search is only breaking ties among winning moves and does not need the
+    // whole clock to do it. The hard deadline gets four times this.
+    private const long TbResolvedBudgetMs = 300;
+
+    // True once the root move list was successfully ranked from the tablebases,
+    // whatever the verdict. Every surviving move is then optimal, so the clock
+    // budget can be cut right down - a dead draw deserves the saving as much as
+    // a won position does.
+    private bool _rootTbResolved;
 
     // True once the root position itself was resolved by the tablebases and the
     // root move list was ranked by DTZ. It disables tablebase probing INSIDE the
@@ -468,6 +472,7 @@ public sealed class AlphaBetaSearch
         _nodes = 0;
         TbHits = 0;
         _rootInTb = false;
+        _rootTbResolved = false;
         _stopped = false;
         _softStopped = false;
         _cancellation = cancellation;
@@ -515,6 +520,23 @@ public sealed class AlphaBetaSearch
                <= Math.Min(SyzygyProbeLimit, Tablebases.Syzygy.Cardinality))
         {
             FilterRootMovesByTablebase(board);
+
+            // A decisive tablebase root needs a fraction of the clock, not all
+            // of it. Every surviving move is already game-theoretically optimal
+            // (or within the slack band), so the search is only choosing among
+            // moves that all win; it cannot find anything better than winning.
+            // Measured 2026-08-04 at 60+1: K+Q vs K spent 3129 ms per move on a
+            // position with four pieces on the board, which is most of the
+            // budget for a move that was decided before the search began.
+            // A warm table and four pieces reach a deep, stable answer in a
+            // fraction of that.
+            if (clockMode && _rootTbResolved)
+            {
+                _softTimeMs = Math.Min(_softTimeMs, TbResolvedBudgetMs);
+                _hardTimeMs = Math.Min(_hardTimeMs, TbResolvedBudgetMs * 4);
+                _maxTimeMs = _hardTimeMs;
+                _softDeadlineMs = _softTimeMs;
+            }
         }
 
         // Forced move: with a single legal reply no amount of searching can
@@ -894,7 +916,13 @@ public sealed class AlphaBetaSearch
             if (_stopped && bestMove != Move.None)
                 break;
 
-            if (score > bestScore)
+            // A scout score is only a bound. A root move that failed low was
+            // never re-searched with the full window, so its value is not
+            // comparable with the first move's exact score and must not be
+            // allowed to take the lead - otherwise a fail-low iteration can
+            // hand back a move the search never actually endorsed, while the
+            // reported PV still shows the previous (real) best.
+            if (score > bestScore && (searched == 1 || score > alpha))
             {
                 bestScore = score;
                 bestMove = move;
@@ -987,21 +1015,16 @@ public sealed class AlphaBetaSearch
         // halfmove counter hit the threshold, DTZ engaged, f6-f7-f8=Q and mate
         // in five. Everything needed to win was already there; only the reason
         // to make progress was missing.
-        bool weHavePawns = board.Pieces(board.SideToMove, PieceType.Pawn) != 0;
-
+        // DTZ first, always, with WDL only as the fallback when the .rtbz files
+        // cannot answer. See the slack band below for how the queen sacrifice
+        // is avoided without giving up the progress DTZ provides.
         int bestRank;
-        bool ranked;
-        if (weHavePawns || board.HalfmoveClock >= DtzUrgencyClock)
-            ranked = TryRankRootMovesByDtz(board, ranks, out bestRank)
-                  || TryRankRootMovesByWdl(board, ranks, out bestRank);
-        else
-            ranked = TryRankRootMovesByWdl(board, ranks, out bestRank)
-                  || TryRankRootMovesByDtz(board, ranks, out bestRank);
-
-        if (!ranked)
+        if (!TryRankRootMovesByDtz(board, ranks, out bestRank)
+            && !TryRankRootMovesByWdl(board, ranks, out bestRank))
             return;
 
         TbHits++;
+        _rootTbResolved = true;
 
         // The ranking covered every root move, so whatever survives below is
         // game-theoretically optimal. From here the search runs WITHOUT
@@ -1021,9 +1044,27 @@ public sealed class AlphaBetaSearch
 
         // Keep every move with the best TB rank, so the search still gets a
         // choice among equally optimal continuations.
+        // Keep a BAND of ranks, not only the exact best.
+        //
+        // For a certain win the rank is MaxDtz - dtz, so a slack in rank units
+        // is a slack in plies-to-the-next-irreversible-move. Insisting on the
+        // single best DTZ is what made K+Q+Q vs K hang a queen: letting the
+        // opponent capture one zeroes the counter in 1 ply, which beats mating
+        // in 3, so the "optimal" move was the only one kept and the search had
+        // no say. Widening the band keeps the mating moves as well, and since
+        // _rootInTb switches off the flat in-search tablebase scores, the search
+        // sees the real mate distance and picks it.
+        //
+        // The slack shrinks as the fifty-move counter climbs: freedom while
+        // there is room, strict obedience to DTZ when the draw is close. That
+        // is the guarantee that matters, and it is kept exactly where it counts.
+        int slack = bestRank > MaxDtz / 2
+            ? Math.Max(0, (90 - board.HalfmoveClock) / 8)
+            : 0;
+
         var keep = new MoveList();
         for (int i = 0; i < n; i++)
-            if (ranks[i] == bestRank)
+            if (ranks[i] >= bestRank - slack)
                 keep.Add(_rootMoves[i]);
 
         if (keep.Count == 0 || keep.Count == n)

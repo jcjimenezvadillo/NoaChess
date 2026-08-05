@@ -1,5 +1,111 @@
 # CHANGELOG
 
+## 2026-08-04 (v4.3.0.4) - the ponder credit was starving the search, and the root could return a move its own search never endorsed
+
+### The root move nothing had validated
+
+Found in the game against Ichy-Fish (`ZkymFiQ5`, 180+2). On move 51, with a bishop attacked and 1:07 left on the clock, the bot played `g5` and lost the piece. The annotated PGN that lichess-bot writes to `game_records/` gave it away:
+
+```
+51... g5 { [%clk 0:01:07] }  ( 51... Be4 52. Bd1 Bg2 ... { [%eval 13.17,16] } )
+```
+
+**The reported PV starts with `Be4`; the move sent was `g5`.** Same mismatch on move 55, and on move 9 of the previous game against ElaChessBot.
+
+### The cause
+
+At the root only the first move is searched with the full window, so only its score is exact. The rest are scouted with a null window and their result is a **bound**, promoted to an exact score only by the re-search that fires when they beat alpha. On a fail-low iteration that re-search never happens - and the comparison
+
+```csharp
+if (score > bestScore)
+```
+
+still let one of those unverified bounds take the lead. The search then returned a move nothing had validated, while the PV - published only on completed iterations - kept showing the real best move.
+
+The reference engine assigns exactly these moves `-VALUE_INFINITE` so they cannot compete. Same contract now:
+
+```csharp
+if (score > bestScore && (searched == 1 || score > alpha))
+```
+
+### Why it never reproduced on the bench
+
+Over 40 searches of that position - every clock budget from 100 ms to 120 s, 1 and 4 threads, with and without AVX2 - the engine played the bishop retreat every single time. The bug needs a fail-low iteration interrupted at the right moment; a clean bench search never shows it. **The annotated PGN was the only evidence, and it was free.**
+
+### Measured on the side: the NNUE is not SIMD-invariant
+
+While chasing this, the same position at the same depth gave different scores and sometimes different moves depending on the vector path (`AVX2` / `no AVX2` / no intrinsics): -776 / -792 / -799 cp on move 51, -1174 / -1135 / -1217 on move 52. A build should not change its mind because of the vector width, so this is a real defect and a parity test across the three paths is pending.
+
+It is **not**, however, affecting the bot. The first reading of it was wrong: the macOS host was assumed to be Apple Silicon running the x64 build under Rosetta 2 (no AVX2, hence the scalar path), and that assumption was never checked. It is an **Intel** Mac - the arm64 build refuses to start on it with `bad CPU type in executable` - so it takes the same AVX2 path as Windows. Verified rather than argued: `go depth 20` from the start position at `Threads=1` returns **identical node counts, scores and PV on both machines** (12,066,208 nodes, cp 46). The two hosts are the same engine bit for bit; games played on either are equally good evidence. The parity defect matters for a future non-AVX2 target, not for anything deployed today.
+
+### The ponder audit
+
+Found by auditing all **150 games** the bot played between 2026-08-03 19:14 and 2026-08-04 13:32 (100 wins, 13 draws, 37 losses, 5 losses on time), scanning every pair of consecutive NoaChess evaluations for a collapse.
+
+### 1. A long ponder made the next move a depth-1 move
+
+The headline. Several blunders in the audit shared a signature that should be impossible: **depth 1 with a full clock**. `RZwdbv4z` move 23 `Qh3` at depth 1 with **41 seconds** still on the clock; `PciLwqDt` move 65 `c2` at depth 1 with 21 s; `8jWoV4Xx` move 57 `Qxa8` at depth 1 with 27 s.
+
+The ponder credit in `UciLoop` clamped against the **hard** budget, leaving 100 ms of it. But iterative deepening is driven by the **soft** budget, so once the opponent had thought for longer than that budget the relaunched search began already past its deadline and broke immediately after depth 1. Reproduced exactly, at 60+1 with a soft budget near 2.5 s:
+
+```
+pondered   500 ms -> depth 16, 4646 ms searching
+pondered  2000 ms -> depth 15, 3550 ms
+pondered  5000 ms -> depth 11,    5 ms
+pondered 10000 ms -> depth  1,    5 ms
+```
+
+**The longer the opponent thought, the shallower the reply** - and against slow bots that is most moves of the game.
+
+The credit is now capped at half the soft budget. Charging the full pondered time is correct for a scheduler that *continues* the pondered search, as the reference does; this engine relaunches and inherits only the transposition table, so the depth has to be re-established and that needs time. After the fix the depth no longer degrades: 15, 16, 15, 18, 18 for ponders of 0.5, 2, 5, 10 and 30 seconds.
+
+### 2. The DTZ root filter, unified at last
+
+v4.3.0.3 chose between DTZ and WDL ranking on whether the side to move had pawns. That fixed K+N+pawns but left **K+Q vs K with no gradient at all**, which is why the bot took seconds per move in a four-piece won endgame and wandered.
+
+The real distinction was never pawns. DTZ measures plies to the next irreversible move, and in K+Q+Q vs K letting the opponent capture a queen zeroes the counter in 1 ply, which beats mating in 3. Insisting on the single best DTZ made that sacrifice the *only* move kept.
+
+So DTZ ranks again in every position, and the filter now keeps a **band** of ranks rather than the single best. Since rank is `MaxDtz - dtz`, the band is a slack in plies, and it shrinks as the fifty-move counter climbs: freedom while there is room, strict obedience when the draw is close. The mating moves survive alongside the "optimal" sacrifice, and because `_rootInTb` already switches off the flat in-search tablebase scores, the search sees the real mate distance and takes it.
+
+### 3. A decided endgame no longer costs a full move budget
+
+Every move surviving the root filter is optimal before the search starts, so the search is only breaking ties among winning moves. Measured at 60+1, K+Q vs K spent **3129 ms** on a four-piece position. The soft budget for a tablebase-resolved root is now capped at 300 ms (hard at four times that), and it applies to drawn roots too - a dead draw deserves the saving as much as a win.
+
+```
+                  before    after
+K+Q vs K   60+1   3129 ms   528 ms
+K+R vs K  180+2      -      477 ms
+K+N+P vs K 60+1      -      467 ms
+K+N+N vs K (draw) 1869 ms   503 ms
+middlegame 60+1   1968 ms  1968 ms   unchanged
+middlegame 180+2  2909 ms  2909 ms   unchanged
+```
+
+### All the endgame behaviours, together
+
+| Position | result | time |
+|---|---|---|
+| K+Q+Q vs K | mate in 3 | 398 ms |
+| K+Q+Q vs K+B | mate in 3 | 423 ms |
+| K+N+pawn vs K | promotes to a queen | 289 ms |
+| K+P vs K | promotes to a queen | 216 ms |
+| K+B vs K | scores 0, a draw | 48 ms |
+| stalemate trap | avoids it, mate in 6 | 97 ms |
+
+308 tests.
+
+### Still open
+
+K+N+N vs K scores +5.58 instead of 0. The move is safe because the root filter keeps only drawing moves, but the number is wrong and the bot's draw-offer rule reads it. The cause is known: the in-search probe requires a zeroed halfmove counter, which in a pawnless endgame never happens again after the root. The fix is to report the tablebase verdict as the root score, which touches the search's return value and was not worth rushing.
+
+### SPRT vs v4.3.0.4
+
+`sprt_ponderhit_noreg.bat`, 60+1, ponder on for both sides, `elo0=-5 elo1=0` (a non-regression bound, not a strength claim - the ponderhit and root-move fixes are correctness fixes, not features up for a vote). Stopped by hand once the trend was unambiguous, not run to the SPRT's own bound:
+
+**Elo difference: 55.5 ± 39.6, LOS: 99.7%, DrawRatio: 59.2%. LLR 0.736 (25.0% of the way to +2.94), rising monotonically with no dip.**
+
+Mixes both fixes together - the ponder-credit cap and the root fail-low exclusion were not isolated separately. The direction confirms the diagnosis: v4.3.0.3 relaunched a starved search on every long ponder, and this pairing (both sides pondering, 60+1) is exactly where that bug bit hardest.
+
 ## 2026-08-03 (v4.3.0.3) - the endgame filter fix, fixed
 
 v4.3.0.2 stopped the DTZ root filter from giving material away by ranking root moves with WDL below a halfmove-clock threshold. **That fixed one bug and created another**, and a real game found it the same evening.
