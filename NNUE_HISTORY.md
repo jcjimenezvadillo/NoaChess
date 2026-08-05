@@ -20,7 +20,7 @@ NNUE off) ≈ 3020–3035 CCRL.
 | NNUE-0.3 | gen3 | 14000 | +6.2 ±11.3 vs classical (2707g, LOS 85.8%) | +6.2 | — |
 | NNUE-0.4 | gen4 | 14000 | +3.5 ±9.9 vs gen3 (3000g, LOS 75.3%) | +9.1 ±13.4 (1950g) | — |
 | NNUE-0.5 | gen5 | 20000 | +34.0 ±14.4 vs gen4 (1495g, LOS 100%) | ~+15 (see note) | **~3050 ±40** |
-| — | gen6 | 24000 | not promoted (score drifted to 0.494 at 800g, stopped; teacher stays gen5) | — | — |
+| NNUE-0.6 | gen6 | 24000 | not promoted (score drifted to 0.494 at 800g, stopped; teacher stays gen5) | — | — |
 | NNUE-0.7 | gen7 | 28000 | +3.7 ±10.2 vs gen5 (3000g, LOS 76.2%, parity - not a formal H1) | +28.5 ±13.0 (2176g, LOS 100%) | **~3080 ±40** |
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
