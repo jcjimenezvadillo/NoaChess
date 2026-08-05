@@ -693,6 +693,20 @@ public sealed class UciLoop
             return $"mate {(AlphaBetaSearch.MateScore - score + 1) / 2}";
         if (score < -mateBound)
             return $"mate {-(AlphaBetaSearch.MateScore + score + 1) / 2}";
+
+        // Tablebase verdicts live in their own band just below the mate range
+        // (AlphaBetaSearch.TbWin), deliberately so they are never announced as
+        // a mate the engine has not proven. Left raw they came out as
+        // "cp 98872" - about 988 pawns - on the eval bar and in everything that
+        // reads the score, including the bot's resign and draw-offer rules.
+        // Report the conventional saturated value, keeping the ply ordering so
+        // a win found sooner still scores higher.
+        const int tbBand = AlphaBetaSearch.TbWin - 256;
+        if (score > tbBand)
+            return $"cp {20_000 - (AlphaBetaSearch.TbWin - score)}";
+        if (score < -tbBand)
+            return $"cp {-20_000 + (AlphaBetaSearch.TbWin + score)}";
+
         return $"cp {score}";
     }
 
