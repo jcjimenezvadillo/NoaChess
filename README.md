@@ -63,10 +63,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # single-file UCI engine .ex
 The published `NoaChess.UCI.exe` works in any UCI GUI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Technologies**
-- **Language**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; Perft validation; automated gauntlets with cutechess-cli
-- **Performance**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Language**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensions
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (future)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, .NET profiling tools
 
 ### **Roadmap & Versions** (newest first)
 - **v4.2.0** - **BLOCK 12 capacity: output buckets, width support, and a way to price width. Architecture only; the embedded net is still gen7 and the fixed-depth suite searches the same 193,746 nodes as v4.0.0 and v4.1.0.** **Output buckets (architecture 3)**: the head is replicated per bucket and chosen by piece count - `clamp((pieceCount - 1) * buckets / 32, 0, buckets - 1)` - giving a per-phase readout. Only ONE bucket is evaluated per call, so per-evaluation arithmetic is unchanged and only the head's table grows (16 KB → 128 KB against a 5.5 MB feature transformer); that ratio is why buckets ship before any width increase. **Verified across the language boundary rather than assumed**: the bucket formula matches C#↔Python for every piece count 0-40 across 1-16 buckets, and a Python-trained net exported as arch 3 evaluates **18 / 80 / 62** in the engine and **18 / 80 / 62** in the new `verify_export.py` - which reproduces the engine's integer forward pass from the exported *file* - across buckets 7, 0 and 5. Backward compatibility is proven, not hoped for: gen7 re-exports as arch 1 byte-identically. **`nnuewidth`** prices width without training anything, because cost is a property of shapes and not of weights: **ft 256 = 1.51×, ft 512 = 2.64×** per evaluation - **sub-linear**, since activation packing and the output layer do not scale, and a materially better trade than the "wider is counterproductive" assumption behind v3.2.0. Its first version reported 256 as *faster* than 128, which is impossible, so the estimator now takes the minimum of five repetitions and the report prints its own sanity check. **Buckets are measurable immediately** on the 84.7M positions that already exist (`Noa-Buckets.ps1` trains two arms differing only in `--out-buckets`; `sprt_buckets.bat` plays them off). Also fixes a mistyped subcommand silently launching a 500-game datagen. 228 engine tests, 71 core tests.
@@ -168,10 +170,12 @@ dotnet publish src/NoaChess.UCI -c Release -o out   # .exe UCI único autoconten
 El `NoaChess.UCI.exe` publicado funciona en cualquier GUI UCI (Arena, CuteChess, BanksiaGUI...).
 
 ### **Tecnologías**
-- **Lenguaje**: C# 14, .NET 10 LTS
-- **Testing**: xUnit; validación Perft; gauntlets automáticos con cutechess-cli
-- **Rendimiento**: BenchmarkDotNet
-- **GUI**: WPF (MVVM), SharpVectors, MdXaml
+- **Lenguaje**: C# 12, .NET 10 LTS
+- **IDE**: Visual Studio + extensiones
+- **Testing**: xUnit, FluentAssertions, Moq
+- **API**: ASP.NET Core WebAPI (futuro)
+- **CI/CD**: GitHub Actions (roadmap)
+- **Performance**: BenchmarkDotNet, profiling .NET
 
 ### **Roadmap y versiones** (de más reciente a más antigua)
 - **v3.2.0** - **NNUE gen7 (NNUE-0.7) + pipeline de datagen con aperturas humanas.** El datagen de self-play siembra ahora las aperturas desde un libro de partidas humanas de élite (chess.com >2800 + Lichess élite; 3,04M FENs únicos deduplicados con el nuevo subcomando `pgnbook`) en vez de 8–9 plies legales aleatorios. gen7 promociona como generación **marginal**: **vs gen5 +3.7 ±10.2, LOS 76.2%** (10+0.1, 3000 partidas - paridad, no un H1 formal); **vs clásico +28.5 ±13.0, LOS 100%** (2176 partidas - el valor NNUE acumulado total sobre el eval clásico). Gauntlet CCRL (240 partidas, 60+0.6, un hilo, campo 2862–3281): **57.9%, ~3080 ±40 CCRL**, frente al 51.0% de gen5 (~3050) pero dentro del ruido combinado del gauntlet. Lectura honesta: sembrar con aperturas humanas **no** dio un salto de fuerza sobre gen5 (cambio neutro-a-ligeramente-positivo); el valor está en el pipeline de datos migrado (base correcta para entrenar con datos de élite) y en fijar el delta NNUE-vs-clásico en +28.5 (el viejo sumatorio de cascada ~+46 sobrecontaba - el Elo de self-play no es aditivo). Incluye el fix de gestión de tiempo de v3.1.2. 210/210 tests.

@@ -401,14 +401,6 @@ public sealed class AlphaBetaSearch
     // Reallocates the transposition table ("setoption name Hash value N").
     public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
 
-    // Swaps the evaluator (Classical <-> NNUE). Never call during a search.
-    public void SetEvaluator(IPositionEvaluator evaluator)
-    {
-        _evaluator = evaluator;
-        _incremental = evaluator as IIncrementalEvaluator;
-        _tt.Clear(); // Cached scores from another evaluator are poison.
-    }
-
     // Clears all inter-search state (TT, killers, history). Called on
     // "ucinewgame" / GUI new game.
     public void Reset()
@@ -834,7 +826,6 @@ public sealed class AlphaBetaSearch
             }
 
             board.UnmakeMove();
-            _incremental?.Pop();
             searched++;
 
             // A score computed after the stop signal is garbage; only use it
@@ -1314,7 +1305,6 @@ public sealed class AlphaBetaSearch
             int nullScore = -Negamax(board, depth - r, -beta, -beta + 1,
                                      ply + 1, allowNull: false, cutNode: false);
             board.UnmakeNullMove();
-            _incremental?.Pop();
 
             if (_stopped)
                 return 0;
@@ -2015,7 +2005,6 @@ public sealed class AlphaBetaSearch
                     continue;
             }
 
-            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             // Discard moves that leave our own king in check.
@@ -2073,12 +2062,6 @@ public sealed class AlphaBetaSearch
     // TT index collision could otherwise inject a corrupt move.
     private Move[] ExtractPv(Board board, Move firstMove, int maxLength)
     {
-        bool IsLegal(Move move)
-        {
-            MoveGenerator.GenerateLegalMoves(board, _pvScratch);
-            return _pvScratch.Contains(move);
-        }
-
         var pv = new List<Move>(maxLength) { firstMove };
         board.MakeMove(firstMove);
         int made = 1;
@@ -2086,7 +2069,7 @@ public sealed class AlphaBetaSearch
         while (pv.Count < maxLength
                && _tt.Probe(board.ZobristKey, out TTEntry entry)
                && entry.BestMove != Move.None
-               && IsLegal(entry.BestMove))
+               && MoveGenerator.GenerateLegalMoves(board).Contains(entry.BestMove))
         {
             pv.Add(entry.BestMove);
             board.MakeMove(entry.BestMove);
