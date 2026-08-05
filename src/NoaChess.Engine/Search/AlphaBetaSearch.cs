@@ -973,9 +973,25 @@ public sealed class AlphaBetaSearch
         // flat in-search tablebase scores). DTZ only takes over once the
         // halfmove clock is high enough that making progress towards a zeroing
         // move is what actually saves the win.
+        // Refined 2026-08-03 after the first version caused the opposite bug.
+        // DTZ steers towards the next irreversible move, and that is exactly
+        // what a won endgame wants WHEN there is a pawn to push: the push zeroes
+        // the counter and is genuine progress towards promotion. DTZ is only
+        // harmful with NO pawns of ours and nothing of theirs to capture,
+        // because then the sole way to shorten it is to let them take one of
+        // ours - the K+Q+Q vs K queen sacrifice.
+        //
+        // Ranking by WDL in every position below the urgency clock produced a
+        // real game against zipfile_chess-bot (lichess.org/HUAC6sVf): K+N+3P vs
+        // K, twenty moves of knight and king shuffling from move 123, then the
+        // halfmove counter hit the threshold, DTZ engaged, f6-f7-f8=Q and mate
+        // in five. Everything needed to win was already there; only the reason
+        // to make progress was missing.
+        bool weHavePawns = board.Pieces(board.SideToMove, PieceType.Pawn) != 0;
+
         int bestRank;
         bool ranked;
-        if (board.HalfmoveClock >= DtzUrgencyClock)
+        if (weHavePawns || board.HalfmoveClock >= DtzUrgencyClock)
             ranked = TryRankRootMovesByDtz(board, ranks, out bestRank)
                   || TryRankRootMovesByWdl(board, ranks, out bestRank);
         else
