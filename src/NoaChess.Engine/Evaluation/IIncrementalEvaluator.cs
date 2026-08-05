@@ -9,7 +9,7 @@ namespace NoaChess.Engine.Evaluation;
 //
 // Discipline: PushMove is called with the board still in the PRE-move
 // position; Pop is called after the corresponding UnmakeMove. Push and Pop
-// must pair up exactly — the tests verify incremental results stay identical
+// must pair up exactly - the tests verify incremental results stay identical
 // to full recomputation across random make/unmake sequences.
 public interface IIncrementalEvaluator : IPositionEvaluator
 {

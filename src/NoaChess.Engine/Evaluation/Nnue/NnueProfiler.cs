@@ -19,7 +19,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // counts alone say nothing about cost.
 //
 // The attribution is deliberately reported as a share of the SUM of attributed
-// costs, not of wall-clock search time — search also does move generation,
+// costs, not of wall-clock search time - search also does move generation,
 // make/unmake and table probing, and pretending otherwise would overstate the
 // eval's share. The interesting number is the ratio BETWEEN the NNUE
 // primitives, which is what decides whether width is affordable.
@@ -141,7 +141,7 @@ public static class NnueProfiler
                         + $"the L1 dot product is {100.0 * msEval / total:F1}%.");
         report.AppendLine("  Both scale with ft width, so a wider net multiplies BOTH.");
 
-        // MEASURED CAVEAT, v4.0.0 — read this before acting on the numbers above.
+        // MEASURED CAVEAT, v4.0.0 - read this before acting on the numbers above.
         //
         // The attribution multiplies ISOLATED per-op costs by real call counts,
         // and isolated costs are systematically OPTIMISTIC about how much a
@@ -166,7 +166,7 @@ public static class NnueProfiler
         // (more total traffic) is a memory-system question that cannot be
         // settled from this table.
         report.AppendLine("  CAVEAT: these shares come from isolated per-op costs x real call");
-        report.AppendLine("  counts. Isolated costs OVERSTATE optimisation value — the real");
+        report.AppendLine("  counts. Isolated costs OVERSTATE optimisation value - the real");
         report.AppendLine("  bottleneck is memory latency on ft rows (random access into a");
         report.AppendLine($"  {ftBytes / 1024.0 / 1024.0:F1} MB table), not instruction count. Use this as a map of");
         report.AppendLine("  where the work is; decide width on measured NPS, never on this table.");
@@ -244,7 +244,7 @@ public static class NnueProfiler
         return sw.Elapsed.TotalMilliseconds * 1e6 / MeasureIterations;
     }
 
-    // Full rebuild from the bias — the pre-v4.0.0 king-move path.
+    // Full rebuild from the bias - the pre-v4.0.0 king-move path.
     private static double TimeRefreshCold(NnueNetwork net, Board board)
     {
         var acc = new NnueAccumulator(net.FtOutputs);
@@ -328,8 +328,8 @@ public static class NnueProfiler
     //
     // What this does NOT measure is strength, or the node counts a real search
     // would produce (those depend on the evaluations themselves). It answers
-    // one question — what does width cost per evaluation and per accumulator
-    // update — which is the input the width decision was previously missing.
+    // one question - what does width cost per evaluation and per accumulator
+    // update - which is the input the width decision was previously missing.
     //
     // MUST be run on an idle machine. Under competing load these numbers are
     // noise, and the whole point is to stop deciding on bad numbers.
@@ -363,7 +363,7 @@ public static class NnueProfiler
             // measurement slower, so the fastest observation is the closest one
             // to the true cost; averaging would fold the machine's other work
             // into the number. This is what makes the sweep survive a little
-            // background noise — it does NOT make it survive a busy machine.
+            // background noise - it does NOT make it survive a busy machine.
             double nsEval = MinOf(() => TimeEvaluate(net, board));
             double nsMove = MinOf(() => TimeMoveFeature(net, board));
             double nsRefresh = MinOf(() => TimeRefreshCold(net, board));
@@ -379,7 +379,7 @@ public static class NnueProfiler
         report.AppendLine();
         report.AppendLine("  SANITY CHECK: cost must RISE with width. If a wider row measures");
         report.AppendLine("  faster than a narrower one, the machine was busy and the whole");
-        report.AppendLine("  table is noise — rerun it idle rather than believing it.");
+        report.AppendLine("  table is noise - rerun it idle rather than believing it.");
         report.AppendLine("  Read this against NPS, not in isolation: a width that doubles eval");
         report.AppendLine("  cost must buy more than it loses in depth. The strength side of the");
         report.AppendLine("  trade still needs a trained net and an SPRT.");

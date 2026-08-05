@@ -69,7 +69,7 @@ public sealed class NnueAccumulatorStack
             // the then-current board.
             child.Valid[(int)us] = false;
 
-            // The opponent's king did not move, so its perspective stays valid —
+            // The opponent's king did not move, so its perspective stays valid -
             // but in HalfKA our king IS a feature there. Patch our king's
             // displacement, plus any capture or the castling rook.
             if (child.Valid[(int)them])
@@ -123,7 +123,7 @@ public sealed class NnueAccumulatorStack
             }
 
             // The mover leaves its square and lands (possibly transformed by
-            // promotion) — fused into a single accumulator pass.
+            // promotion) - fused into a single accumulator pass.
             PieceType landed = move.IsPromotion ? move.PromotionPiece : mover;
             child.MoveFeature(_network, perspective,
                 removeIndex: NnueFeatureIndex.Index(perspective, kingSq, us, mover, move.From),

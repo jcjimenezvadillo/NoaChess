@@ -20,7 +20,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // COST NOTE (v4.0.0, replaces an assertion that was wrong). This file used to
 // claim the L1 dot product was "THE cost of NNUE eval". At FT=128 / L1=32 the
 // product is 32 x 256 = 8,192 MACs, about 512 AVX2 instructions per evaluation
-// — far too small to dominate at 446k NPS. The real distribution is measured by
+// - far too small to dominate at 446k NPS. The real distribution is measured by
 // the `nnueprofile` command; do not re-derive it from intuition.
 public static class NnueInference
 {
@@ -120,7 +120,7 @@ public static class NnueInference
     // pairs and horizontally adds them into 16 int16 lanes; VPMADDWD then folds
     // those into 8 int32. Two instructions per 32 elements against VPMADDWD's
     // one per 16, but each covers twice the data and reads half the weight
-    // bytes — the weight stream is the part that does not fit in cache.
+    // bytes - the weight stream is the part that does not fit in cache.
     //
     // SATURATION IS IMPOSSIBLE HERE, not merely unlikely: the int16 lane holds
     // a0*w0 + a1*w1 with a in [0,127] and w in [-127,127], so the magnitude is

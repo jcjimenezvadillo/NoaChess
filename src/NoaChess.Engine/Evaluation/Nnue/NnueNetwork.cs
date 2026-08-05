@@ -1,7 +1,7 @@
 namespace NoaChess.Engine.Evaluation.Nnue;
 
 // The loaded network weights, ready for inference. Everything is stored in
-// the quantized integer form the inference code consumes directly — there is
+// the quantized integer form the inference code consumes directly - there is
 // no float math at runtime.
 //
 // Quantization contract (mirrored by tools/training/nnue/export_model.py):
@@ -12,7 +12,7 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 //   outWeights = round(w_float * QB)          -> int16
 //   outBias    = round(b_float * QA * QB)     -> int32
 //
-// Inference (see NnueInference) — IDENTICAL FORMULAS FOR BOTH ARCHITECTURES,
+// Inference (see NnueInference) - IDENTICAL FORMULAS FOR BOTH ARCHITECTURES,
 // only the storage width of l1Weights and the value of QA differ:
 //   accumulator = ftBias + sum(ftWeights[activeFeature])       (int16)
 //   a  = clamp(accumulator, 0, QA)                             per perspective

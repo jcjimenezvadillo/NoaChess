@@ -32,16 +32,16 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 //
 // ARCH 1 (legacy, v3.x): L1 weights int16, activations clamped to [0, QA=255]
 // and held as int16. The dot product runs on VPMADDWD. Every shipped net up to
-// gen7 uses this and it stays fully supported — a format change must never
+// gen7 uses this and it stays fully supported - a format change must never
 // strand a net that is currently playing.
 //
 // ARCH 2 (v4.0.0): L1 weights int8, activations clamped to [0, QA=127] and
 // packed to unsigned bytes. The dot product runs on VPMADDUBSW + VPMADDWD,
 // which halves weight memory traffic and doubles per-element throughput on
-// AVX2 without VNNI — the target CPU is Zen+, so VPDPBUSD is not available and
+// AVX2 without VNNI - the target CPU is Zen+, so VPDPBUSD is not available and
 // the int16 intermediate cannot be skipped.
 //
-// WHY QA MUST DROP TO 127 IN ARCH 2 — this is a correctness constraint, not a
+// WHY QA MUST DROP TO 127 IN ARCH 2 - this is a correctness constraint, not a
 // tuning choice. VPMADDUBSW computes a0*w0 + a1*w1 into an int16 lane, and
 // int16 SATURATES. With unsigned-byte activations and signed-byte weights:
 //     QA=255: |255*127 + 255*127| = 64,770  > 32,767  -> saturates, WRONG
@@ -56,8 +56,8 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // network gets a specialised readout for each phase of the game instead of one
 // linear map that has to serve a 32-piece opening and a 4-piece ending alike.
 //
-// WHY THIS IS ALMOST FREE AT RUNTIME. Only ONE bucket is evaluated per call —
-// the others are never touched — so the arithmetic per evaluation is exactly
+// WHY THIS IS ALMOST FREE AT RUNTIME. Only ONE bucket is evaluated per call -
+// the others are never touched - so the arithmetic per evaluation is exactly
 // the arch-2 cost. What grows is the WEIGHT TABLE, by the bucket count, and
 // only for the head: at ft=128/l1=32 the L1 matrix goes from 16 KB to 128 KB
 // against a 5.5 MB feature transformer. That is the best capacity-per-cost

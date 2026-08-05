@@ -14,8 +14,8 @@ namespace NoaChess.Core;
 // - List<Move> overloads: convenience wrappers for cold paths (GUI, UCI,
 //   game-over detection, tests).
 //
-// 'capturesOnly' generates just captures and promotions — what quiescence
-// search needs — skipping all quiet-move work (a large share of search nodes
+// 'capturesOnly' generates just captures and promotions - what quiescence
+// search needs - skipping all quiet-move work (a large share of search nodes
 // are quiescence nodes).
 public static class MoveGenerator
 {
@@ -116,7 +116,7 @@ public static class MoveGenerator
 
     // ---------- Staged-generation API (search hot path) ----------
     // The staged move picker serves the TT move first (no generation at all),
-    // then captures, then quiet moves — so a node cut early never pays for the
+    // then captures, then quiet moves - so a node cut early never pays for the
     // moves it does not visit. These appenders do NOT clear the list.
 
     // Captures, promotions (all of them, quiet promotions included: they are
@@ -136,7 +136,7 @@ public static class MoveGenerator
         AddPieceMoves(list, board.Pieces(us, PieceType.King), Attacks.King, theirPieces, theirPieces);
     }
 
-    // Quiet moves only: pushes (no promotions — the capture stage already
+    // Quiet moves only: pushes (no promotions - the capture stage already
     // emitted those), piece moves to empty squares and castling.
     public static void AppendQuietMoves(Board board, MoveList list)
     {
@@ -174,7 +174,7 @@ public static class MoveGenerator
     }
 
     // True when 'move' is a move this position's pseudo-legal generator would
-    // emit — same piece rules, same flag encoding, castling fully validated.
+    // emit - same piece rules, same flag encoding, castling fully validated.
     // Used to vet a TT move before making it without generating anything: a
     // Zobrist collision could otherwise hand the board a corrupting garbage
     // move. Must stay in exact agreement with the generators above (the fuzz

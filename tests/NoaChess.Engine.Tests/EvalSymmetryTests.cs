@@ -10,7 +10,7 @@ namespace NoaChess.Engine.Tests;
 // satisfy eval(P) == eval(P'). Evaluate() is side-to-move relative, so a
 // mirrored position with the mirrored side to move must produce the exact
 // same score. Any violation means some term treats White and Black
-// differently — a color/sign/shift bug.
+// differently - a color/sign/shift bug.
 public class EvalSymmetryTests
 {
     private static int Eval(string fen)
