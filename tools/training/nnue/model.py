@@ -19,13 +19,13 @@ OUTPUT_SCALE = 400.0  # net output * 400 = centipawns
 # the bucket is chosen from the piece count, so the network gets a specialised
 # readout per phase instead of one linear map serving a 32-piece opening and a
 # 4-piece ending alike. Only ONE bucket is evaluated at play time, so this buys
-# capacity at essentially zero runtime cost — the best trade in the architecture,
+# capacity at essentially zero runtime cost - the best trade in the architecture,
 # which is why it lands before any width increase.
 #
 # DEFAULT IS 1, DELIBERATELY. Buckets are an explicit opt-in (--out-buckets 8),
 # not a silent change of what every existing caller produces. Defaulting to 8
 # meant a script that had always trained an unbucketed net suddenly produced a
-# bucketed checkpoint, which then failed at export against --arch 1 — after the
+# bucketed checkpoint, which then failed at export against --arch 1 - after the
 # training had already run. A default that quietly changes existing output is a
 # trap, and the failure surfaces hours downstream of the cause.
 OUT_BUCKETS = 1
@@ -51,7 +51,7 @@ class NoaNnue(nn.Module):
     # ft_out / l1_out default to the module constants but can be widened to
     # sweep capacity (256, 512, ...). The C# runtime reads every dimension from
     # the model header, so a wider or more bucketed net needs no engine change
-    # — only a retrain and an export.
+    # - only a retrain and an export.
     def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS):
         super().__init__()
         self.ft_out = ft_out

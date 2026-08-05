@@ -20,7 +20,7 @@ First functional net. The teacher is the engine's own classical eval at 4K
 nodes, so the ceiling of this net is roughly "classical eval quality, cheaper
 pattern interpolation". Beating classical by a wide margin requires more data
 (tens of millions of positions), stronger teacher searches and iterated
-generations — planned as the next runs.
+generations - planned as the next runs.
 
 ## Gate
 SPRT vs classical (tools/sprt/sprt_nnue_vs_classical.bat). Promote only on

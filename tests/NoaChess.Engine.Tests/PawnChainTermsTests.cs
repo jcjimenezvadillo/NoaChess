@@ -81,7 +81,7 @@ public class PawnChainTermsTests
     [Fact]
     public void BlockedPawn_Rank5RamIsScored()
     {
-        // White e5 rammed by black e6: relative rank 5 blocked pawn — the
+        // White e5 rammed by black e6: relative rank 5 blocked pawn - the
         // term (negative in both phases at rank 5) must move the score.
         var board = new Board("4k3/8/4p3/4P3/8/8/8/4K3 w - - 0 1");
 
@@ -104,7 +104,7 @@ public class PawnChainTermsTests
         // c3 supports d4 (connected) vs c3+e5... keep it minimal: d4 with a
         // supporter on c3 versus d4 with the same pawn parked on b2 where it
         // neither supports nor forms a phalanx (b2 itself is isolated there
-        // in neither case — both far from black's a7 anchor).
+        // in neither case - both far from black's a7 anchor).
         var structure = new PawnStructureEvaluator();
         Score supported = structure.Evaluate(new Board("4k3/p7/8/8/3P4/2P5/8/4K3 w - - 0 1"));
         Score loose = structure.Evaluate(new Board("4k3/p7/8/8/3P4/8/1P6/4K3 w - - 0 1"));

@@ -9,7 +9,7 @@ public sealed record TunableParam(string Name, Func<int> Get, Action<int> Set);
 
 // Builds the list of everything the tuner may touch, and renders the current
 // values back as a paste-ready C# snippet. Material values stay fixed: they
-// are the anchor that pins the centipawn scale. The PSTs ARE tuned — PeSTO is
+// are the anchor that pins the centipawn scale. The PSTs ARE tuned - PeSTO is
 // only the starting point; adapting the tables to this engine's search is
 // where most of the tuning Elo lives.
 public static class ParameterRegistry
@@ -116,7 +116,7 @@ public static class ParameterRegistry
     public static string ToSnippet4E()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("// Tuned 4E values (texel, NoaChess.Tuner) — paste into EvaluationParams:");
+        sb.AppendLine("// Tuned 4E values (texel, NoaChess.Tuner) - paste into EvaluationParams:");
         Append(sb, "TrappedRook", EvaluationParams.TrappedRook);
         Append(sb, "RookOnClosedFile", EvaluationParams.RookOnClosedFile);
         Append(sb, "LongDiagonalBishop", EvaluationParams.LongDiagonalBishop);
@@ -178,7 +178,7 @@ public static class ParameterRegistry
     public static string ToSnippet4H()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("// Tuned 4H values (texel, NoaChess.Tuner, imbalance active) — paste into EvaluationParams:");
+        sb.AppendLine("// Tuned 4H values (texel, NoaChess.Tuner, imbalance active) - paste into EvaluationParams:");
         sb.Append("MaterialMg = [");
         sb.Append(string.Join(", ", EvaluationParams.MaterialMg));
         sb.AppendLine("];");
@@ -224,7 +224,7 @@ public static class ParameterRegistry
     public static string ToSnippet()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("// Tuned values (texel, NoaChess.Tuner) — paste into EvaluationParams:");
+        sb.AppendLine("// Tuned values (texel, NoaChess.Tuner) - paste into EvaluationParams:");
         Append(sb, "BishopPair", EvaluationParams.BishopPair);
         Append(sb, "RookOpenFile", EvaluationParams.RookOpenFile);
         Append(sb, "RookSemiOpenFile", EvaluationParams.RookSemiOpenFile);
@@ -244,7 +244,7 @@ public static class ParameterRegistry
         AppendArray(sb, "BlockedPawnRank", EvaluationParams.BlockedPawnRank);
 
         sb.AppendLine();
-        sb.AppendLine("// Tuned PSTs — paste into PieceSquareTables (white POV, first row = rank 8):");
+        sb.AppendLine("// Tuned PSTs - paste into PieceSquareTables (white POV, first row = rank 8):");
         for (int piece = 0; piece < 6; piece++)
         {
             AppendTable(sb, $"{PieceNames[piece]}Mg", PieceSquareTables.MgByPiece[piece]);

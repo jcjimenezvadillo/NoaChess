@@ -431,7 +431,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
                                     side -= EvaluationParams.BishopPawns[edgeDist] * (sameColorPawns * mult);
                                 }
                                 // BishopXRayPawns: PENALTY per enemy pawn on the bishop's
-                                // full diagonals (x-ray, empty-board) — they restrict it.
+                                // full diagonals (x-ray, empty-board) - they restrict it.
                                 ulong diagFull = Attacks.Bishop(sq, 0UL);
                                 side -= EvaluationParams.BishopXRayPawns * Bitboard.PopCount(enemyPawnsB & diagFull);
                                 // LongDiagonalBishop: sees >= 2 of the 4 center squares through pawns.
@@ -443,7 +443,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
                         else if (type == PieceType.Rook)
                         {
                             // Closed-file / trapped terms apply ONLY when the rook is
-                            // NOT on a file that is (semi-)open for us — i.e. there is
+                            // NOT on a file that is (semi-)open for us - i.e. there is
                             // an own pawn on its file. Open/semi-open bonuses are handled
                             // separately in RookFileBonus (the reference's `if` branch).
                             ulong ownPawnsR = color == Color.White ? whitePawns : blackPawns;
@@ -542,7 +542,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
 
         // Winnable / scale factors (4I): complexity adjustment plus the
         // endgame scale factor folded into the phase interpolation (drawish
-        // structures — OCB, lone-flank rook endings, no-pawn material edges —
+        // structures - OCB, lone-flank rook endings, no-pawn material edges -
         // keep the raw score from overstating the win).
         int tapered = Winnable.Apply(board, score, phase, whitePassers, blackPassers,
                                      out int complexityCp);
@@ -569,7 +569,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
     // square defended by an enemy pawn, or defended more times than we attack
     // it. Enemy pieces that are attacked and NOT strongly protected are
     // "weak" and everything below feeds on that classification. This is what
-    // the removed v2.4.0 threat terms lacked — they rewarded any attack, even
+    // the removed v2.4.0 threat terms lacked - they rewarded any attack, even
     // on a healthily defended piece, which distorted the material judgement.
     // Public for the test suite (which probes the term in isolation, free of
     // PST/material confounds); requires Evaluate() to have run on the same
@@ -878,9 +878,9 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
     }
 
     // King safety (danger accumulator + do-king-safety shelter).
-    // Everything here is computed in RAW internal units — the attack weights,
+    // Everything here is computed in RAW internal units - the attack weights,
     // the shelter/storm tables and the quadratic danger transform
-    // (danger^2/4096) are a jointly-tuned system — and the final Score is
+    // (danger^2/4096) are a jointly-tuned system - and the final Score is
     // converted to NoaChess centipawns (x0.48) once at the end. Safe/unsafe
     // check terms are deliberately not ported (the v2.4.6 attempt failed on a
     // safe-check mask bug); everything else of the danger formula is here.
@@ -947,7 +947,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
         return new Score(score.Mg * 48 / 100, score.Eg * 48 / 100);
     }
 
-    // do-king-safety — shelter at the current king square, improved by the
+    // do-king-safety - shelter at the current king square, improved by the
     // post-castling shelter when castling is still possible, plus an endgame
     // pull towards the closest own pawn. Raw internal units.
     private Score DoKingSafety(Board board, Color us)
@@ -1010,7 +1010,7 @@ public sealed class ClassicalEvaluator : IPositionEvaluator, IComplexityEvaluato
         return result;
     }
 
-    // evaluate-shelter — shelter bonus and storm penalty on the king file and
+    // evaluate-shelter - shelter bonus and storm penalty on the king file and
     // the two adjacent files, plus the KingOnFile term. Raw internal units.
     private Score EvaluateShelter(Board board, Color us, int ksq)
     {

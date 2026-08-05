@@ -3,7 +3,7 @@ using NoaChess.Core;
 namespace NoaChess.Core.Tests;
 
 // The PEXT and magic lookup paths must agree on every square and occupancy.
-// Production picks one path per CPU (Magics.UsePext — PEXT only on Intel/AMD
+// Production picks one path per CPU (Magics.UsePext - PEXT only on Intel/AMD
 // Zen3+, where the instruction is fast); this test exercises BOTH explicitly,
 // so the PEXT path is verified even on machines where production never takes
 // it (e.g. AMD Zen+/Zen2, where PEXT is microcoded and the guard disables it).
@@ -33,7 +33,7 @@ public class MagicsPextTests
         yield return ulong.MaxValue;
         for (int i = 0; i < count; i++)
         {
-            // AND-ing randoms gives sparse boards, OR-ing gives dense ones —
+            // AND-ing randoms gives sparse boards, OR-ing gives dense ones -
             // both regimes are exercised.
             ulong a = (ulong)rng.NextInt64();
             ulong b = (ulong)rng.NextInt64();

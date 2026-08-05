@@ -19,8 +19,8 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // accepted (10+0.1, proven-mate stop in both arms). Negative from the first
     // sample and monotone. The knob is gone; do not reintroduce it.
     //
-    // The scale measurement itself was right — the net IS compressed, see the
-    // numbers below — but the conclusion was wrong, for two reasons:
+    // The scale measurement itself was right - the net IS compressed, see the
+    // numbers below - but the conclusion was wrong, for two reasons:
     //   1. The pruning margins are ALREADY calibrated to the compressed net in
     //      practice: gen3 through gen7 were every one of them SPRT-validated
     //      with it, so the shipped combination is the empirically tuned one.
@@ -29,7 +29,7 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     //      staticEval - margin >= beta, so a 25% larger eval trips it far more
     //      often (same for razoring and futility), producing unsound cutoffs.
     //      A compressed eval against fixed margins is equivalent to LARGER
-    //      margins — safer pruning — and the engine prefers that.
+    //      margins - safer pruning - and the engine prefers that.
     //
     // Measured 2026-07-30 over 6000 real positions from the human opening book,
     // regressing gen7 static eval on the classical evaluator: global slope
@@ -39,7 +39,7 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // Method note for whoever measures a future net: do NOT calibrate on
     // artificial material positions (removing a piece from the start position).
     // That was tried first and gave a confident but WRONG "1.29x inflated"
-    // reading in the opposite direction — such positions are far outside the
+    // reading in the opposite direction - such positions are far outside the
     // net's training distribution, so the two evaluators simply disagree there
     // rather than differing by scale.
     //
@@ -47,7 +47,7 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // (QsFutilityMargin=147, ProbCut margins, razoring, the quiescence victim
     // values [100,320,330,500,900], aspiration deltas) is expressed on the
     // CLASSICAL centipawn scale and several are compared directly against this
-    // evaluator's output. That mismatch is REAL — it is simply not worth
+    // evaluator's output. That mismatch is REAL - it is simply not worth
     // correcting here, because the search was tuned around it.
 
     private readonly NnueNetwork _network;

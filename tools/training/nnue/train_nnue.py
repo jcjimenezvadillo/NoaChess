@@ -30,7 +30,7 @@ def wdl_target(scores, results, lam):
 
 def main():
     parser = argparse.ArgumentParser()
-    # One or more datasets. Multiple files are concatenated — used to MIX
+    # One or more datasets. Multiple files are concatenated - used to MIX
     # generations (e.g. the net's own self-play + the classical baseline) so
     # the net covers both distributions instead of overfitting to one.
     parser.add_argument("--data", required=True, nargs="+")
@@ -57,10 +57,10 @@ def main():
     parser.add_argument("--out-buckets", type=int, default=OUT_BUCKETS)
     # Legacy salvage flag: drops exactly-0 labels. Was needed only for the old
     # contaminated datasets (an engine hard-stop bug zeroed ~57% of labels,
-    # fixed 2026-07-24). Clean datasets have ~2% genuine-draw zeros — leave off.
+    # fixed 2026-07-24). Clean datasets have ~2% genuine-draw zeros - leave off.
     parser.add_argument("--drop-zero-scores", action="store_true")
     # LEGACY IN-RAM PATH ONLY. Features are ~136 bytes per record once decoded,
-    # so this cap is really ~16 GB of RAM — an ARCHITECTURAL CEILING that makes
+    # so this cap is really ~16 GB of RAM - an ARCHITECTURAL CEILING that makes
     # the 300-500M position datasets BLOCK 12 targets impossible. It applies
     # only when --no-streaming is passed; the streaming path is bounded by disk.
     parser.add_argument("--max-records", type=int, default=120_000_000,
@@ -95,8 +95,8 @@ def main():
         print(f"subsampling {total:,} -> {int(total*ratio):,} records ({ratio*100:.1f}%) to fit under --max-records")
 
     # Decode each file once (cached next to it), optionally subsample, then split
-    # THAT FILE into train/val by a tail cut. Splitting per file — not on the
-    # concatenation — is what makes the validation set a representative mix of
+    # THAT FILE into train/val by a tail cut. Splitting per file - not on the
+    # concatenation - is what makes the validation set a representative mix of
     # ALL generations instead of only the last file; a tail cut also keeps whole
     # games on one side (the format orders records by game).
     train_parts = ([], [], [], [])
@@ -141,7 +141,7 @@ def train_streaming(args, rng):
     v4.0.0 default. Features live in memory-mapped shards and batches are read
     off the mapping, so the dataset is bounded by disk instead of by RAM. The
     120M-record cap of the in-RAM path is not merely raised here, it stops
-    existing — which is what makes BLOCK 12's 300-500M position target possible
+    existing - which is what makes BLOCK 12's 300-500M position target possible
     at all.
     """
     store = dataset.FeatureStore(args.data, val_fraction=args.val_fraction)
@@ -204,7 +204,7 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
 
     # A validation split smaller than one batch yields NO batches, so the loss
     # is nan, no epoch ever counts as an improvement, and the checkpoint used to
-    # be written with "model": None — silently losing the entire run, which only
+    # be written with "model": None - silently losing the entire run, which only
     # surfaced later as a crash at export time. Warn here and fall back below.
     if val_total < args.batch:
         print(f"WARNING: validation split ({val_total:,}) is smaller than one batch "
@@ -251,7 +251,7 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         scheduler.step()
 
     # Never save a checkpoint without weights. best_state stays None when no
-    # epoch improved on the initial infinity — which happens whenever the
+    # epoch improved on the initial infinity - which happens whenever the
     # validation loss is nan (see the warning above), and used to produce a
     # checkpoint carrying "model": None that destroyed the run.
     if best_state is None:

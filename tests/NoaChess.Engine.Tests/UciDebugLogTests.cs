@@ -70,10 +70,10 @@ public sealed class UciDebugLogTests
 
             string quitLog = File.ReadAllText(quitPath);
             string eofLog = File.ReadAllText(eofPath);
-            Assert.Contains("quit received — read loop ends", quitLog);
-            Assert.DoesNotContain("stdin EOF — read loop ends", quitLog);
-            Assert.Contains("stdin EOF — read loop ends", eofLog);
-            Assert.DoesNotContain("quit received — read loop ends", eofLog);
+            Assert.Contains("quit received - read loop ends", quitLog);
+            Assert.DoesNotContain("stdin EOF - read loop ends", quitLog);
+            Assert.Contains("stdin EOF - read loop ends", eofLog);
+            Assert.DoesNotContain("quit received - read loop ends", eofLog);
         }
         finally
         {

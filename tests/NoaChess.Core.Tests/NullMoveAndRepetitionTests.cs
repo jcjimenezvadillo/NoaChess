@@ -132,7 +132,7 @@ public class NullMoveAndRepetitionTests
     }
 
     // Unmake must restore every partial key exactly, or the keys decay over a
-    // search rather than over a game — a far faster route to the same silent
+    // search rather than over a game - a far faster route to the same silent
     // corruption.
     [Fact]
     public void PartialZobristKeys_SurviveMakeUnmake()
@@ -156,7 +156,7 @@ public class NullMoveAndRepetitionTests
 
     // The keys must SEPARATE what they are supposed to separate. A key that
     // ignored piece type would make the minor and major tables aliases of each
-    // other and the whole point of having several would evaporate — quietly,
+    // other and the whole point of having several would evaporate - quietly,
     // since everything would still run.
     [Fact]
     public void PartialZobristKeys_DistinguishTheirOwnMaterial()

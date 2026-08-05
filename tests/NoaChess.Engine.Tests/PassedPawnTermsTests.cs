@@ -3,7 +3,7 @@ using NoaChess.Engine.Evaluation.Classical;
 
 namespace NoaChess.Engine.Tests;
 
-// Block 4F: reference passed-pawn terms — king proximity to the block square,
+// Block 4F: reference passed-pawn terms - king proximity to the block square,
 // the path-to-queen safety ladder, the PassedFile edge penalty and the
 // blocked-passer filter. Positions are built so material and PSTs are
 // controlled and only the probed term differs.
@@ -83,7 +83,7 @@ public class PassedPawnTermsTests
     public void BlockedPasser_WithoutHelpLosesTheRankBonus()
     {
         // e5/e6 pawn ram: White's e5 "candidate passer" is blocked by the
-        // black e6 pawn with no friendly pawn able to help — the filter takes
+        // black e6 pawn with no friendly pawn able to help - the filter takes
         // back the rank bonus. Compare with the same pawn truly passed
         // (black pawn moved to h6, not in the cone... use a3 far away).
         int blockedNoHelp = Eval("7k/8/4p3/4P3/8/8/8/7K w - - 0 1");
