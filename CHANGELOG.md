@@ -66,6 +66,18 @@ The crossover sits around **3150**. Applying one formula to all three runs the p
 
 On method, since it came up: **ponder has been off in every gauntlet and SPRT this project has run.** cutechess-cli only pondering when the bare `ponder` flag appears on an `-engine` line, and none of these bats pass it; `option.Ponder=false` would be a UCI setoption to the engine, which is not the mechanism and does nothing here. "Reasonable concurrency" means not running more simultaneous games than the machine can give real cores to - each game is two single-threaded processes, so `-concurrency 4` keeps 8 cores busy on a 24-core host, which is comfortable. Dropping to `-concurrency 1` removes contention that is not measurable at that load and costs four times the wall clock.
 
+### gen8: trained, measured, rejected
+
+The data-scale campaign's first net (331M positions at 6000-node labels, ft=128, one output bucket, 6 epochs) did not ship, on three independent measurements agreeing with each other:
+
+1. **SPRT vs gen7** at 60+1, `Threads=1`, ponder off: stopped at **H0** after 198 games (59W 95D 41L, 53.8%). No evidence of the +50 Elo the bounds asked for.
+2. **Real bot games**, identical binary, only the net swapped: the avoidable material-loss rate **tripled** (0.23 to 0.72 per 100 moves, p≈0.017), and the score fell from 80.5% to 75.8% against opposition only 58 Elo stronger.
+3. **Gauntlet vs the 12-engine field**: started, then abandoned once the first two measurements agreed.
+
+**The cause is the training schedule, not the data.** Validation loss never flattened - it fell 0.008005 to 0.005993 across the six epochs and the largest single drop was the *last* one - and `CosineAnnealingLR` is built with `T_max=args.epochs`, so the learning rate hit its floor exactly when the schedule ran out. Training stopped because the calendar ended, not because the model converged. The `--epochs 6` default dates from the 4-20M-position generations; at 331M positions it is roughly 2 billion samples seen, low for a corpus this size.
+
+**Numbering rule, gen6 as precedent:** a generation number is consumed by the attempt, not the promotion. gen6 trained, drifted below 0.5, was never promoted, and the next net was still called gen7. Same here: gen8 keeps its number and its row in [NNUE_HISTORY.md](NNUE_HISTORY.md); the retrain - same corpus byte for byte, only the epoch count changes (60 against 6) - is **gen9**.
+
 ## 2026-08-04 (v4.3.0.4) - the ponder credit was starving the search, and the root could return a move its own search never endorsed
 
 ### The root move nothing had validated
