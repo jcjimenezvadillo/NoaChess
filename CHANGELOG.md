@@ -43,6 +43,41 @@ So this is a **reporting fix worth no Elo**, and it is worth shipping anyway: re
 
 Search behaviour changes only through the two correctness fixes (what the root stores, and one history key), so node counts shift slightly; neither is a tuned change and neither has its own SPRT. Callers that pass no progress sink - datagen, tests, fixed-depth analysis - are byte-identical. 308 tests.
 
+### CCRL field gauntlet: ~3110 ±45
+
+**v4.3.1 + gen7 scored 59.7% over 165 games** at 60+0.6, `Threads=1`, ponder off, against the 12-engine field averaging 3043, for a performance of **~3110 ±45**. Per opponent:
+
+| Opponent | NoaChess score |
+|----------|----------------|
+| Colossus 2862 | 82.1% |
+| Ethereal 2910 | 82.1% |
+| Marvin 2900 | 71.4% |
+| Inanis 2905 | 67.9% |
+| Pedone 2978 | 67.9% |
+| Tcheran 2917 | 60.7% |
+| Bit-Genie 3010 | 60.7% |
+| Winter 3120 | 60.7% |
+| Rubichess 3150 | 50.0% |
+| Defenchess 3250 | 38.5% |
+| Patricia 3281 | 37.5% |
+| Princhess 3230 | 32.1% |
+
+The crossover sits around **3150**. Applying one formula to all three runs the project has: gen5 3050, gen7 3098, this one 3111. **The +13 is well inside ±45, so this does not measure the correction histories or the 4.3.x fixes** - it establishes a band, roughly 3070-3155, and nothing sharper. Two parameters differ from the earlier gauntlets (`plies=16` on the book, and **no tablebases for any engine** - uniform and therefore fairer than a run where only NoaChess has them), so this is better read as the start of a cleaner series than as a continuation of the old one. Stopped at 165 of a planned 600 games.
+
+On method, since it came up: **ponder has been off in every gauntlet and SPRT this project has run.** cutechess-cli only pondering when the bare `ponder` flag appears on an `-engine` line, and none of these bats pass it; `option.Ponder=false` would be a UCI setoption to the engine, which is not the mechanism and does nothing here. "Reasonable concurrency" means not running more simultaneous games than the machine can give real cores to - each game is two single-threaded processes, so `-concurrency 4` keeps 8 cores busy on a 24-core host, which is comfortable. Dropping to `-concurrency 1` removes contention that is not measurable at that load and costs four times the wall clock.
+
+### gen8: trained, measured, rejected
+
+The data-scale campaign's first net (331M positions at 6000-node labels, ft=128, one output bucket, 6 epochs) did not ship, on three independent measurements agreeing with each other:
+
+1. **SPRT vs gen7** at 60+1, `Threads=1`, ponder off: stopped at **H0** after 198 games (59W 95D 41L, 53.8%). No evidence of the +50 Elo the bounds asked for.
+2. **Real bot games**, identical binary, only the net swapped: the avoidable material-loss rate **tripled** (0.23 to 0.72 per 100 moves, p≈0.017), and the score fell from 80.5% to 75.8% against opposition only 58 Elo stronger.
+3. **Gauntlet vs the 12-engine field**: started, then abandoned once the first two measurements agreed.
+
+**The cause is the training schedule, not the data.** Validation loss never flattened - it fell 0.008005 to 0.005993 across the six epochs and the largest single drop was the *last* one - and `CosineAnnealingLR` is built with `T_max=args.epochs`, so the learning rate hit its floor exactly when the schedule ran out. Training stopped because the calendar ended, not because the model converged. The `--epochs 6` default dates from the 4-20M-position generations; at 331M positions it is roughly 2 billion samples seen, low for a corpus this size.
+
+**Numbering rule, gen6 as precedent:** a generation number is consumed by the attempt, not the promotion. gen6 trained, drifted below 0.5, was never promoted, and the next net was still called gen7. Same here: gen8 keeps its number and its row in [NNUE_HISTORY.md](NNUE_HISTORY.md); the retrain - same corpus byte for byte, only the epoch count changes (60 against 6) - is **gen9**.
+
 ## 2026-08-04 (v4.3.0.4) - the ponder credit was starving the search, and the root could return a move its own search never endorsed
 
 ### The root move nothing had validated
