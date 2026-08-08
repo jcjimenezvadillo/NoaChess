@@ -142,9 +142,8 @@ Contributions, suggestions, and feedback are welcome.
 Please check the [Contribution Guide](CONTRIBUTING.md) and open issues or pull requests.
 
 ### License
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
-**Use, copy, modification, and redistribution are allowed for any NON-commercial purpose.**
-**Any commercial use is strictly prohibited, except by the author or co-authors of the project.**
+This project is licensed under the **MIT License** - see [LICENSE](LICENSE).
+**Use, copy, modification, distribution and commercial use are all permitted**, provided the copyright notice is kept. The software comes with no warranty.
 For other uses, please contact the owner.
 
 ---
@@ -242,20 +241,18 @@ Se aceptan contribuciones, sugerencias y feedback.
 Por favor, revisa la [Guía de Contribución](CONTRIBUTING.md) y abre issues o pull requests para colaborar.
 
 ### **Licencia**
-Este proyecto está publicado bajo la licencia **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**.
-**Está permitido el uso, copia, modificación y redistribución para cualquier fin NO comercial**.  
-**Queda estrictamente prohibido cualquier uso comercial, salvo por el autor o coautores del proyecto.**
-Para otros usos, contacta con el titular.
+Este proyecto está publicado bajo la licencia **MIT** - ver [LICENSE](LICENSE).
+**Se permite usar, copiar, modificar, distribuir y explotar comercialmente el
+software**, con la única condición de conservar el aviso de copyright. Se
+entrega sin garantía de ningún tipo.
 
-### **Texto legal y resumen en español**
+> *Nota: el texto legalmente vinculante es el del fichero LICENSE, en inglés.
+> Esta descripción es solo informativa.*
 
-- El texto legalmente vinculante de esta licencia está en inglés y se incluye en el fichero LICENSE de este repositorio:  
-  https://creativecommons.org/licenses/by-nc/4.0/legalcode
-
-- Para facilitar la comprensión, existe un resumen oficial en español:  
-  https://creativecommons.org/licenses/by-nc/4.0/deed.es
-
-> *Nota: la traducción al español es solo informativa. En caso de discrepancia, prevalece el texto legal en inglés.*
+*(Licencia anterior: CC BY-NC 4.0, sustituida el 2026-08-09. Las licencias
+Creative Commons no están pensadas para software - no distinguen código fuente
+de binario ni ceden patentes - y su cláusula no comercial contradecía la
+intención del autor.)*
 
 ---
 
