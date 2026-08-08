@@ -217,6 +217,183 @@ public class NnueTests
         }
     }
 
+    // ---------- Lazy accumulator (v4.5.0) ----------
+    //
+    // The two tests above evaluate at EVERY ply, so they only ever exercise a
+    // pending chain of length 1. The lazy stack's real risk is the opposite
+    // case: plies pushed without anyone asking for an evaluation, so several
+    // recorded updates have to be replayed at once onto an ancestor's values.
+    // Everything below deliberately skips evaluations to build those chains.
+
+    // Random walk that descends, backtracks and evaluates at random points. The
+    // interesting states it produces on its own: chains spanning king moves of
+    // the other side, chains interrupted by a refresh, siblings pushed onto a
+    // parent that was never evaluated, and re-evaluation after popping into the
+    // middle of an uncomputed chain.
+    [Theory]
+    [InlineData(3)]
+    [InlineData(11)]
+    [InlineData(2024)]
+    public void LazyAccumulator_MatchesFullRefresh_WithSparseEvaluations(int seed)
+    {
+        var net = CreateTestNetwork();
+        var lazy = new NnueEvaluator(net);
+        var reference = new NnueEvaluator(net);
+        var rng = new Random(seed);
+
+        var board = new Board();
+        lazy.Reset(board);
+
+        // Null moves are pushed as a distinct kind of level, so the stack has to
+        // be unwound with the matching unmake; remember what each ply was.
+        var wasNull = new bool[64];
+        int depth = 0;
+
+        for (int step = 0; step < 600; step++)
+        {
+            bool canDescend = depth < 14;
+            bool descend = depth == 0 || (canDescend && rng.Next(100) < 65);
+
+            if (descend)
+            {
+                var moves = MoveGenerator.GenerateLegalMoves(board);
+                if (moves.Count == 0)
+                {
+                    // Checkmate or stalemate: nothing to push, back up instead.
+                    if (depth == 0)
+                        break;
+                    descend = false;
+                }
+                else if (rng.Next(100) < 8 && !board.IsInCheck())
+                {
+                    wasNull[depth] = true;
+                    lazy.PushNull();
+                    board.MakeNullMove();
+                    depth++;
+                }
+                else
+                {
+                    wasNull[depth] = false;
+                    Move move = moves[rng.Next(moves.Count)];
+                    lazy.PushMove(board, move);
+                    board.MakeMove(move);
+                    depth++;
+                }
+            }
+
+            if (!descend)
+            {
+                depth--;
+                if (wasNull[depth])
+                    board.UnmakeNullMove();
+                else
+                    board.UnmakeMove();
+                lazy.Pop();
+            }
+
+            // Only sometimes - that is what leaves pending chains longer than 1.
+            if (rng.Next(100) < 30)
+            {
+                int lazyScore = lazy.Evaluate(board);
+                reference.Reset(board);
+                Assert.Equal(reference.Evaluate(board), lazyScore);
+            }
+        }
+    }
+
+    // A single long chain: push every ply of a forced-looking line without
+    // evaluating anything, then evaluate once at the bottom. The FEN is the
+    // usual perft position, which reaches castling, captures and king moves
+    // within a few plies from any of its branches.
+    [Theory]
+    [InlineData(5)]
+    [InlineData(13)]
+    [InlineData(97)]
+    public void LazyAccumulator_MatchesFullRefresh_AfterUnevaluatedChain(int seed)
+    {
+        var net = CreateTestNetwork();
+        var lazy = new NnueEvaluator(net);
+        var reference = new NnueEvaluator(net);
+        var rng = new Random(seed);
+
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        lazy.Reset(board);
+
+        int pushed = 0;
+        for (int ply = 0; ply < 10; ply++)
+        {
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            if (moves.Count == 0)
+                break;
+            Move move = moves[rng.Next(moves.Count)];
+            lazy.PushMove(board, move);
+            board.MakeMove(move);
+            pushed++;
+        }
+
+        Assert.True(pushed > 1, "the test needs a chain, not a single push");
+
+        // First evaluation of the whole line: one copy plus 'pushed' replays.
+        reference.Reset(board);
+        Assert.Equal(reference.Evaluate(board), lazy.Evaluate(board));
+
+        // Unwind, evaluating at every level on the way back up. Each of these
+        // walks back into a chain whose intermediate levels are still
+        // uncomputed, which is the case a naive implementation gets wrong.
+        while (pushed-- > 0)
+        {
+            board.UnmakeMove();
+            lazy.Pop();
+            reference.Reset(board);
+            Assert.Equal(reference.Evaluate(board), lazy.Evaluate(board));
+        }
+    }
+
+    // Siblings pushed onto a parent that was never evaluated: the child's values
+    // array still holds the PREVIOUS sibling's numbers, so a lazy level that
+    // forgets to copy before replaying would silently accumulate twice.
+    [Fact]
+    public void LazyAccumulator_SiblingsDoNotInheritEachOther()
+    {
+        var net = CreateTestNetwork();
+        var lazy = new NnueEvaluator(net);
+        var reference = new NnueEvaluator(net);
+
+        var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        lazy.Reset(board);
+
+        // Descend two plies WITHOUT evaluating, so the parent of the siblings
+        // below is itself uncomputed and every sibling replays a chain of 3.
+        var opening = MoveGenerator.GenerateLegalMoves(board);
+        foreach (Move first in new[] { opening[0], opening[opening.Count / 2] })
+        {
+            lazy.PushMove(board, first);
+            board.MakeMove(first);
+
+            var replies = MoveGenerator.GenerateLegalMoves(board);
+            Move reply = replies[0];
+            lazy.PushMove(board, reply);
+            board.MakeMove(reply);
+
+            foreach (Move sibling in MoveGenerator.GenerateLegalMoves(board))
+            {
+                lazy.PushMove(board, sibling);
+                board.MakeMove(sibling);
+
+                reference.Reset(board);
+                Assert.Equal(reference.Evaluate(board), lazy.Evaluate(board));
+
+                board.UnmakeMove();
+                lazy.Pop();
+            }
+
+            board.UnmakeMove();
+            lazy.Pop();
+            board.UnmakeMove();
+            lazy.Pop();
+        }
+    }
+
     // ---------- Inference backends ----------
 
     [Fact]

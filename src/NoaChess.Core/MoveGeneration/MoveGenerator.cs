@@ -75,7 +75,18 @@ public static class MoveGenerator
         GeneratePseudoLegalMoves(board, scratch);
         Color us = board.SideToMove;
 
-        for (int i = 0; i < scratch.Count; i++)
+        // BACKWARDS on purpose. The generator appends in piece order - pawns,
+        // knights, bishops, rooks, queens, king, castling - and every search
+        // caller reaches this only to tell mate from stalemate, i.e. when the
+        // side to move is IN CHECK. There a pawn or knight move is legal only
+        // if it happens to block or capture the checker, while a king step out
+        // of the attack usually is. Scanning from the end tries the king first
+        // and returns on the first hit, instead of making and unmaking most of
+        // the illegal moves before ever reaching it.
+        //
+        // This cannot change what the search sees: the result is a bool, so the
+        // order in which the moves are tried is not observable.
+        for (int i = scratch.Count - 1; i >= 0; i--)
         {
             board.MakeMove(scratch[i]);
             bool legal = !board.IsSquareAttacked(board.KingSquare(us), board.SideToMove);
@@ -104,11 +115,11 @@ public static class MoveGenerator
 
         GeneratePawnMoves(board, list, us, occupied, theirPieces, capturesOnly);
 
-        AddPieceMoves(list, board.Pieces(us, PieceType.Knight), Attacks.Knight, targetMask, theirPieces);
+        AddJumperMoves(list, board.Pieces(us, PieceType.Knight), Attacks.KnightTable, targetMask, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Bishop), occupied, bishopLike: true, rookLike: false, targetMask, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Rook), occupied, bishopLike: false, rookLike: true, targetMask, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Queen), occupied, bishopLike: true, rookLike: true, targetMask, theirPieces);
-        AddPieceMoves(list, board.Pieces(us, PieceType.King), Attacks.King, targetMask, theirPieces);
+        AddJumperMoves(list, board.Pieces(us, PieceType.King), Attacks.KingTable, targetMask, theirPieces);
 
         if (!capturesOnly)
             GenerateCastlingMoves(board, list, us);
@@ -129,11 +140,11 @@ public static class MoveGenerator
         ulong occupied = board.AllOccupancy;
 
         GeneratePawnMoves(board, list, us, occupied, theirPieces, capturesOnly: true);
-        AddPieceMoves(list, board.Pieces(us, PieceType.Knight), Attacks.Knight, theirPieces, theirPieces);
+        AddJumperMoves(list, board.Pieces(us, PieceType.Knight), Attacks.KnightTable, theirPieces, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Bishop), occupied, bishopLike: true, rookLike: false, theirPieces, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Rook), occupied, bishopLike: false, rookLike: true, theirPieces, theirPieces);
         AddSliderMoves(list, board.Pieces(us, PieceType.Queen), occupied, bishopLike: true, rookLike: true, theirPieces, theirPieces);
-        AddPieceMoves(list, board.Pieces(us, PieceType.King), Attacks.King, theirPieces, theirPieces);
+        AddJumperMoves(list, board.Pieces(us, PieceType.King), Attacks.KingTable, theirPieces, theirPieces);
     }
 
     // Quiet moves only: pushes (no promotions - the capture stage already
@@ -164,11 +175,11 @@ public static class MoveGenerator
             }
         }
 
-        AddPieceMoves(list, board.Pieces(us, PieceType.Knight), Attacks.Knight, empty, 0);
+        AddJumperMoves(list, board.Pieces(us, PieceType.Knight), Attacks.KnightTable, empty, 0);
         AddSliderMoves(list, board.Pieces(us, PieceType.Bishop), occupied, bishopLike: true, rookLike: false, empty, 0);
         AddSliderMoves(list, board.Pieces(us, PieceType.Rook), occupied, bishopLike: false, rookLike: true, empty, 0);
         AddSliderMoves(list, board.Pieces(us, PieceType.Queen), occupied, bishopLike: true, rookLike: true, empty, 0);
-        AddPieceMoves(list, board.Pieces(us, PieceType.King), Attacks.King, empty, 0);
+        AddJumperMoves(list, board.Pieces(us, PieceType.King), Attacks.KingTable, empty, 0);
 
         GenerateCastlingMoves(board, list, us);
     }
@@ -301,13 +312,21 @@ public static class MoveGenerator
         return (attacks & toBB) != 0;
     }
 
-    private static void AddPieceMoves(MoveList list, ulong pieces, Func<int, ulong> attacksOf,
-                                      ulong targetMask, ulong theirPieces)
+    // Knights and kings: their attack set depends only on the square, so it is
+    // a plain table read.
+    //
+    // The table arrives as an ARRAY, not as a Func<int, ulong>. The delegate
+    // version read the same table but paid an indirect, non-inlinable call for
+    // every piece, on every generation call - and the sibling helper below
+    // already documents that this file avoids exactly that kind of cost for
+    // sliders. Emissions and their order are untouched.
+    private static void AddJumperMoves(MoveList list, ulong pieces, ulong[] attackTable,
+                                       ulong targetMask, ulong theirPieces)
     {
         while (pieces != 0)
         {
             int from = Bitboard.PopLsb(ref pieces);
-            ulong targets = attacksOf(from) & targetMask;
+            ulong targets = attackTable[from] & targetMask;
             while (targets != 0)
             {
                 int to = Bitboard.PopLsb(ref targets);
@@ -346,15 +365,37 @@ public static class MoveGenerator
         // Pawns are the piece with the most special cases: single push, double
         // push, diagonal captures, en passant and promotion (which additionally
         // multiplies each move by 4: queen, rook, bishop, knight).
-        int pushDir = us == Color.White ? 8 : -8;      // Square delta when advancing one rank.
-        int startRank = us == Color.White ? 1 : 6;     // Starting rank (allows the double push).
-        int promoRank = us == Color.White ? 7 : 0;     // Promotion rank.
+        bool white = us == Color.White;
+        int pushDir = white ? 8 : -8;      // Square delta when advancing one rank.
+        int startRank = white ? 1 : 6;     // Starting rank (allows the double push).
+        int promoRank = white ? 7 : 0;     // Promotion rank.
+
+        // Hoisted out of the per-pawn loop. The pawn attack table is JAGGED, so
+        // Attacks.Pawn re-indexes by colour on every call - and the old code
+        // called it TWICE per pawn whenever an en passant square was set, once
+        // for the captures and once for the en passant test.
+        ulong[] pawnAttacks = Attacks.PawnTable(us);
+
+        // Every en passant condition except "does THIS pawn attack the square"
+        // is independent of the pawn, so it is decided once per call instead of
+        // once per pawn. Same moves: the per-pawn test below is the only part
+        // that ever varied.
+        int epSquare = board.EnPassantSquare;
+        bool epAvailable = false;
+        if (epSquare != Squares.None)
+        {
+            int capturedPawnSq = white ? epSquare - 8 : epSquare + 8;
+            epAvailable = Squares.RankOf(epSquare) == (white ? 5 : 2)
+                          && board.IsEmpty(epSquare)
+                          && board.PieceTypeAt(capturedPawnSq) == PieceType.Pawn
+                          && Bitboard.IsSet(theirPieces, capturedPawnSq);
+        }
 
         ulong pawns = board.Pieces(us, PieceType.Pawn);
         while (pawns != 0)
         {
             int from = Bitboard.PopLsb(ref pawns);
-            int rank = Squares.RankOf(from);
+            ulong attacks = pawnAttacks[from];
 
             // --- Pushes (promotions always generated: they are "tactical") ---
             int oneUp = from + pushDir;
@@ -369,7 +410,7 @@ public static class MoveGenerator
                     list.Add(new Move(from, oneUp, MoveFlag.Quiet));
 
                     // Double push: only from the starting rank and with both squares free.
-                    if (rank == startRank)
+                    if (Squares.RankOf(from) == startRank)
                     {
                         int twoUp = from + 2 * pushDir;
                         if (!Bitboard.IsSet(occupied, twoUp))
@@ -379,7 +420,7 @@ public static class MoveGenerator
             }
 
             // --- Captures (including capture promotions) ---
-            ulong captures = Attacks.Pawn(us, from) & theirPieces;
+            ulong captures = attacks & theirPieces;
             while (captures != 0)
             {
                 int to = Bitboard.PopLsb(ref captures);
@@ -390,18 +431,8 @@ public static class MoveGenerator
             }
 
             // --- En passant: the target square is published by the Board after a double push ---
-            if (board.EnPassantSquare != Squares.None &&
-                Bitboard.IsSet(Attacks.Pawn(us, from), board.EnPassantSquare))
-            {
-                int ep = board.EnPassantSquare;
-                int capturedPawnSq = us == Color.White ? ep - 8 : ep + 8;
-                int expectedRank = us == Color.White ? 5 : 2;
-                if (Squares.RankOf(ep) == expectedRank
-                    && board.IsEmpty(ep)
-                    && board.PieceTypeAt(capturedPawnSq) == PieceType.Pawn
-                    && Bitboard.IsSet(board.Occupancy(Board.OppositeColor(us)), capturedPawnSq))
-                    list.Add(new Move(from, ep, MoveFlag.EnPassant));
-            }
+            if (epAvailable && Bitboard.IsSet(attacks, epSquare))
+                list.Add(new Move(from, epSquare, MoveFlag.EnPassant));
         }
     }
 

@@ -109,6 +109,7 @@ public sealed class NnueAccumulatorCache
 
         Array.Copy(values, target.Values[(int)perspective], values.Length);
         target.Valid[(int)perspective] = true;
+        target.Computed[(int)perspective] = true;
 
         NnueProfiling.CountRefresh(wasPopulated, touched);
     }

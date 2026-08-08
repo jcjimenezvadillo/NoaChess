@@ -133,10 +133,11 @@ public static class MovePicker
         if (n < 2)
             return;
 
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
         QuietOrderingContext quietContext = BuildQuietOrderingContext(board);
         for (int i = 0; i < n; i++)
-            scores[i] = Score(moves[i], board, ttMove, killers, history, ply,
+            scores[i] = Score(items[i], board, ttMove, killers, history, ply,
                               contHist, counterMove, captureHistory,
                               quietContext);
 
@@ -162,9 +163,11 @@ public static class MovePicker
     public static void ScoreAndSortCaptures(MoveList moves, int from, Board board,
                                             CaptureHistory? captureHistory = null)
     {
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
-        for (int i = from; i < moves.Count; i++)
-            scores[i] = Score(moves[i], board, Move.None, NoKillers, NoHistory, 0,
+        int count = moves.Count;
+        for (int i = from; i < count; i++)
+            scores[i] = Score(items[i], board, Move.None, NoKillers, NoHistory, 0,
                               contHist: default, counterMove: Move.None, captureHistory: captureHistory,
                               quietContext: default);
         SortRange(moves, from);
@@ -180,10 +183,12 @@ public static class MovePicker
                                           Move counterMove,
                                           int? depth = null)
     {
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
+        int count = moves.Count;
         QuietOrderingContext quietContext = BuildQuietOrderingContext(board);
-        for (int i = quietsFrom; i < moves.Count; i++)
-            scores[i] = Score(moves[i], board, Move.None, killers, history, ply,
+        for (int i = quietsFrom; i < count; i++)
+            scores[i] = Score(items[i], board, Move.None, killers, history, ply,
                               contHist, counterMove,
                               captureHistory: null, quietContext: quietContext);
 
@@ -210,11 +215,13 @@ public static class MovePicker
     public static void ScoreAndSortCapturesQs(MoveList moves, Board board,
                                               CaptureHistory captureHistory)
     {
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
+        int count = moves.Count;
         Color us = board.SideToMove;
-        for (int i = 0; i < moves.Count; i++)
+        for (int i = 0; i < count; i++)
         {
-            Move move = moves[i];
+            Move move = items[i];
             if (move.IsPromotion && !move.IsCapture)
             {
                 scores[i] = PromotionBase + PieceValue[(int)move.PromotionPiece];
@@ -228,19 +235,25 @@ public static class MovePicker
     // In-place insertion sort of moves[from..Count) by descending score.
     private static void SortRange(MoveList moves, int from)
     {
+        // Both arrays raw and the count in a local: the inner loop shuffles two
+        // parallel arrays, so every element it touches through the indexer is a
+        // property call plus a bounds check the JIT will not hoist.
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
-        for (int i = from + 1; i < moves.Count; i++)
+        int count = moves.Count;
+
+        for (int i = from + 1; i < count; i++)
         {
-            Move move = moves[i];
+            Move move = items[i];
             int score = scores[i];
             int j = i - 1;
             while (j >= from && scores[j] < score)
             {
-                moves[j + 1] = moves[j];
+                items[j + 1] = items[j];
                 scores[j + 1] = scores[j];
                 j--;
             }
-            moves[j + 1] = move;
+            items[j + 1] = move;
             scores[j + 1] = score;
         }
     }
@@ -250,6 +263,7 @@ public static class MovePicker
     // little value because most nodes cut before reaching those moves.
     private static void PartialSortRange(MoveList moves, int from, int to, int limit)
     {
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
         int sortedEnd = from - 1;
 
@@ -259,22 +273,22 @@ public static class MovePicker
             if (score < limit)
                 continue;
 
-            Move move = moves[i];
+            Move move = items[i];
             sortedEnd++;
             if (i != sortedEnd)
             {
-                moves[i] = moves[sortedEnd];
+                items[i] = items[sortedEnd];
                 scores[i] = scores[sortedEnd];
             }
 
             int j = sortedEnd - 1;
             while (j >= from && scores[j] < score)
             {
-                moves[j + 1] = moves[j];
+                items[j + 1] = items[j];
                 scores[j + 1] = scores[j];
                 j--;
             }
-            moves[j + 1] = move;
+            items[j + 1] = move;
             scores[j + 1] = score;
         }
     }
@@ -285,12 +299,13 @@ public static class MovePicker
     private static void MoveRangeToFront(MoveList moves, int source,
                                          int destination, int count)
     {
+        Move[] items = moves.Moves;
         int[] scores = moves.Scores;
         for (int offset = 0; offset < count && source != destination; offset++)
         {
             int from = source + offset;
             int to = destination + offset;
-            (moves[to], moves[from]) = (moves[from], moves[to]);
+            (items[to], items[from]) = (items[from], items[to]);
             (scores[to], scores[from]) = (scores[from], scores[to]);
         }
     }

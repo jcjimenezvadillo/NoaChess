@@ -16,14 +16,25 @@ NNUE off) ≈ 3020–3035 CCRL.
 
 | Version | Gen | Datagen nodes | Direct step measured | vs Classical (direct SPRT) | CCRL (gauntlet) |
 |---------|-----|--------------|----------------------|----------------------------|-----------------|
-| NNUE-0.2 | gen2 | 14000 | +1.9 vs classical (H1) | +1.9 | — |
-| NNUE-0.3 | gen3 | 14000 | +6.2 ±11.3 vs classical (2707g, LOS 85.8%) | +6.2 | — |
-| NNUE-0.4 | gen4 | 14000 | +3.5 ±9.9 vs gen3 (3000g, LOS 75.3%) | +9.1 ±13.4 (1950g) | — |
+| NNUE-0.2 | gen2 | 14000 | +1.9 vs classical (H1) | +1.9 | - |
+| NNUE-0.3 | gen3 | 14000 | +6.2 ±11.3 vs classical (2707g, LOS 85.8%) | +6.2 | - |
+| NNUE-0.4 | gen4 | 14000 | +3.5 ±9.9 vs gen3 (3000g, LOS 75.3%) | +9.1 ±13.4 (1950g) | - |
 | NNUE-0.5 | gen5 | 20000 | +34.0 ±14.4 vs gen4 (1495g, LOS 100%) | ~+15 (see note) | **~3050 ±40** |
-| NNUE-0.6 | gen6 | 24000 | not promoted (score drifted to 0.494 at 800g, stopped; teacher stays gen5) | — | — |
+| NNUE-0.6 | gen6 | 24000 | not promoted (score drifted to 0.494 at 800g, stopped; teacher stays gen5) | - | - |
 | NNUE-0.7 | gen7 | 28000 | +3.7 ±10.2 vs gen5 (3000g, LOS 76.2%, parity - not a formal H1) | +28.5 ±13.0 (2176g, LOS 100%) | **~3080 ±40** |
-| — | gen8 | 6000 | **not promoted** (SPRT vs gen7 stopped at H0, 198g; blunder rate TRIPLED in real games) | — | gauntlet started and abandoned |
+| - | gen8 | 6000 | **not promoted** (SPRT vs gen7 stopped at H0, 198g; blunder rate TRIPLED in real games) | - | gauntlet started and abandoned |
 | NNUE-0.9 | gen9 | 6000 | **+18 Elo vs gen7 (1178g, H1 accepted, LLR 2.97)** - same corpus as gen8, only epochs 6→60 | **~3114** (v4.4.0 gauntlet, 600g) | **SHIPPED (v4.3.1, v4.4.0)** |
+
+**v4.5.0 changes no net, but it changes what serving one costs.** gen9 is still
+the shipped network; the runtime around it got about 10% faster, and roughly a
+third of that is NNUE-side. The accumulator stack was **eager** - it copied both
+perspectives and did the feature math on every `MakeMove` whether or not the
+position was ever evaluated - and now records the update and materialises it on
+demand from the nearest computed ancestor (+3.6%, node-identical). Anyone
+re-reading the speed notes above should treat "the NNUE eval is ~66% the speed of
+classical" as the pre-4.5.0 figure; the gap is narrower now and was never
+re-measured, because with NNUE shipped in every build the comparison stopped
+mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
 (2862–3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
@@ -31,7 +42,7 @@ overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
 gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
 and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
 This is the first CCRL number for the NNUE line. Note it lands only ~+15 over the
-classical estimate (~3035), NOT the +42 the internal SPRT chain suggested — the
+classical estimate (~3035), NOT the +42 the internal SPRT chain suggested - the
 expected shrink of self-play gains against a diverse external field. It is the
 FLOOR: Lazy SMP (v3.1.0, measured +253 Elo Threads=30 vs Threads=1 at 20+0.2, LOS 100%; CCRL field gauntlet pending); cold-start fix (v3.1.1, no Elo change)
 and deeper-node generations (gen7+ at 28000+ nodes) add on top. This 3050 is

@@ -13,8 +13,19 @@ namespace NoaChess.Core;
 // future transposition table.
 public static class Zobrist
 {
-    // [color][pieceType][square]
-    public static readonly ulong[,,] PieceKeys = new ulong[2, 6, 64];
+    // [color][pieceType][square], FLATTENED to a single dimension. This table is
+    // XORed on every AddPiece/RemovePiece, i.e. two to four times per
+    // make/unmake, and a ulong[2,6,64] bounds-checks three ranks per access.
+    //
+    // The initialisation loop below keeps the same c/p/s nesting, so every key
+    // keeps the exact value it had before the flattening. That is not cosmetic:
+    // change a single key and every Zobrist hash in the engine changes with it,
+    // which moves transposition hits, repetition detection and therefore node
+    // counts.
+    public static readonly ulong[] PieceKeys = new ulong[2 * 6 * 64];
+
+    public static int PieceKey(int color, int pieceType, int square)
+        => (((color * 6) + pieceType) * 64) + square;
 
     // Applied when it is black's turn to move.
     public static readonly ulong SideToMoveKey;
@@ -42,7 +53,7 @@ public static class Zobrist
         for (int c = 0; c < 2; c++)
             for (int p = 0; p < 6; p++)
                 for (int s = 0; s < 64; s++)
-                    PieceKeys[c, p, s] = Next();
+                    PieceKeys[PieceKey(c, p, s)] = Next();
 
         SideToMoveKey = Next();
 
