@@ -94,7 +94,9 @@ public static class NnueProfiler
         long evaluations = NnueProfiling.Evaluations;
         long fused = NnueProfiling.FusedMoves;
         long addSub = NnueProfiling.AccumulatorUpdates;
-        long copies = NnueProfiling.CopyFromCalls;
+        long pushes = NnueProfiling.Pushes;
+        long applied = NnueProfiling.PendingApplied;
+        long copies = NnueProfiling.PerspectiveCopies;
         long refreshes = NnueProfiling.RefreshesTotal;
         long refreshCached = NnueProfiling.RefreshesFromCache;
         long refreshRows = NnueProfiling.RefreshFeaturesTouched;
@@ -104,7 +106,19 @@ public static class NnueProfiler
         report.AppendLine($"  evaluations          : {evaluations,12:N0}");
         report.AppendLine($"  fused MoveFeature    : {fused,12:N0}");
         report.AppendLine($"  add/sub updates      : {addSub,12:N0}");
-        report.AppendLine($"  CopyFrom             : {copies,12:N0}");
+        // The eager stack updated BOTH perspectives on every push, so 2 x pushes
+        // is the work the lazy one is being measured against.
+        long eagerUpdates = 2 * pushes;
+        report.AppendLine($"  pushes (lazy)        : {pushes,12:N0}"
+                        + $"   (eager would update {eagerUpdates:N0})");
+        report.AppendLine($"  pending applied      : {applied,12:N0}"
+                        + (eagerUpdates > 0
+                            ? $"   ({100.0 * applied / eagerUpdates:F1}% of eager)"
+                            : ""));
+        report.AppendLine($"  perspective copies   : {copies,12:N0}"
+                        + (eagerUpdates > 0
+                            ? $"   ({100.0 * copies / eagerUpdates:F1}% of eager)"
+                            : ""));
         report.AppendLine($"  refreshes            : {refreshes,12:N0}"
                         + (refreshes > 0
                             ? $"   ({100.0 * refreshCached / refreshes:F1}% cached, "
@@ -117,7 +131,8 @@ public static class NnueProfiler
         double msEval = evaluations * nsEval / 1e6;
         double msFused = fused * nsMove / 1e6;
         double msAddSub = addSub * nsAddSub / 1e6;
-        double msCopy = copies * nsCopy / 1e6;
+        // nsCopy prices BOTH perspectives; the lazy stack copies one at a time.
+        double msCopy = copies * (nsCopy / 2.0) / 1e6;
         // Refresh rows are charged at the measured per-row cost; the cached
         // path's fixed overhead is small next to the rows it avoids.
         double msRefresh = refreshRows * nsAddSub / 1e6;
@@ -132,7 +147,7 @@ public static class NnueProfiler
         Line("FT rows: fused moves", msFused);
         Line("FT rows: add/sub", msAddSub);
         Line("FT rows: refresh", msRefresh);
-        Line("accumulator CopyFrom", msCopy);
+        Line("perspective copies", msCopy);
         report.AppendLine($"  {"TOTAL attributed",-22}: {total,9:F1} ms  "
                         + $"({100.0 * total / Math.Max(sw.Elapsed.TotalMilliseconds, 1e-9):F1}% of wall)");
 

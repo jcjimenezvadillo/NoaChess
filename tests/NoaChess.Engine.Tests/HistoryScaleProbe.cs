@@ -36,9 +36,14 @@ public class HistoryScaleProbe
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         var hist = (HistoryTable)histField.GetValue(search)!;
-        var cont = (ContinuationHistory)contField.GetValue(search)!;
+        // Continuation history is now one table per ply distance; this probe
+        // reports the distance-1 table, which is the one whose scale the
+        // pruning consumers actually read.
+        var cont = ((ContinuationHistory[])contField.GetValue(search)!)[0];
 
-        var histScores = (int[,,])typeof(HistoryTable)
+        // Flat since 4.5.0 (was int[2,64,64]): the enumeration below visits the
+        // same entries either way, only the declared type changed.
+        var histScores = (int[])typeof(HistoryTable)
             .GetField("_scores", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(hist)!;
         var contScores = (int[])typeof(ContinuationHistory)

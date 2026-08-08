@@ -1,5 +1,137 @@
 # CHANGELOG
 
+## 2026-08-08 (v4.5.0) - the same search, about 10% faster, with every step proved by byte-identical node counts
+
+Three changes, none of which alters a single node the search visits. That is the whole point: every one of them was gated on the same test, `audit/bench_identical.py` reporting **byte-identical node counts position by position** over 150 positions at depth 12, plus a control comparing the bench against itself. 34,690,140 nodes, identical in every comparison. Anything else and the change is reverted, whatever the unit tests say - the discipline that stopped a full SEE implementation in v4.4.0 after it passed ~70k equivalence comparisons and still moved node counts 1.8%.
+
+### The NNUE accumulator was eager
+
+`NnueAccumulatorStack.PushMove` copied both perspectives and did the feature math on **every** `MakeMove`, whether or not the position was ever evaluated. Profiling put it at **7.39%** of engine self time with another **2.49%** in the king-move refreshes.
+
+v4.4.0 made that worse rather than better: quiescence now reaches the transposition table, so far more children return from a cached static evaluation or a score cutoff without ever calling the evaluator, and every one of those was an accumulator update nobody read.
+
+A push now only **records** what the update would be and marks the level uncomputed; `GetPerspective` walks back to the nearest computed ancestor and materialises forward, on demand. No king squares are stored: along any chainable sequence that perspective's king cannot have moved, because a king move invalidates its own perspective and forces a refresh instead of a chain, so the current board supplies the right value for every link.
+
+**The first cut of this was slower than what it replaced, and looked perfect.** Collapsing the pending chain straight onto the top level is one copy cheaper per evaluation and leaves the intermediate levels uncomputed, so a parent that never evaluates has its update replayed by *every one of its children* - and plies in check skip the static evaluation, which makes that the common case. Counters: 1,087,813 replays against the eager version's 1,029,978 updates, i.e. **5.6% more feature work than before**, with node counts already byte-identical and all tests green. Materialising each level as the chain is crossed brings it to 377,767 replays, **36.7% of eager**. Node identity cannot catch a performance regression; the `nnueprofile` counters added for this can.
+
+Measured: **+3.6% pooled** (253/290 positions faster, sign test p ~ 0).
+
+### Move generation
+
+The jumper helper took a `Func<int, ulong>` and paid an indirect, non-inlinable call per piece to read `KnightAttacks[square]` - while the slider helper next to it already carried a comment explaining why it avoids exactly that. It takes the table as an array now.
+
+`HasLegalMove` tested moves in generation order (pawns first, king last) when every search caller reaches it **in check**, where a pawn move is legal only if it happens to block or capture the checker and a king step usually is. It scans backwards now; the result is a bool, so the order is not observable.
+
+`GeneratePawnMoves` called `Attacks.Pawn` twice per pawn whenever an en passant square was set, re-walking a jagged array by colour each time, and re-evaluated four loop-invariant en passant conditions once per pawn. All hoisted.
+
+Measured: **+0.6%**, and reported with a caveat. The pooled figure was +1.09% but its sign test split 148/287, which is the pattern that means a few positions moved a lot rather than a broad speedup - one baseline pass had been the slowest of the four. The trustworthy pair, both runs in the same speed regime, says **+0.57% with 84/141 positions faster, p = 0.028**. Small, real, and not worth continuing down that path.
+
+### Multi-dimensional arrays, which turned out to be the real find
+
+.NET cannot give `T[,]` or `T[,,]` the single-dimension fast path: every access computes its address through a helper, bounds-checks each rank separately, and the JIT will not hoist those out of an inner loop. The engine had them in its hottest reads.
+
+Flattened to `T[]` with an explicit index helper: `HistoryTable[2,64,64]` (read for every quiet the picker scores), `KillerTable[ply,2]` (likewise), `Board._pieces[2,6]` (move generation, attack detection, ordering context), `Zobrist.PieceKeys[2,6,64]` (two to four times per make/unmake), `_counterMoves[12,64]`, `LmrReductions[64,64]` and `CorrectionHistory[2,N]`. `MoveList` now exposes its moves as a raw array the way it already did with the parallel scores, so the sort loops stop reaching half their data through an indexer. `IsSquareAttacked` computes the side offset once instead of five times.
+
+Flattening the Zobrist table is safe only because the initialisation loop keeps its nesting order, so every key keeps its exact value. Change one and every hash in the engine changes with it, moving transposition hits, repetition detection and therefore node counts. The node-identity check is what proves it did not happen.
+
+Measured: **+6.12% pooled**, 95% [+5.34%, +6.20%], **397/439 positions faster, sign test p ~ 0**, with all three pairs agreeing (+4.39%, +8.52%, +5.51%).
+
+**The mistake worth recording**: the profile said `MovePicker.ScoreAndSortQuiets` was 5.84% and half a session went into designing a better sorting algorithm. The cost was not the algorithm, it was an `int[2,64,64]` in the inner loop. When a profile points at a function, check the data layout it touches before redesigning what it does.
+
+### Measured
+
+**About +10.6% nps over v4.4.0**, chaining the three paired measurements. Node counts byte-identical throughout. 316 tests.
+
+Field gauntlet against the 12-engine CCRL field at 60+0.6, single-threaded, ponder off, no tablebases for anyone: **62.4% over 580 games, performance 3143 +/-31** against a field averaging 3042. Per-opponent performances run 3062 to 3210, so no single pairing is carrying the number.
+
+Against v4.4.0's **3124 +/-30** that is **+19, and not significant**: two measurements at +/-30 each leave the difference uncertain to about +/-43. It is the right sign and the right size - +10.6% nps is worth roughly +7 by this project's own calibration - but what the gauntlet establishes is the absence of a regression, not a gain.
+
+### The performance figures are now computed one way, and the old ones were not
+
+Both numbers above come from `audit/gauntlet.py`, which solves for the rating R whose expected score against each opponent sums to the score actually made. The figures published before this release used "average opponent + Elo(score)", a shortcut that biases whenever the field is spread out and the results are lopsided against its ends - which is exactly this field, running 2862 to 3281.
+
+The whole series, recomputed the same way so it can be read as a series:
+
+| version | games | score | field | performance |
+|---------|-------|-------|-------|-------------|
+| v4.3.1 + gen7 | 165 | 59.7% | 3039 | **3116 +/-57** |
+| v4.4.0 + gen9 | 600 | 60.1% | 3043 | **3124 +/-30** |
+| v4.5.0 + gen9 | 580 | 62.4% | 3042 | **3143 +/-31** |
+
+The previously recorded ~3110 and ~3114 are the same games under the old formula; they are not wrong so much as computed differently, and mixing the two methods in one comparison is what this table exists to prevent.
+
+### Measurement method, which is where most of the day actually went
+
+Comparing bench **totals** measures the machine, not the change: two passes of the same binary differed by **4.2%** while the effect under test was 1.3%. `audit/bench_time.py` pairs each position against itself across runs, which cancels the common-mode drift, and reports a geometric mean with a sign test. Validated against a known answer - the accumulator work, independently measured at +3.1% on totals, came out at +3.61% pooled.
+
+The rule that fell out of it: **if the geometric mean says "faster" but the sign test splits 50/50, do not believe the mean.**
+
+### Time management: the hypothesis was refuted by measurement
+
+Two Arena games at 3+2 suggested the engine was burning its clock too early - 201 of its first 230 seconds in 25 moves, then 63 moves on the increment. `clock_curve.py` binned 40 games by move number and reconstructed the remaining clock.
+
+**Front-loading is what every engine does at this control.** By move 25 the engine has spent 78% of everything received; the field spends **73%**. Ratios run 1.10 and 1.02 over the first twenty moves and 0.87-0.92 after move fifty; depth holds at 20-21 with spikes to 26-33 in long games; no game in 40 was lost on time.
+
+The one real defect is small: the clock flatlines at about 25 s from move 41 onward and is never spent, while the field burns down from 37 s to 12-15 s, so long games end with the engine richer than its opponent. The field spends 2.13-2.23 s where this engine spends 1.91-1.94 s, a ~10% late-phase deficit. Sized honestly, that is worth 1 to 2 Elo, and the time manager is not where the remaining strength is.
+
+### Not chased, because it is not real
+
+`Thread.PollGC` at 3.90% and `Buffer.ZeroMemoryInternal` at 0.99% together outweigh all of move generation in the profile. Both are an artifact of the harness: `ucinewgame` calls `Reset()`, which clears the 64 MB transposition table and every history table, and both the profiler and the node bench send `ucinewgame` **before every position**. A real game does that once per game, not once per move.
+
+### On the SPRT
+
+The accumulator change was put through an SPRT anyway, on request. After 2,091 games: 533-501-1057, **+5.2 Elo, 95% [-5.1, +15.4]**, LLR +0.056 against bounds [0, 10] - **2% of the way to H1**. At that rate it needs on the order of 100,000 games to conclude. Stopped as unresolvable, which is itself the useful measurement: 2,000 games move the needle 2% at this level, so node-identical speed work has to be validated by the bench, not by games.
+
+### Move ordering: killers and the counter move stop being untouchable
+
+Killers sat at a fixed 3,000,000 and the counter move at 2,900,000, both returned from `MovePicker.Score` **before history was even read**, with every history-scored quiet clamped just underneath at 2,899,990. Up to three moves per node were therefore ordered by a constant, and no amount of learned evidence about *this* position could overtake a refutation inherited from a sibling node.
+
+That is a ceiling on every history experiment the engine has ever run: multi-level continuation history was measured four times (-33.9, -10.9, ~0, -4.2) and a butterfly-history LMR term three times, all rejected, because making history smarter could only ever reorder what sat **below** the reserved slots.
+
+The bands did win the final v2.8.2 SPRT against removing them - but that measurement is not evidence for keeping them today. At v2.8.2 the butterfly table was numerically broken (2^20 rail, gravity term integer-truncating to zero, median -8 against a mean of +71.8, only 25% of entries positive). Ordering by a table in that state would lose to almost any fixed prior. The rails were rebuilt afterwards, so the comparison was worth making again on a table that works.
+
+They are now bonuses (4096 / 3072 / 2048) inside the same additive score as butterfly history, continuation history, the safe-check bonus and the threat-escape term, and they are not mutually exclusive: a move that is both the killer at this ply and the refutation of the opponent's last move carries two independent pieces of evidence. **Measured +8.0 ±14 over 1125 games** against the previous ordering.
+
+The bonus magnitudes are **not** bench-derived, deliberately. A paired 150-position node bench put 0, 4096, 8192 and 16384 all within ±2% geometric mean of each other, every 95% band crossing zero (sign test p = 0.93, 0.93, 0.46, 0.16), single positions swinging between x0.29 and x3.86. Node counts can say none of them wrecks the ordering; they cannot rank them.
+
+Removing the bands made killers and the counter move pay the per-move check detection they used to skip, costing **3.8% nps**. Direct-check detection now precomputes its masks once per node: knight, pawn and king attack relations are symmetric and occupancy-independent, so those resolve with one bitboard test; sliders keep the exact per-move computation behind an empty-board ray filter that rejects destinations not even aligned with the king. Behaviour-preserving, verified by byte-identical node counts.
+
+### Quiescence search was not using the transposition table at all
+
+Not a probe, not a store. Every quiescence node paid a full network evaluation for its stand-pat even when the position had already been evaluated elsewhere in the tree - while the main search has cached its static evaluation in the table since 5F, *"revisits pay one cluster read, not a full evaluation"*.
+
+Profiling put **28.7%** of engine time inside `NnueInference.EvaluateInt16` and **31.6%** inside quiescence. This is where the two overlap. It now:
+
+- reuses a cached static evaluation, and caches what it computes on a miss (**+4.4% nps**);
+- takes an early cutoff when a stored bound covers the window, off the PV only;
+- uses a stored score as a better stand-pat floor than the static evaluation when its bound points the right way;
+- saves its own result on the way out, always as a bound and never exact - quiescence searches a truncated move list, so its score is a bound on the true value, never the value.
+
+The reference distinguishes quiescence entries from evaluation-only ones with negative depths (`DEPTH_QS = 0`, `DEPTH_UNSEARCHED = -2`). `TTEntry.Depth` here is a byte and cannot hold a negative, so the distinction is carried by `BoundType.None`, which is the same test by another route.
+
+One trap this opened: the shallow ProbCut accepted entries at `entry.Depth >= depth - 4`, and the moment quiescence started writing depth-zero entries **with** a real bound, `0 >= 0` let a truncated captures-only score stand in for a ProbCut verification at depth 4. Guarded with `entry.Depth >= 1`. The main cutoff, the singular-extension gate and the LMR adjuster were audited and are protected by their own conditions.
+
+### Measured
+
+150 positions from real games at fixed depth, both engines run simultaneously under identical machine load: **6.8% fewer nodes, 4.4% higher nps, 10.7% less time to reach the same depth**.
+
+Field gauntlet against the 12-engine CCRL field (2862-3281) at 60+0.6, single-threaded, ponder off, no tablebases for anyone: **600 games, 60.1%, performance ~3114**. Per-opponent performances are tight (3052-3215), so the number is not being dragged by one pairing. Against the ~3110 measured for v4.3.1+gen7 this is **statistically indistinguishable** - a 600-game gauntlet resolves about ±20 and the change is worth roughly +7, so this reads as "no regression, position confirmed", not as a measured gain. 309 tests.
+
+### Measured and rejected - not in this release
+
+- **A second continuation-history distance** (independent table keyed on the move two plies back, plus butterfly history at double weight). Cost 0.9% nps for nothing measurable; A+B together scored -2.1 ±17.5 over 659 games against A alone at +8.0.
+- **The reference's time-management constants** (falling-eval clamps 0.576/1.728, linear stability ramp, instability base 1.077). Neutral at 20+0.2 (-0.5 ±16.4 over 772 games), and a direct probe showed it makes the *pondered* case worse: the ramp's floor is 0.700 against the current 0.815, and pondering leaves the search well past the ramp's ceiling.
+- **A threshold-only static exchange evaluator** (the reference's `see_ge` with early exits). Passed an exhaustive equivalence test against the exact evaluator - 160 positions, every pseudo-legal move, eleven thresholds, ~70k comparisons - and **still** changed the search's node count by 1.8%. Worth about 1% nps, so not worth shipping a behaviour change nobody could explain.
+- **Network width 512** (-76 at 10+0.1, -93 at 60+0.6) and **8 output buckets** (-15.2, H0 at 435 games), both trained identically to gen9. The NNUE capacity axis is closed in both directions.
+
+### Time management: investigated at length, not broken
+
+The bot leaves large amounts of clock unused - one 300+2 game finished with 253 of 300 seconds. The engine itself is fine: measured over the 168-game gauntlet it spends **1.32 s/move against the field's 1.31 s/move, ratio 1.01**, per-opponent range 0.93-1.08.
+
+The difference is **ponder**, which is off in every gauntlet and SPRT this project runs and on in both bots. Pondering hands the search free iterations, so by the time `ponderhit` arrives the best move has often been stable for 10+ iterations; `timeReduction` is a binary cliff (`lastBestMoveDepth + 9 < depth`), and crossing it halves the budget from 6310 ms to 2994 ms - on a coin flip, 3 of 6 probe runs. Without ponder it never fires (3/3 at the full budget).
+
+Ponder itself was measured for the first time in this project: **+150.3 ±79.1, H1 in 27 games** with ponder against the same engine without it. It is not broken, and the banked clock is ponder working. The cliff remains as a known cost, filed for the ordering campaign's third step.
+
 ## 2026-08-05 (v4.3.1) - the engine was playing one move and reporting another, on 2% of all moves
 
 ### The audit that found it

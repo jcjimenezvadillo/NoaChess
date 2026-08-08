@@ -16,7 +16,13 @@ public sealed class MoveList
 {
     public const int Capacity = 256;
 
-    private readonly Move[] _moves = new Move[Capacity];
+    // Exposed as a raw array for the same reason Scores is: the move picker's
+    // sort loops shuffle both arrays in step, and reaching the moves through the
+    // indexer costs a property call plus a bounds check the JIT cannot hoist out
+    // of an insertion sort's inner loop, while the scores next to them are read
+    // straight off the array. Only the first Count entries are meaningful; the
+    // slots beyond it hold whatever a previous node left there.
+    public readonly Move[] Moves = new Move[Capacity];
 
     // Ordering scores, parallel to the moves (managed by the engine's picker).
     public readonly int[] Scores = new int[Capacity];
@@ -25,11 +31,11 @@ public sealed class MoveList
 
     public Move this[int index]
     {
-        get => _moves[index];
-        set => _moves[index] = value;
+        get => Moves[index];
+        set => Moves[index] = value;
     }
 
-    public void Add(Move move) => _moves[Count++] = move;
+    public void Add(Move move) => Moves[Count++] = move;
 
     public void Clear() => Count = 0;
 
@@ -41,14 +47,14 @@ public sealed class MoveList
     // ordering in the engine.
     public void Swap(int a, int b)
     {
-        (_moves[a], _moves[b]) = (_moves[b], _moves[a]);
+        (Moves[a], Moves[b]) = (Moves[b], Moves[a]);
         (Scores[a], Scores[b]) = (Scores[b], Scores[a]);
     }
 
     public bool Contains(Move move)
     {
         for (int i = 0; i < Count; i++)
-            if (_moves[i] == move)
+            if (Moves[i] == move)
                 return true;
         return false;
     }

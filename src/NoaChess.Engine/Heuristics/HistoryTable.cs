@@ -28,7 +28,16 @@ public sealed class HistoryTable
     // back in proportion to how far out it already is.
     private const int MaxScore = 7183;
 
-    private readonly int[,,] _scores = new int[2, 64, 64];
+    // FLAT, not int[2,64,64]. This is read once for every quiet move the picker
+    // scores, which makes it one of the hottest reads in the engine, and .NET's
+    // multi-dimensional arrays cannot use the single-dimension fast path: every
+    // access computes the address through a helper and bounds-checks each rank
+    // separately, and the JIT cannot hoist those out of the scoring loop.
+    // Layout: (color * 64 + from) * 64 + to.
+    private readonly int[] _scores = new int[2 * 64 * 64];
+
+    private static int Index(Color color, Move move)
+        => ((((int)color * 64) + move.From) * 64) + move.To;
 
     public void Clear() => Array.Clear(_scores);
 
@@ -36,10 +45,8 @@ public sealed class HistoryTable
     // previous moves still helps ordering but decays over time.
     public void Decay()
     {
-        for (int c = 0; c < 2; c++)
-            for (int f = 0; f < 64; f++)
-                for (int t = 0; t < 64; t++)
-                    _scores[c, f, t] >>= 1;
+        for (int i = 0; i < _scores.Length; i++)
+            _scores[i] >>= 1;
     }
 
     // Rewards a quiet move that caused a beta cutoff at the given depth.
@@ -54,9 +61,9 @@ public sealed class HistoryTable
     private void Update(Color color, Move move, int bonus)
     {
         bonus = Math.Clamp(bonus, -MaxScore, MaxScore);
-        ref int score = ref _scores[(int)color, move.From, move.To];
+        ref int score = ref _scores[Index(color, move)];
         score += bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
     }
 
-    public int Get(Color color, Move move) => _scores[(int)color, move.From, move.To];
+    public int Get(Color color, Move move) => _scores[Index(color, move)];
 }
