@@ -1,4 +1,4 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -30,6 +30,14 @@ public static class StaticExchangeEvaluator
     // the full swap algorithm - comparatively expensive, and this is called
     // for every capture at every node - only runs for "upward" captures
     // like QxP or RxN.
+    //
+    // A threshold-only variant with early exits (the reference's see_ge) was
+    // written and reverted on 2026-08-07: it passed an exhaustive equivalence
+    // test against Evaluate (160 positions, every pseudo-legal move, eleven
+    // thresholds, ~70k comparisons) and STILL changed the search's node count
+    // by 1.8%. Worth about 1% NPS, so not worth shipping a behaviour change
+    // nobody could explain. Anyone retrying it: the node bench is the oracle,
+    // not the unit test.
     public static bool LosesAtLeast(Board board, Move move, int threshold = 0)
     {
         if (move.IsPromotion)

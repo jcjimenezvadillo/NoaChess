@@ -1,36 +1,79 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 
 namespace NoaChess.Engine.Heuristics;
 
 // Move ordering. Alpha-Beta prunes exponentially better when the best move is
 // tried first (a perfectly ordered tree costs roughly the square root of an
 // unordered one), so this ranking is one of the highest-impact parts of the
-// engine. The v1.0 order:
+// engine. The order:
 //
 //   1. TT move (proven best in a previous search of this very position).
 //   2. Winning/equal captures (SEE >= 0), ranked by capture history plus
 //      seven times the victim value.
 //   3. Non-capture promotions.
-//   4. Killer moves (quiet refutations from sibling nodes).
-//   5. Counter move (the quiet refutation of the opponent's LAST move).
-//   6. Remaining quiet moves, ranked by history + continuation history.
-//   7. Losing captures (SEE < 0) - tried last: they are usually just blunders,
+//   4. Quiet moves, ranked in one additive history space: butterfly history,
+//      continuation history, killer and counter-move bonuses, a safe-check
+//      bonus and a threat-escape term.
+//   5. Losing captures (SEE < 0) - tried last: they are usually just blunders,
 //      but occasionally a sacrifice, so they cannot be skipped entirely here.
 public static class MovePicker
 {
-    // Score bands. History is explicitly clamped below the counter-move band;
-    // preserving these refutation stages won the final v2.8.2 SPRT.
+    // Move-class bands. Only the classes that are genuinely ordered by KIND
+    // (transposition move, captures by SEE sign, promotions) get a band;
+    // everything quiet competes inside a single additive score.
     private const int TTMoveScore = 10_000_000;
     private const int GoodCaptureBase = 5_000_000;
     private const int PromotionBase = 4_000_000;
-    private const int KillerBase = 3_000_000;
-    private const int CounterMoveScore = 2_900_000;
-    private const int HistoryCap = CounterMoveScore - 10;
     private const int LosingCaptureBase = -5_000_000;
     private const int CheckBonus = 16_384;
     private const int ThreatEscapeWeight = 20;
     private const int QuietSortDepthFactor = 3_000;
     private const int CheckSeeThreshold = 75;
+
+    // Killer and counter-move bonuses.
+    //
+    // These used to be absolute bands (killers at 3_000_000, counter move at
+    // 2_900_000) returned BEFORE history was even read, with every
+    // history-scored quiet clamped just underneath at 2_899_990. Up to three
+    // moves per node were therefore ordered by a constant, and no amount of
+    // learned evidence about THIS position could overtake a refutation
+    // inherited from a sibling node. That put a hard ceiling on every
+    // history-space experiment the engine has run: multi-level continuation
+    // history was measured four times (-33.9, -10.9, ~0, -4.2) and a
+    // butterfly-history LMR term three times, all rejected, because making
+    // history smarter could only ever reorder what sat BELOW the reserved
+    // slots.
+    //
+    // The bands did win the final v2.8.2 SPRT against removing them, but that
+    // measurement is not evidence for keeping them today: at v2.8.2 the
+    // butterfly table was numerically broken (2^20 rail, gravity term
+    // integer-truncating to zero, median -8 against a mean of +71.8, only 25%
+    // of entries positive). Ordering by a table in that state would lose to
+    // almost any fixed prior. The rails were rebuilt afterwards (7183 here,
+    // 8192 for continuation history), so the comparison is worth making again
+    // on a table that actually works.
+    //
+    // Sized against the learned evidence a quiet can actually carry: butterfly
+    // history reaches 7183 and continuation history 8192, so about 15k total.
+    // A killer therefore starts roughly a quarter of that ahead - a strong
+    // prior, but one that genuinely good local evidence can now pass.
+    //
+    // These magnitudes are NOT bench-derived, and deliberately so. A paired
+    // 150-position node bench put 0, 4096, 8192 and 16384 all within +-2%
+    // geometric mean of each other with every 95% band crossing zero (sign
+    // test p = 0.93, 0.93, 0.46, 0.16) and single positions swinging between
+    // x0.29 and x3.86. Node counts can say that none of these wrecks the
+    // ordering; they cannot rank them. Only games can, so the value is set on
+    // the argument above and left for SPRT to confirm.
+    //
+    // The reference carries no such prior at all - it has no killer or
+    // counter-move stage, only history space. Going to zero here is the
+    // eventual target, but its quiet score also sums FIVE continuation-history
+    // levels plus pawn history, where this engine currently sums one. The
+    // prior stays until that side is built up.
+    private const int KillerBonus = 4_096;
+    private const int SecondKillerBonus = 3_072;
+    private const int CounterMoveBonus = 2_048;
 
     // Rough piece values for capture ordering and threat-escape bonuses
     // (index = PieceType; a king never appears as a victim).
@@ -39,8 +82,25 @@ public static class MovePicker
     // Enemy attacks by progressively more valuable piece groups, built once
     // per scored quiet batch. A rook is threatened by pawns/minors; a queen
     // additionally by rooks. Kings and pawns have no "lesser piece" signal.
+    // Also carries the direct-check masks. Checking "does this move give
+    // check" per move used to generate a full occupancy-aware attack set for
+    // EVERY quiet, which is the single most expensive thing in the scorer.
+    // Both halves below are exact, not approximations:
+    //
+    //   - Knight/pawn/king attack relations are symmetric and
+    //     occupancy-independent, so "our piece on 'to' checks their king" is
+    //     just "'to' is in the set of squares attacking the king". Exact, one
+    //     bitboard test, no generation at all.
+    //   - Sliders do depend on occupancy, so they keep the exact per-move
+    //     computation - but only after a cheap empty-board line test rejects
+    //     the destinations that are not even aligned with the king, which is
+    //     most of them. A slider can only check from the king's rays, so the
+    //     empty-board rays are a strict superset and the filter cannot drop a
+    //     real check.
     private readonly record struct QuietOrderingContext(
-        ulong PawnThreats, ulong MinorThreats, ulong RookThreats)
+        ulong PawnThreats, ulong MinorThreats, ulong RookThreats,
+        ulong PawnChecks, ulong KnightChecks, ulong KingChecks,
+        ulong RookLines, ulong BishopLines)
     {
         public ulong ThreatsFor(PieceType type) => type switch
         {
@@ -58,14 +118,15 @@ public static class MovePicker
     public static void Order(MoveList moves, Board board, Move ttMove,
                              KillerTable killers, HistoryTable history, int ply) =>
         Order(moves, board, ttMove, killers, history, ply,
-              contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None);
+              contHist: default, counterMove: Move.None);
 
     // Full-context variant: also ranks the counter move to the opponent's last
-    // move and blends continuation history into the quiet-move scores.
-    // prevPiece < 0 means "no usable previous move" (root or after a null move).
+    // move and blends continuation history into the quiet-move scores. Pass
+    // 'default' for contHist where no previous move is usable (root, or a
+    // capture-only scoring pass that never reaches the quiet path).
     public static void Order(MoveList moves, Board board, Move ttMove,
                              KillerTable killers, HistoryTable history, int ply,
-                             ContinuationHistory? contHist, int prevPiece, int prevTo,
+                             in ContinuationContext contHist,
                              Move counterMove, CaptureHistory? captureHistory = null)
     {
         int n = moves.Count;
@@ -76,7 +137,7 @@ public static class MovePicker
         QuietOrderingContext quietContext = BuildQuietOrderingContext(board);
         for (int i = 0; i < n; i++)
             scores[i] = Score(moves[i], board, ttMove, killers, history, ply,
-                              contHist, prevPiece, prevTo, counterMove, captureHistory,
+                              contHist, counterMove, captureHistory,
                               quietContext);
 
         SortRange(moves, 0);
@@ -87,7 +148,7 @@ public static class MovePicker
     public static void OrderCaptures(MoveList moves, Board board,
                                      CaptureHistory? captureHistory = null) =>
         Order(moves, board, Move.None, NoKillers, NoHistory, 0,
-              contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+              contHist: default, counterMove: Move.None,
               captureHistory: captureHistory);
 
     // ---------- Staged-picker range helpers ----------
@@ -104,8 +165,7 @@ public static class MovePicker
         int[] scores = moves.Scores;
         for (int i = from; i < moves.Count; i++)
             scores[i] = Score(moves[i], board, Move.None, NoKillers, NoHistory, 0,
-                              contHist: null, prevPiece: -1, prevTo: 0,
-                              counterMove: Move.None, captureHistory: captureHistory,
+                              contHist: default, counterMove: Move.None, captureHistory: captureHistory,
                               quietContext: default);
         SortRange(moves, from);
     }
@@ -116,15 +176,15 @@ public static class MovePicker
     // their band is far below any quiet score, so they sink to the very end.
     public static void ScoreAndSortQuiets(MoveList moves, int quietsFrom, int sortFrom,
                                           Board board, KillerTable killers, HistoryTable history,
-                                          int ply, ContinuationHistory? contHist,
-                                          int prevPiece, int prevTo, Move counterMove,
+                                          int ply, in ContinuationContext contHist,
+                                          Move counterMove,
                                           int? depth = null)
     {
         int[] scores = moves.Scores;
         QuietOrderingContext quietContext = BuildQuietOrderingContext(board);
         for (int i = quietsFrom; i < moves.Count; i++)
             scores[i] = Score(moves[i], board, Move.None, killers, history, ply,
-                              contHist, prevPiece, prevTo, counterMove,
+                              contHist, counterMove,
                               captureHistory: null, quietContext: quietContext);
 
         if (depth is int searchDepth)
@@ -247,7 +307,7 @@ public static class MovePicker
 
     private static int Score(Move move, Board board, Move ttMove,
                              KillerTable killers, HistoryTable history, int ply,
-                             ContinuationHistory? contHist, int prevPiece, int prevTo,
+                             in ContinuationContext contHist,
                              Move counterMove, CaptureHistory? captureHistory = null,
                              QuietOrderingContext quietContext = default)
     {
@@ -271,21 +331,34 @@ public static class MovePicker
         if (move.IsPromotion)
             return PromotionBase + PieceValue[(int)move.PromotionPiece];
 
-        int killerRank = killers.Rank(ply, move);
-        if (killerRank > 0)
-            return KillerBase + killerRank;
-
-        if (move == counterMove)
-            return CounterMoveScore;
+        // Every quiet move is scored in the SAME additive space: learned
+        // history first, then the refutation priors, then the two positional
+        // signals. A killer or counter move accumulates its own history like
+        // any other quiet, so a refutation that keeps working here compounds
+        // its bonus instead of being pinned to a fixed rank.
+        PieceType mover = board.PieceTypeAt(move.From);
         int quietScore = history.Get(board.SideToMove, move);
-        if (contHist is not null && prevPiece >= 0)
+        if (contHist.IsActive)
         {
-            int piece = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
-            quietScore += contHist.Get(prevPiece, prevTo, piece, move.To);
+            int piece = ContinuationHistory.PieceIndex(board.SideToMove, mover);
+            quietScore += contHist.Sum(piece, move.To);
         }
 
-        PieceType mover = board.PieceTypeAt(move.From);
-        if (GivesDirectCheck(board, move, mover)
+        // Rank 2 is the most recent killer, rank 1 the older one.
+        int killerRank = killers.Rank(ply, move);
+        if (killerRank == 2)
+            quietScore += KillerBonus;
+        else if (killerRank == 1)
+            quietScore += SecondKillerBonus;
+
+        // Not exclusive with the killer bonus: a move that is both the killer
+        // at this ply AND the refutation of the opponent's last move carries
+        // two independent pieces of evidence, so it should outrank a move
+        // carrying only one.
+        if (move == counterMove)
+            quietScore += CounterMoveBonus;
+
+        if (GivesDirectCheck(board, move, mover, quietContext)
             && !StaticExchangeEvaluator.LosesAtLeast(board, move, CheckSeeThreshold))
             quietScore += CheckBonus;
 
@@ -295,7 +368,7 @@ public static class MovePicker
         quietScore += PieceValue[(int)mover] * ThreatEscapeWeight
                     * (escapesThreat - entersThreat);
 
-        return Math.Min(quietScore, HistoryCap);
+        return quietScore;
     }
 
     private static QuietOrderingContext BuildQuietOrderingContext(Board board)
@@ -320,27 +393,61 @@ public static class MovePicker
         while (pieces != 0)
             rookThreats |= Attacks.Rook(Bitboard.PopLsb(ref pieces), occ);
 
-        return new QuietOrderingContext(pawnThreats, minorThreats, rookThreats);
+        // Squares from which a piece of ours checks their king. Attack
+        // relations are symmetric for knights and kings, and reverse with the
+        // colour for pawns, so these read straight off the king square.
+        int theirKing = board.KingSquare(them);
+        ulong pawnChecks = Attacks.Pawn(them, theirKing);
+        ulong knightChecks = Attacks.Knight(theirKing);
+        ulong kingChecks = Attacks.King(theirKing);
+
+        // Empty-board rays: the superset filter for sliders.
+        ulong rookLines = Attacks.Rook(theirKing, 0);
+        ulong bishopLines = Attacks.Bishop(theirKing, 0);
+
+        return new QuietOrderingContext(pawnThreats, minorThreats, rookThreats,
+                                        pawnChecks, knightChecks, kingChecks,
+                                        rookLines, bishopLines);
     }
 
     // The reference move picker rewards direct checks from the moved piece;
     // discovered checks are left to the full search's gives-check test.
-    private static bool GivesDirectCheck(Board board, Move move, PieceType mover)
+    private static bool GivesDirectCheck(Board board, Move move, PieceType mover,
+                                         in QuietOrderingContext ctx)
     {
-        Color us = board.SideToMove;
         int to = move.To;
-        ulong king = Bitboard.SquareBB(board.KingSquare(Board.OppositeColor(us)));
-        ulong occ = (board.AllOccupancy & ~Bitboard.SquareBB(move.From))
-                  | Bitboard.SquareBB(to);
+        ulong toBB = Bitboard.SquareBB(to);
 
+        // Occupancy-independent movers resolve with a single test.
+        switch (mover)
+        {
+            case PieceType.Pawn: return (ctx.PawnChecks & toBB) != 0;
+            case PieceType.Knight: return (ctx.KnightChecks & toBB) != 0;
+            case PieceType.King: return (ctx.KingChecks & toBB) != 0;
+            case PieceType.Bishop:
+                if ((ctx.BishopLines & toBB) == 0) return false;
+                break;
+            case PieceType.Rook:
+                if ((ctx.RookLines & toBB) == 0) return false;
+                break;
+            case PieceType.Queen:
+                if (((ctx.BishopLines | ctx.RookLines) & toBB) == 0) return false;
+                break;
+            default: return false;
+        }
+
+        // Aligned with the king, so the line might be blocked: only here is the
+        // occupancy-aware attack set worth generating. The occupancy is the one
+        // AFTER the move, since the mover vacating 'from' can itself be what
+        // opens the line.
+        Color us = board.SideToMove;
+        ulong king = Bitboard.SquareBB(board.KingSquare(Board.OppositeColor(us)));
+        ulong occ = (board.AllOccupancy & ~Bitboard.SquareBB(move.From)) | toBB;
         ulong attacks = mover switch
         {
-            PieceType.Pawn => Attacks.Pawn(us, to),
-            PieceType.Knight => Attacks.Knight(to),
             PieceType.Bishop => Attacks.Bishop(to, occ),
             PieceType.Rook => Attacks.Rook(to, occ),
             PieceType.Queen => Attacks.Queen(to, occ),
-            PieceType.King => Attacks.King(to),
             _ => 0,
         };
         return (attacks & king) != 0;

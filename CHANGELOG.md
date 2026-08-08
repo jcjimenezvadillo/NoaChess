@@ -1,5 +1,57 @@
 # CHANGELOG
 
+## 2026-08-07 (v4.4.0) - quiet ordering unified into history space, and the transposition table finally reaches quiescence
+
+### Move ordering: killers and the counter move stop being untouchable
+
+Killers sat at a fixed 3,000,000 and the counter move at 2,900,000, both returned from `MovePicker.Score` **before history was even read**, with every history-scored quiet clamped just underneath at 2,899,990. Up to three moves per node were therefore ordered by a constant, and no amount of learned evidence about *this* position could overtake a refutation inherited from a sibling node.
+
+That is a ceiling on every history experiment the engine has ever run: multi-level continuation history was measured four times (-33.9, -10.9, ~0, -4.2) and a butterfly-history LMR term three times, all rejected, because making history smarter could only ever reorder what sat **below** the reserved slots.
+
+The bands did win the final v2.8.2 SPRT against removing them - but that measurement is not evidence for keeping them today. At v2.8.2 the butterfly table was numerically broken (2^20 rail, gravity term integer-truncating to zero, median -8 against a mean of +71.8, only 25% of entries positive). Ordering by a table in that state would lose to almost any fixed prior. The rails were rebuilt afterwards, so the comparison was worth making again on a table that works.
+
+They are now bonuses (4096 / 3072 / 2048) inside the same additive score as butterfly history, continuation history, the safe-check bonus and the threat-escape term, and they are not mutually exclusive: a move that is both the killer at this ply and the refutation of the opponent's last move carries two independent pieces of evidence. **Measured +8.0 ±14 over 1125 games** against the previous ordering.
+
+The bonus magnitudes are **not** bench-derived, deliberately. A paired 150-position node bench put 0, 4096, 8192 and 16384 all within ±2% geometric mean of each other, every 95% band crossing zero (sign test p = 0.93, 0.93, 0.46, 0.16), single positions swinging between x0.29 and x3.86. Node counts can say none of them wrecks the ordering; they cannot rank them.
+
+Removing the bands made killers and the counter move pay the per-move check detection they used to skip, costing **3.8% nps**. Direct-check detection now precomputes its masks once per node: knight, pawn and king attack relations are symmetric and occupancy-independent, so those resolve with one bitboard test; sliders keep the exact per-move computation behind an empty-board ray filter that rejects destinations not even aligned with the king. Behaviour-preserving, verified by byte-identical node counts.
+
+### Quiescence search was not using the transposition table at all
+
+Not a probe, not a store. Every quiescence node paid a full network evaluation for its stand-pat even when the position had already been evaluated elsewhere in the tree - while the main search has cached its static evaluation in the table since 5F, *"revisits pay one cluster read, not a full evaluation"*.
+
+Profiling put **28.7%** of engine time inside `NnueInference.EvaluateInt16` and **31.6%** inside quiescence. This is where the two overlap. It now:
+
+- reuses a cached static evaluation, and caches what it computes on a miss (**+4.4% nps**);
+- takes an early cutoff when a stored bound covers the window, off the PV only;
+- uses a stored score as a better stand-pat floor than the static evaluation when its bound points the right way;
+- saves its own result on the way out, always as a bound and never exact - quiescence searches a truncated move list, so its score is a bound on the true value, never the value.
+
+The reference distinguishes quiescence entries from evaluation-only ones with negative depths (`DEPTH_QS = 0`, `DEPTH_UNSEARCHED = -2`). `TTEntry.Depth` here is a byte and cannot hold a negative, so the distinction is carried by `BoundType.None`, which is the same test by another route.
+
+One trap this opened: the shallow ProbCut accepted entries at `entry.Depth >= depth - 4`, and the moment quiescence started writing depth-zero entries **with** a real bound, `0 >= 0` let a truncated captures-only score stand in for a ProbCut verification at depth 4. Guarded with `entry.Depth >= 1`. The main cutoff, the singular-extension gate and the LMR adjuster were audited and are protected by their own conditions.
+
+### Measured
+
+150 positions from real games at fixed depth, both engines run simultaneously under identical machine load: **6.8% fewer nodes, 4.4% higher nps, 10.7% less time to reach the same depth**.
+
+Field gauntlet against the 12-engine CCRL field (2862-3281) at 60+0.6, single-threaded, ponder off, no tablebases for anyone: **600 games, 60.1%, performance ~3114**. Per-opponent performances are tight (3052-3215), so the number is not being dragged by one pairing. Against the ~3110 measured for v4.3.1+gen7 this is **statistically indistinguishable** - a 600-game gauntlet resolves about ±20 and the change is worth roughly +7, so this reads as "no regression, position confirmed", not as a measured gain. 309 tests.
+
+### Measured and rejected - not in this release
+
+- **A second continuation-history distance** (independent table keyed on the move two plies back, plus butterfly history at double weight). Cost 0.9% nps for nothing measurable; A+B together scored -2.1 ±17.5 over 659 games against A alone at +8.0.
+- **The reference's time-management constants** (falling-eval clamps 0.576/1.728, linear stability ramp, instability base 1.077). Neutral at 20+0.2 (-0.5 ±16.4 over 772 games), and a direct probe showed it makes the *pondered* case worse: the ramp's floor is 0.700 against the current 0.815, and pondering leaves the search well past the ramp's ceiling.
+- **A threshold-only static exchange evaluator** (the reference's `see_ge` with early exits). Passed an exhaustive equivalence test against the exact evaluator - 160 positions, every pseudo-legal move, eleven thresholds, ~70k comparisons - and **still** changed the search's node count by 1.8%. Worth about 1% nps, so not worth shipping a behaviour change nobody could explain.
+- **Network width 512** (-76 at 10+0.1, -93 at 60+0.6) and **8 output buckets** (-15.2, H0 at 435 games), both trained identically to gen9. The NNUE capacity axis is closed in both directions.
+
+### Time management: investigated at length, not broken
+
+The bot leaves large amounts of clock unused - one 300+2 game finished with 253 of 300 seconds. The engine itself is fine: measured over the 168-game gauntlet it spends **1.32 s/move against the field's 1.31 s/move, ratio 1.01**, per-opponent range 0.93-1.08.
+
+The difference is **ponder**, which is off in every gauntlet and SPRT this project runs and on in both bots. Pondering hands the search free iterations, so by the time `ponderhit` arrives the best move has often been stable for 10+ iterations; `timeReduction` is a binary cliff (`lastBestMoveDepth + 9 < depth`), and crossing it halves the budget from 6310 ms to 2994 ms - on a coin flip, 3 of 6 probe runs. Without ponder it never fires (3/3 at the full budget).
+
+Ponder itself was measured for the first time in this project: **+150.3 ±79.1, H1 in 27 games** with ponder against the same engine without it. It is not broken, and the banked clock is ponder working. The cliff remains as a known cost, filed for the ordering campaign's third step.
+
 ## 2026-08-05 (v4.3.1) - the engine was playing one move and reporting another, on 2% of all moves
 
 ### The audit that found it
