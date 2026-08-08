@@ -247,7 +247,9 @@ public sealed class AlphaBetaSearch
     // Counter move: the quiet refutation of the opponent's last move, indexed
     // by (mover piece 0-11, destination). Cheaper and more specific than a
     // killer: it follows the MOVE being answered, not the ply.
-    private readonly Move[,] _counterMoves = new Move[12, 64];
+    // FLAT, not Move[12, 64]: read once per node and written on every quiet
+    // cutoff. Layout: piece * 64 + to.
+    private readonly Move[] _counterMoves = new Move[12 * 64];
 
     // Search stack: piece index (color*6+type) and destination of the move
     // played to REACH each ply. -1 piece marks "no usable previous move"
@@ -310,7 +312,8 @@ public sealed class AlphaBetaSearch
     // the standard shape). A move ordered 20th at depth 12 is almost certainly
     // not the best move, so it is searched much shallower first and only
     // re-searched at full depth if it surprisingly beats alpha.
-    private static readonly int[,] LmrReductions = BuildLmrTable();
+    // FLAT, not int[64, 64]: read for every reduced move. Layout: depth * 64 + move.
+    private static readonly int[] LmrReductions = BuildLmrTable();
 
     // Reductions are accumulated in 1024ths of a ply and truncated once, at the
     // point of use. The reference keeps its whole reduction pipeline in fixed
@@ -339,12 +342,12 @@ public sealed class AlphaBetaSearch
     // Do not re-add without a new mechanism; the direct form is settled.
 
 
-    private static int[,] BuildLmrTable()
+    private static int[] BuildLmrTable()
     {
-        var table = new int[64, 64];
+        var table = new int[64 * 64];
         for (int depth = 1; depth < 64; depth++)
             for (int move = 1; move < 64; move++)
-                table[depth, move] =
+                table[(depth * 64) + move] =
                     (int)((0.75 + Math.Log(depth) * Math.Log(move) / 2.25) * LmrScale);
         return table;
     }
@@ -1742,7 +1745,7 @@ public sealed class AlphaBetaSearch
         // (absent at the root or right after a null move).
         int prevPiece = ply > 0 ? _stackPiece[ply - 1] : -1;
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
-        Move counterMove = prevPiece >= 0 ? _counterMoves[prevPiece, prevTo] : Move.None;
+        Move counterMove = prevPiece >= 0 ? _counterMoves[(prevPiece * 64) + prevTo] : Move.None;
 
         var contHist = new ContinuationContext(
             prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
@@ -1815,7 +1818,7 @@ public sealed class AlphaBetaSearch
             if (searched > 0)
             {
                 // In 1024ths like the reduction proper, truncated once here.
-                int rEst = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
+                int rEst = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
                 if (nonPv) rEst += LmrScale;
                 if (!improving) rEst += LmrScale;
                 lmrDepth = Math.Max(depth - 1 - rEst / LmrScale, 0);
@@ -1911,7 +1914,7 @@ public sealed class AlphaBetaSearch
                     // whole number of plies, so the single truncation at the
                     // end reproduces the previous per-term integer arithmetic
                     // exactly: floor(a) + k == floor(a + k) for integer k.
-                    int r = LmrReductions[Math.Min(depth, 63), Math.Min(searched, 63)];
+                    int r = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
                     if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
                     // No butterfly-history term here - three variants were tested
@@ -2030,7 +2033,7 @@ public sealed class AlphaBetaSearch
                             int piece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
                             if (prevPiece >= 0)
                             {
-                                _counterMoves[prevPiece, prevTo] = move;
+                                _counterMoves[(prevPiece * 64) + prevTo] = move;
                                 _contHist[0].AddBonus(prevPiece, prevTo, piece, move.To, depth);
                             }
 

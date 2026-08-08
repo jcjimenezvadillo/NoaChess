@@ -21,6 +21,13 @@ public sealed class NnueAccumulator
     // be refreshed from scratch.
     public readonly bool[] Valid = new bool[2];
 
+    // Whether Values[perspective] actually holds this position's accumulator.
+    // The stack is LAZY: a push records the update and clears this, and the
+    // numbers are only materialised when an evaluation asks for them. Valid and
+    // Computed are independent - a perspective can be valid (no king move) and
+    // still uncomputed (nobody has needed it yet).
+    public readonly bool[] Computed = new bool[2];
+
     public NnueAccumulator(int ftOutputs)
     {
         Values = [new short[ftOutputs], new short[ftOutputs]];
@@ -41,8 +48,11 @@ public sealed class NnueAccumulator
             AddFeature(network, perspective, features[i]);
 
         Valid[(int)perspective] = true;
+        Computed[(int)perspective] = true;
     }
 
+    // Both perspectives at once. Kept for the `nnueprofile` microbenchmark,
+    // which prices this copy in isolation; the search takes the lazy path below.
     public void CopyFrom(NnueAccumulator other)
     {
         NnueProfiling.CountCopyFrom();
@@ -50,6 +60,18 @@ public sealed class NnueAccumulator
         Array.Copy(other.Values[1], Values[1], Values[1].Length);
         Valid[0] = other.Valid[0];
         Valid[1] = other.Valid[1];
+        Computed[0] = other.Computed[0];
+        Computed[1] = other.Computed[1];
+    }
+
+    // One perspective only: what the lazy stack needs when it materialises a
+    // level from its nearest computed ancestor. Half the traffic of CopyFrom,
+    // and paid only for the perspective an evaluation actually asked for.
+    public void CopyPerspectiveFrom(NnueAccumulator other, Color perspective)
+    {
+        NnueProfiling.CountPerspectiveCopy();
+        int p = (int)perspective;
+        Array.Copy(other.Values[p], Values[p], Values[p].Length);
     }
 
     // ---- Feature-transformer row updates: the hottest code in NNUE play ----

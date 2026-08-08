@@ -23,10 +23,18 @@ public static class NnueProfiling
     public static long Evaluations;
     public static long AccumulatorUpdates;   // AddFeature + SubtractFeature calls
     public static long FusedMoves;           // MoveFeature calls (one fused pass)
-    public static long CopyFromCalls;        // per-ply accumulator duplication
+    public static long CopyFromCalls;        // both-perspective duplication
     public static long RefreshesTotal;       // king-move perspective refreshes
     public static long RefreshesFromCache;   // served by the accumulator cache
     public static long RefreshFeaturesTouched; // rows actually added/removed on refresh
+
+    // Lazy accumulator (v4.5.0). Pushes counts the work the EAGER stack would
+    // have done; PendingApplied counts what the lazy one actually did. The gap
+    // between them is the saving, and PerspectiveCopies is what replaced the
+    // per-ply CopyFrom.
+    public static long Pushes;               // PushMove + PushNull calls
+    public static long PendingApplied;       // recorded updates actually materialised
+    public static long PerspectiveCopies;    // single-perspective copies from an ancestor
 
     public static void Reset()
     {
@@ -37,12 +45,18 @@ public static class NnueProfiling
         RefreshesTotal = 0;
         RefreshesFromCache = 0;
         RefreshFeaturesTouched = 0;
+        Pushes = 0;
+        PendingApplied = 0;
+        PerspectiveCopies = 0;
     }
 
     public static void CountEvaluation() { if (Enabled) Evaluations++; }
     public static void CountAccumulatorUpdate() { if (Enabled) AccumulatorUpdates++; }
     public static void CountFusedMove() { if (Enabled) FusedMoves++; }
     public static void CountCopyFrom() { if (Enabled) CopyFromCalls++; }
+    public static void CountPush() { if (Enabled) Pushes++; }
+    public static void CountPendingApplied() { if (Enabled) PendingApplied++; }
+    public static void CountPerspectiveCopy() { if (Enabled) PerspectiveCopies++; }
 
     public static void CountRefresh(bool fromCache, int featuresTouched)
     {
