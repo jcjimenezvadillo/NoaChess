@@ -27,21 +27,25 @@ public sealed class CorrectionHistory
     public const int Scale = 64;
     private const int MaxCorrectionCp = 256;
 
-    private readonly int[,] _entries = new int[2, TableSize];
+    // FLAT, not int[2, TableSize]: read on every corrected static evaluation.
+    // Layout: side * TableSize + slot.
+    private readonly int[] _entries = new int[2 * TableSize];
+
+    private static int Index(Board board, ulong key)
+        => ((int)board.SideToMove * TableSize) + (int)(key & (TableSize - 1));
 
     public void Clear() => Array.Clear(_entries);
 
     // Raw (still scaled) entry for this position. The caller combines several
     // tables before dividing, so that rounding happens once at the end instead
     // of once per table.
-    public int RawEntry(Board board, ulong key)
-        => _entries[(int)board.SideToMove, (int)(key & (TableSize - 1))];
+    public int RawEntry(Board board, ulong key) => _entries[Index(board, key)];
 
     public void Update(Board board, ulong key, int errorCp, int depth)
     {
         int target = Math.Clamp(errorCp, -MaxCorrectionCp, MaxCorrectionCp) * Scale;
         int weight = Math.Min(16 + depth * depth, 128);
-        ref int entry = ref _entries[(int)board.SideToMove, (int)(key & (TableSize - 1))];
+        ref int entry = ref _entries[Index(board, key)];
 
         // Bounded exponential update toward the observed residual. Deep results
         // are better teachers, while shallow noise changes the estimate slowly.
