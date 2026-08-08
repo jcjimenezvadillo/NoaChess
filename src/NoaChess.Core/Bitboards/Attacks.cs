@@ -56,6 +56,20 @@ public static class Attacks
     public static ulong King(int square) => KingAttacks[square];
     public static ulong Pawn(Color color, int square) => PawnAttacksTable[(int)color][square];
 
+    // ---- Raw tables, for generators that index them inside a loop ----
+    //
+    // The accessors above are the right API everywhere except the move
+    // generator's innermost loops, where the cost of reaching the table can
+    // exceed the read itself: the jumper helper used to take a
+    // Func<int, ulong> and paid an indirect call per piece for a single array
+    // lookup, and Pawn() re-walks a JAGGED array (colour, then square) on
+    // every pawn. Handing out the array lets the caller hoist that indirection
+    // out of its loop. Same tables, same values - they are readonly and filled
+    // once by the static constructor.
+    internal static ulong[] KnightTable => KnightAttacks;
+    internal static ulong[] KingTable => KingAttacks;
+    internal static ulong[] PawnTable(Color color) => PawnAttacksTable[(int)color];
+
     // Rook attacks from a square given the "occupancy" (every piece on the
     // board, friendly and enemy). The ray includes the first blocking piece:
     // if it is an enemy it will be a possible capture, if it is friendly it

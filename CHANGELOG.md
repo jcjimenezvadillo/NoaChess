@@ -1,6 +1,70 @@
 # CHANGELOG
 
-## 2026-08-07 (v4.4.0) - quiet ordering unified into history space, and the transposition table finally reaches quiescence
+## 2026-08-08 (v4.5.0) - the same search, about 10% faster, with every step proved by byte-identical node counts
+
+Three changes, none of which alters a single node the search visits. That is the whole point: every one of them was gated on the same test, `audit/bench_identical.py` reporting **byte-identical node counts position by position** over 150 positions at depth 12, plus a control comparing the bench against itself. 34,690,140 nodes, identical in every comparison. Anything else and the change is reverted, whatever the unit tests say - the discipline that stopped a full SEE implementation in v4.4.0 after it passed ~70k equivalence comparisons and still moved node counts 1.8%.
+
+### The NNUE accumulator was eager
+
+`NnueAccumulatorStack.PushMove` copied both perspectives and did the feature math on **every** `MakeMove`, whether or not the position was ever evaluated. Profiling put it at **7.39%** of engine self time with another **2.49%** in the king-move refreshes.
+
+v4.4.0 made that worse rather than better: quiescence now reaches the transposition table, so far more children return from a cached static evaluation or a score cutoff without ever calling the evaluator, and every one of those was an accumulator update nobody read.
+
+A push now only **records** what the update would be and marks the level uncomputed; `GetPerspective` walks back to the nearest computed ancestor and materialises forward, on demand. No king squares are stored: along any chainable sequence that perspective's king cannot have moved, because a king move invalidates its own perspective and forces a refresh instead of a chain, so the current board supplies the right value for every link.
+
+**The first cut of this was slower than what it replaced, and looked perfect.** Collapsing the pending chain straight onto the top level is one copy cheaper per evaluation and leaves the intermediate levels uncomputed, so a parent that never evaluates has its update replayed by *every one of its children* - and plies in check skip the static evaluation, which makes that the common case. Counters: 1,087,813 replays against the eager version's 1,029,978 updates, i.e. **5.6% more feature work than before**, with node counts already byte-identical and all tests green. Materialising each level as the chain is crossed brings it to 377,767 replays, **36.7% of eager**. Node identity cannot catch a performance regression; the `nnueprofile` counters added for this can.
+
+Measured: **+3.6% pooled** (253/290 positions faster, sign test p ~ 0).
+
+### Move generation
+
+The jumper helper took a `Func<int, ulong>` and paid an indirect, non-inlinable call per piece to read `KnightAttacks[square]` - while the slider helper next to it already carried a comment explaining why it avoids exactly that. It takes the table as an array now.
+
+`HasLegalMove` tested moves in generation order (pawns first, king last) when every search caller reaches it **in check**, where a pawn move is legal only if it happens to block or capture the checker and a king step usually is. It scans backwards now; the result is a bool, so the order is not observable.
+
+`GeneratePawnMoves` called `Attacks.Pawn` twice per pawn whenever an en passant square was set, re-walking a jagged array by colour each time, and re-evaluated four loop-invariant en passant conditions once per pawn. All hoisted.
+
+Measured: **+0.6%**, and reported with a caveat. The pooled figure was +1.09% but its sign test split 148/287, which is the pattern that means a few positions moved a lot rather than a broad speedup - one baseline pass had been the slowest of the four. The trustworthy pair, both runs in the same speed regime, says **+0.57% with 84/141 positions faster, p = 0.028**. Small, real, and not worth continuing down that path.
+
+### Multi-dimensional arrays, which turned out to be the real find
+
+.NET cannot give `T[,]` or `T[,,]` the single-dimension fast path: every access computes its address through a helper, bounds-checks each rank separately, and the JIT will not hoist those out of an inner loop. The engine had them in its hottest reads.
+
+Flattened to `T[]` with an explicit index helper: `HistoryTable[2,64,64]` (read for every quiet the picker scores), `KillerTable[ply,2]` (likewise), `Board._pieces[2,6]` (move generation, attack detection, ordering context), `Zobrist.PieceKeys[2,6,64]` (two to four times per make/unmake), `_counterMoves[12,64]`, `LmrReductions[64,64]` and `CorrectionHistory[2,N]`. `MoveList` now exposes its moves as a raw array the way it already did with the parallel scores, so the sort loops stop reaching half their data through an indexer. `IsSquareAttacked` computes the side offset once instead of five times.
+
+Flattening the Zobrist table is safe only because the initialisation loop keeps its nesting order, so every key keeps its exact value. Change one and every hash in the engine changes with it, moving transposition hits, repetition detection and therefore node counts. The node-identity check is what proves it did not happen.
+
+Measured: **+6.12% pooled**, 95% [+5.34%, +6.20%], **397/439 positions faster, sign test p ~ 0**, with all three pairs agreeing (+4.39%, +8.52%, +5.51%).
+
+**The mistake worth recording**: the profile said `MovePicker.ScoreAndSortQuiets` was 5.84% and half a session went into designing a better sorting algorithm. The cost was not the algorithm, it was an `int[2,64,64]` in the inner loop. When a profile points at a function, check the data layout it touches before redesigning what it does.
+
+### Measured
+
+**About +10.6% nps over v4.4.0**, chaining the three paired measurements. Node counts byte-identical throughout. 316 tests.
+
+Gauntlet against the CCRL field: pending at the time of writing.
+
+### Measurement method, which is where most of the day actually went
+
+Comparing bench **totals** measures the machine, not the change: two passes of the same binary differed by **4.2%** while the effect under test was 1.3%. `audit/bench_time.py` pairs each position against itself across runs, which cancels the common-mode drift, and reports a geometric mean with a sign test. Validated against a known answer - the accumulator work, independently measured at +3.1% on totals, came out at +3.61% pooled.
+
+The rule that fell out of it: **if the geometric mean says "faster" but the sign test splits 50/50, do not believe the mean.**
+
+### Time management: the hypothesis was refuted by measurement
+
+Two Arena games at 3+2 suggested the engine was burning its clock too early - 201 of its first 230 seconds in 25 moves, then 63 moves on the increment. `clock_curve.py` binned 40 games by move number and reconstructed the remaining clock.
+
+**Front-loading is what every engine does at this control.** By move 25 the engine has spent 78% of everything received; the field spends **73%**. Ratios run 1.10 and 1.02 over the first twenty moves and 0.87-0.92 after move fifty; depth holds at 20-21 with spikes to 26-33 in long games; no game in 40 was lost on time.
+
+The one real defect is small: the clock flatlines at about 25 s from move 41 onward and is never spent, while the field burns down from 37 s to 12-15 s, so long games end with the engine richer than its opponent. The field spends 2.13-2.23 s where this engine spends 1.91-1.94 s, a ~10% late-phase deficit. Sized honestly, that is worth 1 to 2 Elo, and the time manager is not where the remaining strength is.
+
+### Not chased, because it is not real
+
+`Thread.PollGC` at 3.90% and `Buffer.ZeroMemoryInternal` at 0.99% together outweigh all of move generation in the profile. Both are an artifact of the harness: `ucinewgame` calls `Reset()`, which clears the 64 MB transposition table and every history table, and both the profiler and the node bench send `ucinewgame` **before every position**. A real game does that once per game, not once per move.
+
+### On the SPRT
+
+The accumulator change was put through an SPRT anyway, on request. After 2,091 games: 533-501-1057, **+5.2 Elo, 95% [-5.1, +15.4]**, LLR +0.056 against bounds [0, 10] - **2% of the way to H1**. At that rate it needs on the order of 100,000 games to conclude. Stopped as unresolvable, which is itself the useful measurement: 2,000 games move the needle 2% at this level, so node-identical speed work has to be validated by the bench, not by games.
 
 ### Move ordering: killers and the counter move stop being untouchable
 

@@ -20,7 +20,15 @@ public sealed class Board
     public const string StartFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
     // Bitboard per [color, pieceType]: where the white pawns are, etc.
-    private readonly ulong[,] _pieces = new ulong[2, 6];
+    // FLAT, not ulong[2,6]. Pieces() sits in the innermost loop of move
+    // generation, attack detection and move ordering; .NET's multi-dimensional
+    // arrays bounds-check each rank separately and cannot use the
+    // single-dimension fast addressing. Layout: colour * PieceTypeCount + type.
+    private const int PieceTypeCount = 6;
+    private readonly ulong[] _pieces = new ulong[2 * PieceTypeCount];
+
+    private static int PieceIndex(Color color, PieceType type)
+        => ((int)color * PieceTypeCount) + (int)type;
 
     // Bitboard with all the pieces of each color (union of the 6 above).
     private readonly ulong[] _occupancy = new ulong[2];
@@ -146,8 +154,8 @@ public sealed class Board
                         if (!Bitboard.IsSet(attacks, to))
                             continue;
 
-                        ulong key = Zobrist.PieceKeys[c, p, from]
-                                  ^ Zobrist.PieceKeys[c, p, to]
+                        ulong key = Zobrist.PieceKeys[Zobrist.PieceKey(c, p, from)]
+                                  ^ Zobrist.PieceKeys[Zobrist.PieceKey(c, p, to)]
                                   ^ Zobrist.SideToMoveKey;
                         var displaced = new RepetitionMove(
                             key, new Move(from, to, MoveFlag.Quiet),
@@ -229,12 +237,12 @@ public sealed class Board
 
     public bool IsEmpty(int square) => _mailbox[square] == PieceType.None;
 
-    public ulong Pieces(Color color, PieceType type) => _pieces[(int)color, (int)type];
+    public ulong Pieces(Color color, PieceType type) => _pieces[PieceIndex(color, type)];
     public ulong Occupancy(Color color) => _occupancy[(int)color];
     public ulong AllOccupancy => _occupancy[0] | _occupancy[1];
 
     // Square where the king of the given color is.
-    public int KingSquare(Color color) => Bitboard.Lsb(_pieces[(int)color, (int)PieceType.King]);
+    public int KingSquare(Color color) => Bitboard.Lsb(_pieces[PieceIndex(color, PieceType.King)]);
 
     // True if the side to move is in check.
     public bool IsInCheck() =>
@@ -249,7 +257,7 @@ public sealed class Board
     private bool HasEnPassantCapturer(Color side, int square)
         => square != Squares.None
         && (Attacks.Pawn(OppositeColor(side), square)
-            & _pieces[(int)side, (int)PieceType.Pawn]) != 0;
+            & _pieces[PieceIndex(side, PieceType.Pawn)]) != 0;
 
     // Is the square attacked by any piece of the given color?
     // Used to detect checks and to validate castling.
@@ -260,20 +268,22 @@ public sealed class Board
     // the attacks are symmetric, and much cheaper.
     public bool IsSquareAttacked(int square, Color byColor)
     {
-        int c = (int)byColor;
+        // One multiply for the whole method instead of one per piece type.
+        int side = (int)byColor * PieceTypeCount;
         ulong occ = AllOccupancy;
 
         // Pawns: the table of the OPPOSITE color is used - a white pawn on
         // 'square' would attack upwards, therefore the black pawns attacking
         // 'square' sit exactly on those squares.
-        if ((Attacks.Pawn(OppositeColor(byColor), square) & _pieces[c, (int)PieceType.Pawn]) != 0) return true;
-        if ((Attacks.Knight(square) & _pieces[c, (int)PieceType.Knight]) != 0) return true;
-        if ((Attacks.King(square) & _pieces[c, (int)PieceType.King]) != 0) return true;
+        if ((Attacks.Pawn(OppositeColor(byColor), square) & _pieces[side + (int)PieceType.Pawn]) != 0) return true;
+        if ((Attacks.Knight(square) & _pieces[side + (int)PieceType.Knight]) != 0) return true;
+        if ((Attacks.King(square) & _pieces[side + (int)PieceType.King]) != 0) return true;
 
-        ulong bishopLike = _pieces[c, (int)PieceType.Bishop] | _pieces[c, (int)PieceType.Queen];
+        ulong queens = _pieces[side + (int)PieceType.Queen];
+        ulong bishopLike = _pieces[side + (int)PieceType.Bishop] | queens;
         if ((Attacks.Bishop(square, occ) & bishopLike) != 0) return true;
 
-        ulong rookLike = _pieces[c, (int)PieceType.Rook] | _pieces[c, (int)PieceType.Queen];
+        ulong rookLike = _pieces[side + (int)PieceType.Rook] | queens;
         if ((Attacks.Rook(square, occ) & rookLike) != 0) return true;
 
         return false;
@@ -285,20 +295,20 @@ public sealed class Board
     private void AddPiece(Color color, PieceType type, int square)
     {
         ulong bb = Bitboard.SquareBB(square);
-        _pieces[(int)color, (int)type] |= bb;
+        _pieces[PieceIndex(color, type)] |= bb;
         _occupancy[(int)color] |= bb;
         _mailbox[square] = type;
-        ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        ZobristKey ^= Zobrist.PieceKeys[Zobrist.PieceKey((int)color, (int)type, square)];
         TogglePartialKeys(color, type, square);
     }
 
     private void RemovePiece(Color color, PieceType type, int square)
     {
         ulong bb = Bitboard.SquareBB(square);
-        _pieces[(int)color, (int)type] &= ~bb;
+        _pieces[PieceIndex(color, type)] &= ~bb;
         _occupancy[(int)color] &= ~bb;
         _mailbox[square] = PieceType.None;
-        ZobristKey ^= Zobrist.PieceKeys[(int)color, (int)type, square];
+        ZobristKey ^= Zobrist.PieceKeys[Zobrist.PieceKey((int)color, (int)type, square)];
         TogglePartialKeys(color, type, square);
     }
 
@@ -309,7 +319,7 @@ public sealed class Board
     // occasional wrong answers much later.
     private void TogglePartialKeys(Color color, PieceType type, int square)
     {
-        ulong key = Zobrist.PieceKeys[(int)color, (int)type, square];
+        ulong key = Zobrist.PieceKeys[Zobrist.PieceKey((int)color, (int)type, square)];
         if (type == PieceType.Pawn)
         {
             PawnZobristKey ^= key;
@@ -695,10 +705,10 @@ public sealed class Board
     // "zugzwang" (every move worsens the position) breaks its assumption.
     public bool HasNonPawnMaterial(Color color)
     {
-        int c = (int)color;
-        return (_occupancy[c]
-                ^ _pieces[c, (int)PieceType.Pawn]
-                ^ _pieces[c, (int)PieceType.King]) != 0;
+        int side = (int)color * PieceTypeCount;
+        return (_occupancy[(int)color]
+                ^ _pieces[side + (int)PieceType.Pawn]
+                ^ _pieces[side + (int)PieceType.King]) != 0;
     }
 
     // ---------- FEN support (internal use by the Fen class) ----------
