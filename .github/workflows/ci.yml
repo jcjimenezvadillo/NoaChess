@@ -1,0 +1,76 @@
+﻿name: CI
+
+on:
+  push: {}
+  pull_request:
+    branches: [ develop ]
+
+jobs:
+  build-windows:
+    name: Build & Test (Windows) + nodecount
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build solution
+        run: dotnet build NoaChess.sln -c Release
+
+      - name: Run tests (Core)
+        run: dotnet test tests/NoaChess.Core.Tests -c Release --no-build
+
+      - name: Run tests (Engine)
+        run: dotnet test tests/NoaChess.Engine.Tests -c Release --no-build
+
+      - name: Run nodecount check
+        shell: pwsh
+        run: pwsh -NoProfile -NonInteractive -File tools/ci/check_nodecount.ps1
+
+  build-ubuntu:
+    name: Build & Test (Ubuntu, limited) + nodecount
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build Core
+        run: dotnet build src/NoaChess.Core -c Release
+
+      - name: Build Engine
+        run: dotnet build src/NoaChess.Engine -c Release
+
+      - name: Run tests (Core)
+        run: dotnet test tests/NoaChess.Core.Tests -c Release --no-build
+
+      - name: Run tests (Engine)
+        run: dotnet test tests/NoaChess.Engine.Tests -c Release --no-build
+
+      - name: Run nodecount check
+        shell: pwsh
+        run: pwsh -NoProfile -NonInteractive -File tools/ci/check_nodecount.ps1

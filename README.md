@@ -1,4 +1,7 @@
-﻿# NoaChess
+﻿[![CI](https://github.com/jcjimenezvadillo/NoaChess/actions/workflows/ci.yml/badge.svg)](https://github.com/jcjimenezvadillo/NoaChess/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/jcjimenezvadillo/NoaChess)](LICENSE)
+
+# NoaChess
 
 [Spanish below]
 
@@ -264,3 +267,4 @@ Juan Carlos Jiménez Vadillo
 - GitHub: [jcjimenezvadillo](https://github.com/jcjimenezvadillo)  
 
 ---
+
