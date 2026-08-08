@@ -1,0 +1,5 @@
+﻿197476
+
+# Nota: el número está ligado a la red NNUE embebida en el binario.
+# Cuando la red cambie, el valor cambiará legítimamente y hay que regenerarlo a mano,
+# dejando anotado en el commit qué red lo produjo. Nunca automáticamente.
