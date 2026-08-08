@@ -42,7 +42,23 @@ Measured: **+6.12% pooled**, 95% [+5.34%, +6.20%], **397/439 positions faster, s
 
 **About +10.6% nps over v4.4.0**, chaining the three paired measurements. Node counts byte-identical throughout. 316 tests.
 
-Gauntlet against the CCRL field: pending at the time of writing.
+Field gauntlet against the 12-engine CCRL field at 60+0.6, single-threaded, ponder off, no tablebases for anyone: **62.4% over 580 games, performance 3143 +/-31** against a field averaging 3042. Per-opponent performances run 3062 to 3210, so no single pairing is carrying the number.
+
+Against v4.4.0's **3124 +/-30** that is **+19, and not significant**: two measurements at +/-30 each leave the difference uncertain to about +/-43. It is the right sign and the right size - +10.6% nps is worth roughly +7 by this project's own calibration - but what the gauntlet establishes is the absence of a regression, not a gain.
+
+### The performance figures are now computed one way, and the old ones were not
+
+Both numbers above come from `audit/gauntlet.py`, which solves for the rating R whose expected score against each opponent sums to the score actually made. The figures published before this release used "average opponent + Elo(score)", a shortcut that biases whenever the field is spread out and the results are lopsided against its ends - which is exactly this field, running 2862 to 3281.
+
+The whole series, recomputed the same way so it can be read as a series:
+
+| version | games | score | field | performance |
+|---------|-------|-------|-------|-------------|
+| v4.3.1 + gen7 | 165 | 59.7% | 3039 | **3116 +/-57** |
+| v4.4.0 + gen9 | 600 | 60.1% | 3043 | **3124 +/-30** |
+| v4.5.0 + gen9 | 580 | 62.4% | 3042 | **3143 +/-31** |
+
+The previously recorded ~3110 and ~3114 are the same games under the old formula; they are not wrong so much as computed differently, and mixing the two methods in one comparison is what this table exists to prevent.
 
 ### Measurement method, which is where most of the day actually went
 
