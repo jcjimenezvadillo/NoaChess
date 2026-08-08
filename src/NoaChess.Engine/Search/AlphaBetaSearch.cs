@@ -205,7 +205,21 @@ public sealed class AlphaBetaSearch
     private readonly TranspositionTable _tt;
     private readonly KillerTable _killers = new(MaxPly);
     private readonly HistoryTable _history = new();
-    private readonly ContinuationHistory _contHist = new();
+    // Continuation history, one INDEPENDENT table per ply distance: index 0 is
+    // keyed on the move one ply back, index 1 on the move two plies back.
+    //
+    // Independence is the whole point. A single table shared across distances
+    // has both keys writing the same entries, which cost -26 Elo when measured
+    // in 5G - "the reply to what was just played" and "the reply to what was
+    // played two plies ago" are different distributions. Each table is ~2.3 MB,
+    // and Lazy SMP gives every worker its own set, so the level count is not
+    // free in cache terms either; this is why it starts at two rather than the
+    // reference's five.
+    //
+    // The ORDERING read sums every active level with equal weight. The
+    // statScore consumer used by pruning deliberately keeps reading level 0
+    // only, so this change cannot move the pruning thresholds as a side effect.
+    private readonly ContinuationHistory[] _contHist = [new ContinuationHistory()];
     private readonly CaptureHistory _captureHistory = new();
     private readonly CorrectionHistorySet _corrections = new();
 
@@ -449,7 +463,8 @@ public sealed class AlphaBetaSearch
         _tt.Clear();
         _killers.Clear();
         _history.Clear();
-        _contHist.Clear();
+        foreach (ContinuationHistory level in _contHist)
+            level.Clear();
         _captureHistory.Clear();
         _corrections.Clear();
         Array.Clear(_counterMoves);
@@ -724,39 +739,82 @@ public sealed class AlphaBetaSearch
                 if (EnableProvenMateStop
                     && (score >= MateScore - MateStopGivePlies
                         || score <= -MateScore + MateStopGetPlies))
+                {
+                    // This path exits before the regular per-iteration debug
+                    // print below ever runs, so a mate-stopped move would
+                    // otherwise vanish from the NOA_TM_DEBUG trace entirely -
+                    // indistinguishable from a move that simply used almost no
+                    // time for some other reason. Own line, reason=mate-stop.
+                    if (TimeDebug)
+                        Console.Out.WriteLine(
+                            $"info string TM d={depth} score={score} reason=mate-stop"
+                          + $" elapsed={ElapsedMs} softDl={_softDeadlineMs}"
+                          + $" maxT={_maxTimeMs} hardT={_hardTimeMs}");
                     break;
+                }
 
                 // Falling eval: when the score is dropping against the
                 // previous move's average and the recent iterations, think
                 // longer (the position is deteriorating and the move matters);
                 // rising scores stop sooner. Constants are the reference
                 // engine's with score differences rescaled to NoaChess
-                // centipawns (x2.08: its internal pawn ~ 208).
+                // centipawns (x2.083: its internal pawn ~ 208, so a reference
+                // coefficient c applies here as c * 2.083). The offset and the
+                // divisor are dimensionless and stay raw.
+                //
+                // The previous port carried an older revision's tune (71 /
+                // 25.0 / 12.5 over 656.7, clamped to [0.5, 1.5]). That clamp
+                // was where the factor actually lived rather than a safety
+                // rail: measured at 3+0 AND again at 180+2 in the bot's own
+                // configuration, 62% of moves sat pinned at the 0.5 floor and
+                // 34% at the 1.5 cap - 96% of the time this picked one of two
+                // constants instead of modulating, and both sat below the
+                // reference's own bounds. Combined with the reduction factor
+                // it is what turns a 4052 ms budget into a 3015 ms spend.
+                //
                 // First move of the game: no cross-move history to compare
                 // against, so use the neutral factor. (The reference maxes it
-                // at 1.5 here; combined with the early-depth reduction factor
+                // at 1.728 here; combined with the early-depth reduction factor
                 // ~1.7 that tripled the first-move budget - visible clock
                 // burn at short TC with no upside on an empty TT.)
                 double fallingEval = _bestPreviousAverageScore == ScoreNone
                     ? 1.0
-                    : Math.Clamp((71 + 25.0 * (_bestPreviousAverageScore - score)
-                                     + 12.5 * (_iterValue[iterIdx] - score)) / 656.7,
-                                 0.5, 1.5);
+                    : Math.Clamp((11.48 + 4.79 * (_bestPreviousAverageScore - score)
+                                        + 2.29 * (_iterValue[iterIdx] - score)) / 100.0,
+                                 0.576, 1.728);
 
-                // Stability: if the best move has not changed for 10
-                // iterations the position is decided - spend less; the factor
-                // also carries over to the next move via previousTimeReduction.
-                timeReduction = lastBestMoveDepth + 9 < depth ? 1.37 : 0.65;
-                double reduction = (1.4 + _previousTimeReduction) / (2.15 * timeReduction);
+                // Stability: the longer the best move has held, the less time
+                // the position needs; the factor also carries over to the next
+                // move via previousTimeReduction.
+                //
+                // This used to be a cliff at exactly 10 iterations (1.37 above,
+                // 0.65 below), which made a move stable for 9 iterations
+                // indistinguishable from one that had just changed, and one
+                // stable for 10 indistinguishable from one stable for 30. In
+                // the same measurements the resulting 'reduction' collapsed
+                // onto a single value on 85-90% of moves. The reference ramps
+                // it linearly over the stability age instead, which is what the
+                // two endpoints below encode; the clamp flattens it outside
+                // roughly [5, 17] iterations of age.
+                double stableAge = depth - lastBestMoveDepth;
+                timeReduction = Math.Clamp(
+                    0.639 + (1.712 - 0.639) * (stableAge - 4.96) / (18.79 - 4.96),
+                    0.629, 1.544);
+                double reduction = (1.468 + _previousTimeReduction) / (2.284 * timeReduction);
 
                 // Instability: each root best-move change (decayed per
                 // iteration) extends the budget. Neutral on the first move of
                 // the game: on an empty TT the root flaps between near-equal
                 // openings, and that flapping carries no urgency signal -
                 // extending for it just burns the clock before the game starts.
+                //
+                // The base is 1.077, not 1.0: the reference spends slightly
+                // over the nominal budget even on a perfectly stable root, and
+                // 93% of measured moves saw no root change at all, so that
+                // 7.7% applies to nearly every move of a game.
                 double bestMoveInstability = _bestPreviousAverageScore == ScoreNone
                     ? 1.0
-                    : 1 + 1.7 * totBestMoveChanges / SearchThreadCount;
+                    : 1.077 + 2.229 * totBestMoveChanges / SearchThreadCount;
 
                 double totalTime = _softTimeMs * fallingEval * reduction * bestMoveInstability;
 
@@ -789,18 +847,28 @@ public sealed class AlphaBetaSearch
                 // iterations will not change. Play it on a fraction of the
                 // budget and bank the clock rather than spend the full optimum
                 // on an obvious move. Only after a trustworthy depth.
-                if (depth >= EasyMoveMinDepth
+                bool easyMoveEligible = depth >= EasyMoveMinDepth
                     && Math.Abs(score) >= EasyMoveMargin
-                    && lastBestMoveDepth + EasyMoveStableDepth <= depth)
+                    && lastBestMoveDepth + EasyMoveStableDepth <= depth;
+                if (easyMoveEligible)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
 
                 // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.
-                // Prints the target, every factor applied to it, and what has
-                // actually been spent, so a disagreement between the arithmetic
-                // and the behaviour is visible instead of guessed at.
+                // Prints the target, every factor applied to it, the score and
+                // what has actually been spent, so a disagreement between the
+                // arithmetic and the behaviour is visible instead of guessed
+                // at. 'reason' distinguishes the two named early-exit paths
+                // (mate-stop has its own line above, since it breaks before
+                // reaching here) from a move that just naturally settled under
+                // budget for some OTHER reason - a TT-saturated, heavily
+                // repeated self-play position resolving in a couple of cheap
+                // iterations, for instance - which this alone cannot name, but
+                // ruling out the two known causes narrows it down by elimination.
+                string reason = easyMoveEligible ? "easy-move" : "budget";
                 if (TimeDebug)
                     Console.Out.WriteLine(
-                        $"info string TM d={depth} soft={_softTimeMs} fe={fallingEval:F3}"
+                        $"info string TM d={depth} score={score} reason={reason}"
+                      + $" soft={_softTimeMs} fe={fallingEval:F3}"
                       + $" red={reduction:F3} inst={bestMoveInstability:F3}"
                       + $" total={totalTime:F0} elapsed={ElapsedMs}"
                       + $" softDl={_softDeadlineMs} maxT={_maxTimeMs} hardT={_hardTimeMs}");
@@ -903,7 +971,7 @@ public sealed class AlphaBetaSearch
 
         _tt.Probe(board.ZobristKey, out TTEntry entry);
         MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+            contHist: default, counterMove: Move.None,
             captureHistory: _captureHistory);
 
         int bestScore = -Infinity;
@@ -1610,9 +1678,15 @@ public sealed class AlphaBetaSearch
         // A sufficiently deep TT lower bound far above beta can provide the
         // same evidence without repeating the capture probe.
         int smallProbBeta = beta + SmallProbCutMargin;
+        // Depth >= 1 is not redundant. Quiescence now writes its own results at
+        // depth 0 with a real bound, and at depth 4 the "depth - 4" test alone
+        // would let a quiescence score - a truncated, captures-only search -
+        // stand in for a ProbCut verification. Only entries from a real search
+        // qualify here.
         if (!inCheck && excluded == Move.None && ttHit
             && entry.Bound == BoundType.LowerBound
-            && entry.Depth >= depth - 4 && Math.Abs(beta) < MateBound)
+            && entry.Depth >= 1 && entry.Depth >= depth - 4
+            && Math.Abs(beta) < MateBound)
         {
             int ttScore = FromTT(entry.Score, ply);
             if (ttScore >= smallProbBeta && Math.Abs(ttScore) < MateBound)
@@ -1670,6 +1744,9 @@ public sealed class AlphaBetaSearch
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
         Move counterMove = prevPiece >= 0 ? _counterMoves[prevPiece, prevTo] : Move.None;
 
+        var contHist = new ContinuationContext(
+            prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
+
         Color stm = board.SideToMove;
         int originalAlpha = alpha;
         Move bestMove = Move.None;
@@ -1707,7 +1784,7 @@ public sealed class AlphaBetaSearch
                     int quietsFrom = moves.Count;
                     MoveGenerator.AppendQuietMoves(board, moves);
                     MovePicker.ScoreAndSortQuiets(moves, quietsFrom, sortFrom: i, board,
-                        _killers, _history, ply, _contHist, prevPiece, prevTo, counterMove,
+                        _killers, _history, ply, contHist, counterMove,
                         depth);
                 }
                 else
@@ -1733,7 +1810,7 @@ public sealed class AlphaBetaSearch
             // probed shallow anyway is pruned against that shallower horizon.
             int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
             int moveHistory = 2 * _history.Get(stm, move)
-                + (prevPiece >= 0 ? _contHist.Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
+                + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
             int lmrDepth = depth - 1;
             if (searched > 0)
             {
@@ -1954,7 +2031,7 @@ public sealed class AlphaBetaSearch
                             if (prevPiece >= 0)
                             {
                                 _counterMoves[prevPiece, prevTo] = move;
-                                _contHist.AddBonus(prevPiece, prevTo, piece, move.To, depth);
+                                _contHist[0].AddBonus(prevPiece, prevTo, piece, move.To, depth);
                             }
 
                             for (int q = 0; q < triedQuietCount; q++)
@@ -1963,10 +2040,10 @@ public sealed class AlphaBetaSearch
                                 if (tried == move)
                                     continue;
                                 _history.AddMalus(stm, tried, depth);
+                                int triedPiece =
+                                    ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From));
                                 if (prevPiece >= 0)
-                                    _contHist.AddMalus(prevPiece, prevTo,
-                                        ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
-                                        tried.To, depth);
+                                    _contHist[0].AddMalus(prevPiece, prevTo, triedPiece, tried.To, depth);
                             }
                         }
                         else if (move.IsCapture)
@@ -2114,8 +2191,52 @@ public sealed class AlphaBetaSearch
                 return alpha;
         }
 
+        // Quiescence used to ignore the transposition table completely, so
+        // every node here paid a full NNUE evaluation for its stand-pat even
+        // when the position had already been evaluated elsewhere in the tree.
+        // Profiling (2026-08-07) put 28.7% of engine time inside
+        // NnueInference.EvaluateInt16 and 31.6% inside quiescence; this is
+        // where the two overlap. The main search has cached its static eval in
+        // the TT since 5F - "revisits pay one cluster read, not a full
+        // evaluation" - and quiescence simply never got the same treatment.
+        //
+        // Static eval ONLY. No TT score cutoff and no TT move for ordering:
+        // both of those change WHICH nodes get searched, so they are a
+        // separate change with its own measurement, not a speed patch.
+        bool ttHit = _tt.Probe(board.ZobristKey, out TTEntry entry);
+        bool nonPv = beta - alpha == 1;
+        bool ttPv = !nonPv || (ttHit && entry.IsPv);
+
+        // Reference qsearch step 3: a stored bound from ANY earlier search of
+        // this position - main search or quiescence - already answers the
+        // question when it covers the window, so the node is finished before a
+        // single move is generated. Off the PV only, where a wrong cut cannot
+        // corrupt the reported line.
+        //
+        // No depth test is needed. The reference has to write DEPTH_UNSEARCHED
+        // (-2) on its eval-only entries and compare against DEPTH_QS (0) to
+        // tell them apart; TTEntry.Depth here is a BYTE and cannot hold a
+        // negative, so this engine marks eval-only entries with
+        // BoundType.None instead. Excluding that bound is the same test.
+        if (nonPv && ttHit && entry.Bound != BoundType.None
+            && CanReuseTtScore(entry.Score, board.HalfmoveClock))
+        {
+            int ttScore = FromTT(entry.Score, ply);
+            switch (entry.Bound)
+            {
+                case BoundType.Exact:
+                    return ttScore;
+                case BoundType.LowerBound when ttScore >= beta:
+                    return ttScore;
+                case BoundType.UpperBound when ttScore <= alpha:
+                    return ttScore;
+            }
+        }
+
         int bestScore;
         int futilityBase;
+        int rawEval = TTEntry.NoStaticEval;
+        Move bestMove = Move.None;
 
         if (inCheck)
         {
@@ -2132,8 +2253,38 @@ public sealed class AlphaBetaSearch
             // "Stand pat": the side to move is never forced to capture, so the
             // static evaluation is a floor for its score. If even doing nothing
             // beats beta, the opponent will avoid this line - cut immediately.
-            int rawEval = _evaluator.Evaluate(board);
+            if (ttHit && entry.StaticEval != TTEntry.NoStaticEval)
+            {
+                rawEval = entry.StaticEval;
+            }
+            else
+            {
+                rawEval = _evaluator.Evaluate(board);
+                // Cache it in an eval-only entry (depth 0, no bound, no move),
+                // exactly as the main search does on a miss, so the next visit
+                // to this position - from either search - skips the evaluator.
+                _tt.Store(board.ZobristKey, 0, 0, rawEval,
+                          BoundType.None, Move.None, ttPv);
+            }
+
             bestScore = _corrections.Correct(board, rawEval, ContinuationCorrectionKey(ply));
+
+            // A stored SCORE beats the static evaluation as a stand-pat floor
+            // when its bound points the right way: it came from a real search
+            // of this position, the eval is only a guess about it. Decisive
+            // scores are excluded - a mate or tablebase value is relative to
+            // its own root distance and does not belong in a stand-pat.
+            if (ttHit && entry.Bound != BoundType.None
+                && CanReuseTtScore(entry.Score, board.HalfmoveClock))
+            {
+                int ttScore = FromTT(entry.Score, ply);
+                bool pointsUp = entry.Bound is BoundType.LowerBound or BoundType.Exact;
+                bool pointsDown = entry.Bound is BoundType.UpperBound or BoundType.Exact;
+                if (Math.Abs(ttScore) < MateBound
+                    && (ttScore > bestScore ? pointsUp : pointsDown))
+                    bestScore = ttScore;
+            }
+
             if (bestScore >= beta)
                 return bestScore;
             if (bestScore > alpha)
@@ -2147,7 +2298,7 @@ public sealed class AlphaBetaSearch
         MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: !inCheck);
         if (inCheck)
             MovePicker.Order(moves, board, Move.None, _killers, _history, ply,
-                contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+                contHist: default, counterMove: Move.None,
                 captureHistory: _captureHistory);
         else
             MovePicker.ScoreAndSortCapturesQs(moves, board, _captureHistory);
@@ -2232,6 +2383,7 @@ public sealed class AlphaBetaSearch
                 bestScore = score;
                 if (score > alpha)
                 {
+                    bestMove = move;
                     if (score >= beta)
                         break; // Fail high; fail-soft returns bestScore below.
                     alpha = score;
@@ -2254,6 +2406,23 @@ public sealed class AlphaBetaSearch
             if (!MoveGenerator.HasLegalMove(board, moves))
                 return 0;
         }
+
+        // Save what this node learned, so the next visit can take the cutoff
+        // above instead of repeating the whole capture sequence. Depth 0 with
+        // a REAL bound is what distinguishes a quiescence result from the
+        // eval-only entries written further up (BoundType.None).
+        //
+        // Never EXACT: quiescence searches a truncated move list, so its score
+        // is a bound on the true value, never the value itself. The reference
+        // stores LOWER or UPPER here for the same reason.
+        //
+        // The mate-score paths above return without storing - a mate found
+        // here is relative to this ply and the store would need the root
+        // distance folded in, which is what ToTT does but only for scores this
+        // node actually searched for.
+        _tt.Store(board.ZobristKey, 0, ToTT(bestScore, ply), rawEval,
+                  bestScore >= beta ? BoundType.LowerBound : BoundType.UpperBound,
+                  bestMove, ttPv);
 
         return bestScore;
     }

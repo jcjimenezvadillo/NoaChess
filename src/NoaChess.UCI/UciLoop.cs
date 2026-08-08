@@ -89,6 +89,17 @@ public sealed class UciLoop
         if (_engine.TryLoadNnueModel(bytes.AsSpan(), out string error))
         {
             _output.WriteLine($"info string NNUE embedded model loaded ({_engine.NnueModelSha256})");
+            // Which SIMD path the evaluator will actually take. The engine
+            // branches on Avx2.IsSupported in seven places and never said so,
+            // which makes a whole class of problem invisible: the lichess bot
+            // runs the osx-x64 build under Rosetta, where AVX2 does not exist,
+            // so it silently takes the scalar path - a path that is known NOT
+            // to be bit-identical to the AVX2 one. Two machines can therefore
+            // play different moves from the same position with no way to tell
+            // from any log. One line at startup makes it obvious forever.
+            _output.WriteLine("info string NNUE SIMD path: "
+                            + (System.Runtime.Intrinsics.X86.Avx2.IsSupported
+                               ? "AVX2" : "scalar (no AVX2 on this machine)"));
             // Auto-enable unless the GUI sent "setoption name UseNNUE value false" first.
             if (!_options.UseNnueExplicitlySet || _options.UseNnue)
                 _engine.SetUseNnue(true);

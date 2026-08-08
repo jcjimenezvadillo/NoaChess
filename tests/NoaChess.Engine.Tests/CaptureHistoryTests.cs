@@ -1,4 +1,4 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 using NoaChess.Engine.Heuristics;
 
 namespace NoaChess.Engine.Tests;
@@ -81,7 +81,7 @@ public class CaptureHistoryTests
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 0, sortFrom: 0, board,
             new KillerTable(1), new HistoryTable(), ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None);
+            contHist: default, counterMove: Move.None);
 
         Assert.Equal(check, moves[0]);
         Assert.True(moves.Scores[0] >= 16_384);
@@ -100,7 +100,7 @@ public class CaptureHistoryTests
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 0, sortFrom: 0, board,
             new KillerTable(1), new HistoryTable(), ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None);
+            contHist: default, counterMove: Move.None);
 
         Assert.Equal(escapesRook, moves[0]);
         Assert.True(moves.Scores[0] >= 18_000); // Queen value 900 x weight 20.
@@ -119,7 +119,7 @@ public class CaptureHistoryTests
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 0, sortFrom: 0, board,
             new KillerTable(1), new HistoryTable(), ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None);
+            contHist: default, counterMove: Move.None);
 
         Assert.Equal(staysSafe, moves[0]);
         Assert.Equal(-6_400, moves.Scores[1]); // Knight value 320 x weight 20.
@@ -157,7 +157,7 @@ public class CaptureHistoryTests
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 0, sortFrom: 0, board,
             new KillerTable(1), history, ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+            contHist: default, counterMove: Move.None,
             depth: 1);
 
         Assert.Equal(highest, moves[0]);
@@ -185,7 +185,7 @@ public class CaptureHistoryTests
         MovePicker.ScoreAndSortQuiets(
             moves, quietsFrom: 1, sortFrom: 0, board,
             new KillerTable(1), history, ply: 0,
-            contHist: null, prevPiece: -1, prevTo: 0, counterMove: Move.None,
+            contHist: default, counterMove: Move.None,
             depth: 3);
 
         Assert.Equal(lowQuiet, moves[0]);
