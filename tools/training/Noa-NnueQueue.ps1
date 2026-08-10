@@ -25,18 +25,28 @@ param(
     #
     # So each entry below is factorized, and differs from the fact60 BASELINE in
     # exactly one thing. Read every result as "on top of factorization".
+    # THE BASELINE MOVED AGAIN, and this is the second time. fact60 beat ds1e60
+    # by +195.4, then fq60 (factorization + quantization-aware training) beat
+    # fact60 by +23.5. Every candidate below therefore carries BOTH, and differs
+    # from the fq60 baseline in exactly one further thing. Read each result as
+    # "on top of the best net there is".
+    #
+    # fq60 itself is DONE: trained, exported, SPRT'd at +23.5 +/- 15.5 and
+    # shipped in the 4.6.2 builds. It is not in this list, and putting it back
+    # would just retrain it - which is exactly what happened on 2026-08-10 when
+    # a watcher restarted this queue from the top and burned 2.5 hours.
     [object[]]$Queue = @(
-        @{ Name = "fq60";   Switches = @("-Factorized", "-Qat"); Why = "quantization-aware training on top" }
-        @{ Name = "fwd0";   Switches = @("-Factorized", "-FtWeightDecay", "0"); Why = "no weight decay on the transformer, on top" }
-        @{ Name = "floss";  Switches = @("-Factorized", "-LossStyle", "reference"); Why = "reference loss, on top" }
-        @{ Name = "fe120";  Switches = @("-Factorized", "-Epochs", "120"); Why = "double the training budget, on top" }
-        @{ Name = "flam";   Switches = @("-Factorized", "-StartLambda", "1.0", "-EndLambda", "0.7"); Why = "lambda schedule, on top" }
+        @{ Name = "fqwd0";  Switches = @("-Factorized", "-Qat", "-FtWeightDecay", "0"); Why = "no weight decay on the transformer, on top of fq60" }
+        @{ Name = "fqe120"; Switches = @("-Factorized", "-Qat", "-Epochs", "120"); Why = "double the training budget, on top of fq60" }
+        @{ Name = "fqloss"; Switches = @("-Factorized", "-Qat", "-LossStyle", "reference"); Why = "reference loss, on top of fq60" }
+        @{ Name = "fqlam";  Switches = @("-Factorized", "-Qat", "-StartLambda", "1.0", "-EndLambda", "0.7"); Why = "lambda schedule, on top of fq60" }
     ),
 
-    # The file list still comes from ds1e60 because fact60 inherited it, so both
-    # checkpoints carry the same 70 files. The SPRT opponent is what changed.
+    # The file list still comes from ds1e60, because fact60 and fq60 both
+    # inherited it, so all three checkpoints saw the same 70 files. Only the
+    # SPRT opponent changed.
     [string]$Baseline = "checkpoints\ds1e60.pt",
-    [string]$BaselineNet = "noa-fact60",
+    [string]$BaselineNet = "noa-fq60",
     [switch]$Promote,
     [switch]$SkipSprt
 )
@@ -98,6 +108,9 @@ foreach ($candidate in $Queue) {
     $template = $template -replace 'noa-fact60\.noannue', "noa-$name.noannue"
     $template = $template -replace 'noa-ds1e60\.noannue', "$BaselineNet.noannue"
     $template = $template -replace 'name=fact60', "name=$name"
+    # The opponent's label too: without this the PGN records the baseline as
+    # ds1e60 when it is fq60, and a mislabelled PGN is worse than no PGN.
+    $template = $template -replace 'name=ds1e60', "name=$($BaselineNet -replace '^noa-','')"
     $template = $template -replace 'sprt_fact60_vs_ds1e60\.pgn', "sprt_$name.pgn"
     Set-Content -Path $bat -Value $template -Encoding ASCII
     Write-Log "    SPRT: $bat"
