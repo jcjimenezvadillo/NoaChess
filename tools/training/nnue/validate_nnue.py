@@ -18,7 +18,10 @@ from train_nnue import wdl_target
 def quantized_eval(model, stm_feats, opp_feats):
     """Integer forward pass mirroring NnueInference.EvaluateScalar (float
     simulation of the exact rounding steps)."""
-    ft_w = np.round(model.ft.weight.detach().numpy() * QA)
+    # The FOLDED table, which is what the engine will hold. Reading ft.weight
+    # directly would skip the virtual rows on a factorized net and simulate a
+    # net that is never exported.
+    ft_w = np.round(model.fold_features().numpy() * QA)
     ft_b = np.round(model.ft_bias.detach().numpy() * QA)
     l1_w = np.round(model.l1.weight.detach().numpy() * QB)
     l1_b = np.round(model.l1.bias.detach().numpy() * QA * QB)
@@ -50,7 +53,19 @@ def main():
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     ckpt_args = checkpoint.get("args", {})
-    model = NoaNnue(ckpt_args.get("ft_out", FT_OUT), ckpt_args.get("l1_out", L1_OUT))
+    buckets = max(1, ckpt_args.get("out_buckets", 1))
+    if buckets > 1:
+        # quantized_eval below reads a single output row and bias, so a bucketed
+        # checkpoint would have to pick the bucket per position. Say so here
+        # rather than fail three screens later inside numpy.
+        raise SystemExit(f"checkpoint has {buckets} output buckets; this script "
+                         f"only simulates the single-bucket head.")
+    # qat is carried through so the reported loss describes the net the ENGINE
+    # runs. Without it a quantization-aware run would be scored on a float
+    # forward pass it was never trained to produce.
+    model = NoaNnue(ckpt_args.get("ft_out", FT_OUT), ckpt_args.get("l1_out", L1_OUT),
+                    buckets, bool(ckpt_args.get("factorized", False)),
+                    bool(ckpt_args.get("qat", False)), ckpt_args.get("qa", QA))
     model.load_state_dict(checkpoint["model"])
     model.eval()
     lam = checkpoint["args"].get("lam", 0.7)
