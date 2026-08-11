@@ -97,4 +97,55 @@ public class VoteBestResultTests
 
         Assert.Equal(fastMate, chosen.BestMove);
     }
+
+    [Fact]
+    public void HelperThatBelievesItIsMatedDoesNotWinTheVote()
+    {
+        // "Decisive" was tested with Math.Abs, so a worker reporting a forced
+        // LOSS satisfied it - and that test short-circuits the vote outright,
+        // ahead of any score comparison. One worker announcing its own defeat
+        // took the move away from every other worker on the board.
+        Move sane = MoveOf(12, 28);
+        Move losing = MoveOf(11, 27);
+
+        SearchResult chosen = Vote(
+            new SearchResult(sane, -120, 400_000, 14),
+            new SearchResult(losing, -AlphaBetaSearch.MateScore + 6, 90_000, 14));
+
+        Assert.Equal(sane, chosen.BestMove);
+    }
+
+    [Fact]
+    public void AmongLostLinesTheFastestMateIsNotPreferred()
+    {
+        // The follow-on half of the same defect: once a lost result held the
+        // lead, the decisive branch kept whichever had the largest |score|,
+        // which among losses is the SHORTEST mate. Given only bad news the
+        // vote actively chose to be mated sooner. The main worker's result
+        // stands instead.
+        Move matedIn20 = MoveOf(12, 28);
+        Move matedIn2 = MoveOf(11, 27);
+
+        SearchResult chosen = Vote(
+            new SearchResult(matedIn20, -AlphaBetaSearch.MateScore + 40, 100_000, 12),
+            new SearchResult(matedIn2, -AlphaBetaSearch.MateScore + 4, 120_000, 12));
+
+        Assert.Equal(matedIn20, chosen.BestMove);
+    }
+
+    [Fact]
+    public void AWinningWorkerStillOverrulesALostOne()
+    {
+        // The sign fix must not cost the vote its point: a worker that found a
+        // forced win has to be able to take the move from a worker that only
+        // sees a loss, whatever the ordinary weighting says.
+        Move lost = MoveOf(12, 28);
+        Move mateFound = MoveOf(11, 27);
+
+        SearchResult chosen = Vote(
+            new SearchResult(lost, -AlphaBetaSearch.MateScore + 10, 400_000, 14),
+            new SearchResult(mateFound, AlphaBetaSearch.MateScore - 8, 90_000, 14));
+
+        Assert.Equal(mateFound, chosen.BestMove);
+    }
 }
