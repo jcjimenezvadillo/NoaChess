@@ -29,7 +29,22 @@ public sealed class ContinuationHistory
     // is not semantic fidelity, so the bound is measured rather than copied.
     private const int MaxScore = 8192;
 
-    private readonly int[] _scores = new int[12 * 64 * 12 * 64];
+    // short, not int, and the reason is 5G rather than tidiness.
+    //
+    // Entries are bounded at +-MaxScore = 8192 by the gravity rule above, which
+    // fits a short with room to spare, so the int was paying four bytes to store
+    // fourteen bits. That was affordable while the search kept ONE of these
+    // tables. Multi-level continuation history keeps SIX, and at 4 bytes that is
+    // 14.2 MB of working set on the hottest lookup in move ordering; at 2 it is
+    // 7.1 MB. This engine has measured before that layout beats algorithm here -
+    // flattening the history and piece tables was worth +6.1% nps at identical
+    // node counts - so halving the footprint of the biggest table is the first
+    // thing to try against the cost 5G adds.
+    //
+    // Behaviour must not move. The values stored are the same integers as
+    // before, so node counts have to come out byte-identical; if they do not,
+    // the change is wrong rather than merely slow.
+    private readonly short[] _scores = new short[12 * 64 * 12 * 64];
 
     public static int PieceIndex(Color color, PieceType type) => (int)color * 6 + (int)type;
 
@@ -93,7 +108,19 @@ public sealed class ContinuationHistory
     private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
         bonus = Math.Clamp(bonus, -MaxScore, MaxScore);
-        ref int score = ref _scores[Index(prevPiece, prevTo, piece, to)];
-        score += bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
+        ref short score = ref _scores[Index(prevPiece, prevTo, piece, to)];
+
+        // Computed in int and stored in short. The arithmetic is identical to
+        // the int version - same operands, same order, same truncation - so the
+        // stored value is the same integer it always was.
+        //
+        // The clamp is a belt on top of braces. The gravity rule keeps entries
+        // inside +-MaxScore by construction (at score = MaxScore the decay term
+        // exactly cancels the bonus), but "by construction" is what was said
+        // about the v2.8.2 gravity that turned out to be inert, so the invariant
+        // is enforced rather than trusted. Reaching it would mean the rule is
+        // broken, and silently wrapping a short is the worst way to find out.
+        int updated = score + bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
+        score = (short)Math.Clamp(updated, -MaxScore, MaxScore);
     }
 }
