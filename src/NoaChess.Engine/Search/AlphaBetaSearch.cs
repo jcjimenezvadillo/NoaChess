@@ -256,7 +256,40 @@ public sealed class AlphaBetaSearch
     // The ORDERING read sums every active level with equal weight. The
     // statScore consumer used by pruning deliberately keeps reading level 0
     // only, so this change cannot move the pruning thresholds as a side effect.
-    private readonly ContinuationHistory[] _contHist = [new ContinuationHistory()];
+    // One INDEPENDENT table per ply-distance, 1 to 6 back. Independence is the
+    // whole point: a single shared table cost -26 Elo when 5G first tried this,
+    // because every distance writes the same entry and the levels destroy each
+    // other. Index i holds the table keyed on the move (i + 1) plies back.
+    private readonly ContinuationHistory[] _contHist =
+    [
+        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
+        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
+    ];
+
+    // The reference's per-distance write weights, out of 1024. A move one ply
+    // back explains a reply far better than one six plies back, so the bonuses
+    // are not credited equally. Read side stays flat; only the write is weighted.
+    private static readonly int[] ContHistWeights = [1040, 780, 290, 502, 132, 418];
+
+    // Victim values for the capture half of statScore, indexed by the same slot
+    // CaptureHistory.VictimIndex produces (6 = no victim). These are VALUE terms,
+    // not margins, so they carry the project's x0.48 scale against the
+    // reference's PieceValue table rather than being copied raw.
+    private static readonly int[] StatScoreVictimValues =
+        [98, 384, 402, 605, 1164, 0, 0];
+
+    private static int StatScoreVictimValue(int victimIndex) => StatScoreVictimValues[victimIndex];
+
+    // One continuation level read for the move about to be searched, or 0 when
+    // that distance has no usable previous move (root, after a null move, or not
+    // yet deep enough). 'distance' is 0-based: 0 is one ply back.
+    private int ContLevel(int distance, int ply, int piece, int to)
+    {
+        int back = ply - 1 - distance;
+        return back >= 0 && _stackPiece[back] >= 0
+            ? _contHist[distance].Get(_stackPiece[back], _stackTo[back], piece, to)
+            : 0;
+    }
     private readonly CaptureHistory _captureHistory = new();
     private readonly CorrectionHistorySet _corrections = new();
 
@@ -1862,23 +1895,80 @@ public sealed class AlphaBetaSearch
         // window. If none comes close, the TT move is "singular" - the only
         // move holding the position - and deserves an extra ply, because
         // getting forced lines right is what wins/saves games.
+        // REBUILT 2026-08-14 against the reference source, because the version
+        // that lived here implemented about a quarter of the mechanism and the
+        // block was then buried on four SPRTs (worst -19.7) as "singular does
+        // not work in this engine". What was actually measured:
+        //
+        //   - the margin was `2 * depth`, an invented number. The reference uses
+        //     `(59 + 66 * (ttPv && !PvNode)) * depth / 63`, which at depth 8 is
+        //     7.5 against this engine's 16. Twice the margin puts singularBeta
+        //     twice as far below the TT score, so `score < singularBeta` almost
+        //     never held and the extension almost never fired. Margins are ported
+        //     RAW - they are not eval terms and do not take the 0.48 scale.
+        //   - MULTI-CUT was missing entirely. That is not an extension at all, it
+        //     is pruning: when the verification search fails high over beta the
+        //     whole subtree returns immediately. Very likely the larger half of
+        //     the mechanism's value, and it was simply absent.
+        //   - NEGATIVE extensions were missing: when the move is probably not
+        //     singular, the reference REDUCES it by 2 or 3 plies.
+        //   - double and triple extensions were missing.
+        //   - the depth gate was 8 flat instead of 6 + ttPv.
+        //
+        // Two terms of the reference's double/triple margins are dropped because
+        // this engine has no equivalent: its raw correction value and its ttMove
+        // history. Both enter as subtractions, so dropping them makes the margins
+        // slightly larger and the double/triple tiers fire slightly LESS often.
+        // Conservative in the right direction, and recorded rather than hidden.
         int singularExtension = 0;
-        if (depth >= 8 && excluded == Move.None && ttMove != Move.None
+        bool multiCut = false;
+        int multiCutScore = 0;
+        if (depth >= 6 + (ttPv ? 1 : 0) && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
             && CanReuseTtScore(entry.Score, board.HalfmoveClock))
         {
             int ttScore = FromTT(entry.Score, ply);
             if (Math.Abs(ttScore) < MateBound)
             {
-                int singularBeta = ttScore - 2 * depth;
+                int singularBeta = ttScore - (59 + 66 * ((ttPv && nonPv) ? 1 : 0)) * depth / 63;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
                                     ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
                     return 0;
+
                 if (score < singularBeta)
-                    singularExtension = 1;
+                {
+                    // Singular, and by how much: the further the rest of the
+                    // moves fall below the window, the more this one is the only
+                    // move holding the position.
+                    int pv = nonPv ? 0 : 1;
+                    int notTtCapture = ttMove.IsCapture ? 0 : 1;
+                    int doubleMargin = -2 + 204 * pv - 152 * notTtCapture;
+                    int tripleMargin = 70 + 279 * pv - 188 * notTtCapture + 81 * (ttPv ? 1 : 0);
+
+                    singularExtension = 1
+                        + (score < singularBeta - doubleMargin ? 1 : 0)
+                        + (score < singularBeta - tripleMargin ? 1 : 0);
+                    depth++;
+                }
+                else if (score >= beta && Math.Abs(score) < MateBound)
+                {
+                    // Multi-cut. The TT move was expected to fail high, and
+                    // WITHOUT it the rest of the moves still fail high over the
+                    // real beta: several moves are good enough, so this node is
+                    // not singular and the whole subtree can be cut.
+                    multiCut = true;
+                    multiCutScore = score;
+                }
+                else if (ttScore >= beta)
+                    singularExtension = -3;
+                else if (cutNode)
+                    singularExtension = -2;
             }
         }
+
+        if (multiCut)
+            return multiCutScore;
 
         // ---- Staged move picking ----
         // Legality is checked lazily at make time (like quiescence does), and
@@ -1908,8 +1998,22 @@ public sealed class AlphaBetaSearch
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
         Move counterMove = prevPiece >= 0 ? _counterMoves[(prevPiece * 64) + prevTo] : Move.None;
 
+        // Distances 1, 2, 3, 4 and 6 are read; distance 5 is maintained and not
+        // consulted here, exactly as the reference has it.
+        ContinuationHistory? Level(int distance)
+        {
+            int back = ply - distance;
+            return back >= 0 && _stackPiece[back] >= 0 ? _contHist[distance - 1] : null;
+        }
+        int PieceAt(int distance) => ply - distance >= 0 ? _stackPiece[ply - distance] : -1;
+        int ToAt(int distance) => ply - distance >= 0 ? _stackTo[ply - distance] : 0;
+
         var contHist = new ContinuationContext(
-            prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
+            Level(1), PieceAt(1), ToAt(1),
+            Level(2), PieceAt(2), ToAt(2),
+            Level(3), PieceAt(3), ToAt(3),
+            Level(4), PieceAt(4), ToAt(4),
+            Level(6), PieceAt(6), ToAt(6));
 
         Color stm = board.SideToMove;
         int originalAlpha = alpha;
@@ -2085,10 +2189,41 @@ public sealed class AlphaBetaSearch
                     int r = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
                     if (nonPv) r += LmrScale;            // Reduce harder off the PV.
 
-                    // No butterfly-history term here - three variants were tested
-                    // and rejected; see the LmrReductions block above. "This move
-                    // is good" is expressed only through the killer/counter
-                    // shallowing below, which is measured net positive.
+                    // 5C statScore term, REOPENED 2026-08-14.
+                    //
+                    // Buried at -18 Elo (H0) as "statScore, continuous, biased to
+                    // LESS reduction". That measurement cannot stand, for a reason
+                    // that is structural rather than statistical: the reference's
+                    // statScore reads TWO continuation levels,
+                    //
+                    //   (2252*mainHistory + 1126*contHist[0] + 1093*contHist[1]) / 1024
+                    //
+                    // and until the multi-level tables were built today this engine
+                    // HAD NO contHist[1]. The term was fed a signal missing half of
+                    // its continuation content, so what was measured was a crippled
+                    // formula, not the reference's. On top of that the run predates
+                    // the v4.4.0 killer/counter fix, which was worth +8.0 and which
+                    // the ROADMAP already blames for the neighbouring 5G zero.
+                    //
+                    // Captures get a statScore too in the reference, from the victim
+                    // and the capture history; that half was never ported either.
+                    //
+                    // SCALE. Our history tables run at about 0.28x the reference's
+                    // range (contHist p99 630), which is why StatScoreOffset is its
+                    // 4433 x 0.28. Here the constant MULTIPLIES our statScore rather
+                    // than being compared against it, so it goes the other way:
+                    // 439 / 0.28 = 1568. Same rule, opposite direction, and the rule
+                    // is applied at the consumer site as this project learned to.
+                    int statScore = move.IsCapture
+                        ? 873 * StatScoreVictimValue(CaptureHistory.VictimIndex(board, move)) / 128
+                          + _captureHistory.Get(movePieceIdx, move.To,
+                                                CaptureHistory.VictimIndex(board, move))
+                        : (2252 * _history.Get(stm, move)
+                           + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
+                           + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
+                    r -= statScore * 1568 / 4096;
+
+                    // Killer/counter shallowing, kept: measured net positive.
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
                         r -= LmrScale;
 
@@ -2202,9 +2337,22 @@ public sealed class AlphaBetaSearch
                             // read from the same square of the same position,
                             // and the board has been unmade above.
                             if (prevPiece >= 0)
-                            {
                                 _counterMoves[(prevPiece * 64) + prevTo] = move;
-                                _contHist[0].AddBonus(prevPiece, prevTo, movePieceIdx, move.To, depth);
+
+                            // All six distances are credited, each with its own
+                            // weight. In check only the two nearest are touched:
+                            // a forced sequence says little about what was
+                            // happening five plies ago, and the reference stops
+                            // there for the same reason.
+                            int levels = inCheck ? 2 : ContHistWeights.Length;
+                            for (int d = 0; d < levels; d++)
+                            {
+                                int back = ply - 1 - d;
+                                if (back < 0 || _stackPiece[back] < 0)
+                                    continue;
+                                _contHist[d].AddWeighted(_stackPiece[back], _stackTo[back],
+                                                         movePieceIdx, move.To, depth,
+                                                         ContHistWeights[d]);
                             }
 
                             for (int q = 0; q < triedQuietCount; q++)
@@ -2215,8 +2363,15 @@ public sealed class AlphaBetaSearch
                                 _history.AddMalus(stm, tried, depth);
                                 int triedPiece =
                                     ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From));
-                                if (prevPiece >= 0)
-                                    _contHist[0].AddMalus(prevPiece, prevTo, triedPiece, tried.To, depth);
+                                for (int d = 0; d < levels; d++)
+                                {
+                                    int back = ply - 1 - d;
+                                    if (back < 0 || _stackPiece[back] < 0)
+                                        continue;
+                                    _contHist[d].AddWeightedMalus(_stackPiece[back], _stackTo[back],
+                                                                  triedPiece, tried.To, depth,
+                                                                  ContHistWeights[d]);
+                                }
                             }
                         }
                         else if (move.IsCapture)

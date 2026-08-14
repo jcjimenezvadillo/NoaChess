@@ -50,6 +50,17 @@ public sealed class ContinuationHistory
     public void AddMalus(int prevPiece, int prevTo, int piece, int to, int depth)
         => Update(prevPiece, prevTo, piece, to, -depth * depth);
 
+    // Weighted variant, for the multi-level update. The reference does not credit
+    // every ply-distance equally: the move one ply back explains a reply far
+    // better than the move six plies back, so its bonuses carry weights
+    // {1040, 780, 290, 502, 132, 418} out of 1024. Kept as a separate entry
+    // point so the single-level callers stay byte-identical.
+    public void AddWeighted(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
+        => Update(prevPiece, prevTo, piece, to, depth * depth * weight / 1024);
+
+    public void AddWeightedMalus(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
+        => Update(prevPiece, prevTo, piece, to, -depth * depth * weight / 1024);
+
     private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
         bonus = Math.Clamp(bonus, -MaxScore, MaxScore);
