@@ -3,10 +3,85 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Key finding:** the dominant lever is datagen label depth (`--nodes`), not the
-generational loop itself. gen2–gen4 all used 14000-node labels and made small
-steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and jumped +34. Deeper
-labels = stronger teacher = bigger step.
+---
+
+## Estado a 2026-08-11: la red que juega es `fq60`, y mide 3271 ±40 CCRL
+
+**+128 sobre los 3143 de v4.5.0**, y el primer salto del proyecto que sale
+limpiamente fuera de la barra de error de su versión vecina. No vino de la
+arquitectura ni de más generaciones: vino de **arreglar el entrenador**.
+
+| cambio | medido |
+|---|---|
+| factorización de características | **+195,4 ±57,5** SPRT, H1 en 102 partidas &middot; **+128** en el campo |
+| entrenamiento consciente de la cuantización | **+23,5 ±15,5** encima de lo anterior |
+
+**El defecto se midió antes de arreglarlo:** el **85,6%** del transformador de
+características se cuantizaba a exactamente cero, 2.221 de 22.528 características
+estaban muertas, y atribuyendo el error por etapas salían **38,77 cp del
+transformador contra 4,9 de la cabeza** sobre una evaluación media de 231 cp. El
+motor jugaba un 16,6% lejos de la red que se había entrenado. Tras factorizar:
+ceros 85,6% → 21,3%, error 38,79 → 17,63 cp, y las características muertas caen
+a **exactamente 1.024**, que son las estructuralmente imposibles (peones en las
+filas 1 y 8), o sea que ninguna característica legal se ignora.
+
+**Conversión SPRT propio → campo: +195,4 se quedó en +128.** Anotarlo antes de
+prometer nada a partir de un SPRT contra uno mismo.
+
+### Tres ejes medidos, y los tres apuntan al corpus
+
+| eje | medido | cómo |
+|---|---|---|
+| mejores ETIQUETAS | **+22,1** [+6,8, +35,9] | prueba del profesor, 1.288 partidas |
+| más DATOS a igual cómputo | **+182** ±16,6 | calibración de escala, LOS 100% |
+| más CAPACIDAD (ancho 256) | **−30,3** [−52,4, −8,5] | `fqw256`, H0 en 494 partidas |
+
+**El cuello de botella es el corpus, no la forma de la red.** En curso: regenerar
+las 324.297.032 posiciones con `fq60` como profesor (~60 h), todo idéntico al
+corpus viejo salvo quién etiqueta.
+
+### Dos conclusiones de este fichero quedan ANULADAS
+
+**1. "Do not re-propose network capacity" sigue en pie, pero por otro motivo.**
+Se escribió cuando el ancho 512 midió −76/−93 con el entrenador roto. Reabrí el
+eje el 2026-08-11 argumentando que esa medida estaba viciada, porque ensanchar
+empeora justo el defecto que la factorización arregló: la misma señal repartida
+entre más neuronas da pesos más pequeños, y los pesos pequeños son los que la
+cuantización borra. **El argumento era razonable y estaba equivocado**: con
+factorización y QAT, el ancho 256 sigue perdiendo 30 Elo. Ahora el eje está
+cerrado con evidencia válida.
+
+**2. "El self-play está agotado" era FALSO.** Cinco generaciones planas dieron esa
+conclusión, medidas con el entrenador que cuantizaba a cero el 85,6% del
+transformador: una generación podía salir plana porque la red no podía aprovechar
+mejores etiquetas, no porque no las hubiera. Repetido con el entrenador arreglado,
+el profesor nuevo gana **+22,1**.
+
+### Lo que viene
+
+`fqb1`/`fqb8` (buckets de salida con su control int8 - un net con buckets solo se
+exporta como arch 3, que es int8 con QA=127, así que medirlo contra `fq60` que es
+arch 1 movería dos variables), luego `fqwd0`, `fqe120`, `fqloss`, `fqlam`. Después,
+**características de amenazas**: la referencia añade a HalfKA un juego entero de
+60.720 dimensiones con 128 activas que codifica qué pieza ataca a cuál, y nosotros
+no tenemos nada de eso. Es contenido de evaluación, no capacidad, que es
+justamente lo que la tabla de arriba dice que falta.
+
+---
+
+## Historia anterior (generaciones gen2-gen9, hasta v4.5.0)
+
+> Todo lo que sigue describe la era generacional y **termina en gen9 / v4.5.0**.
+> Se conserva porque documenta como se llego hasta aqui y que se descarto por el
+> camino, pero las cifras vigentes son las de arriba. Donde una conclusion de
+> esta seccion haya quedado anulada, hay una nota citando la medida que la anulo.
+
+**Key finding of that era:** the dominant lever looked like datagen label depth
+(`--nodes`), not the generational loop itself. gen2–gen4 all used 14000-node
+labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
+jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
+positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
+network was starved of DATA and label depth was never the binding constraint.
 
 Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
@@ -14,16 +89,38 @@ absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engin
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
 NNUE off) ≈ 3020–3035 CCRL.
 
-| Version | Gen | Datagen nodes | Direct step measured | vs Classical (direct SPRT) | CCRL (gauntlet) |
-|---------|-----|--------------|----------------------|----------------------------|-----------------|
-| NNUE-0.2 | gen2 | 14000 | +1.9 vs classical (H1) | +1.9 | - |
-| NNUE-0.3 | gen3 | 14000 | +6.2 ±11.3 vs classical (2707g, LOS 85.8%) | +6.2 | - |
-| NNUE-0.4 | gen4 | 14000 | +3.5 ±9.9 vs gen3 (3000g, LOS 75.3%) | +9.1 ±13.4 (1950g) | - |
-| NNUE-0.5 | gen5 | 20000 | +34.0 ±14.4 vs gen4 (1495g, LOS 100%) | ~+15 (see note) | **~3050 ±40** |
-| NNUE-0.6 | gen6 | 24000 | not promoted (score drifted to 0.494 at 800g, stopped; teacher stays gen5) | - | - |
-| NNUE-0.7 | gen7 | 28000 | +3.7 ±10.2 vs gen5 (3000g, LOS 76.2%, parity - not a formal H1) | +28.5 ±13.0 (2176g, LOS 100%) | **~3080 ±40** |
-| - | gen8 | 6000 | **not promoted** (SPRT vs gen7 stopped at H0, 198g; blunder rate TRIPLED in real games) | - | gauntlet started and abandoned |
-| NNUE-0.9 | gen9 | 6000 | **+18 Elo vs gen7 (1178g, H1 accepted, LLR 2.97)** - same corpus as gen8, only epochs 6→60 | **~3114** (v4.4.0 gauntlet, 600g) | **SHIPPED (v4.3.1, v4.4.0)** |
+**MAS RECIENTE ARRIBA.** La tabla iba en orden ascendente y lo que se consulta
+es siempre la ultima red, no la primera.
+
+**Y a partir de `fact60` el eje deja de ser generacional.** Las filas de gen2 a
+gen9 se distinguen por QUIEN etiqueto los datos y a cuantos nodos; las de abajo
+se distinguen por COMO SE ENTRENA la red sobre datos que no cambian. Por eso la
+columna de nodos se queda fija en 6000 y aparece una de "que cambia".
+
+| Red | Motor | Que cambia | Paso medido | CCRL (gauntlet) |
+|---|---|---|---|---|
+| **NNUE-1.1 `fq60`** | v4.6.2, v4.7.0 | factorizacion **+ entrenamiento consciente de la cuantizacion** | **+23,5 ±15,5 vs fact60**, H1 | **3271 ±40** (600 partidas, 75,7%) |
+| **NNUE-1.0 `fact60`** | v4.6.2 (no publicada sola) | **factorizacion de caracteristicas**: 704 caracteristicas virtuales (pieza, casilla) plegadas EXACTAMENTE en sus 32 copias al exportar | **+195,4 ±57,5 vs ds1e60**, LOS 100%, H1 en 102 partidas | - (la midio fq60) |
+| `ds1e60` | v4.4.0-v4.5.0 base | 60 epocas sobre el corpus completo de 324M | base de comparacion de la campana | - |
+| **NNUE-0.9 `gen9`** | v4.3.1, v4.4.0, v4.5.0 | mismo corpus que gen8, solo epocas 6 &rarr; 60 | **+18 vs gen7** (1178 partidas, H1, LLR 2.97) | **~3114** (v4.4.0, 600 partidas) |
+| - `gen8` | - | 6000 nodos, primer corpus a escala | **NO promovida** (H0 a 198 partidas; los errores en partida real se TRIPLICARON) | gauntlet empezado y abandonado |
+| NNUE-0.7 `gen7` | v3.2.0, v4.3.1 | 28000 nodos | +3,7 ±10,2 vs gen5 (paridad, no H1 formal) | **~3080 ±40** |
+| NNUE-0.6 `gen6` | - | 24000 nodos | **NO promovida** (cayo a 0,494 a las 800 partidas) | - |
+| NNUE-0.5 `gen5` | v3.1.x | 20000 nodos | +34,0 ±14,4 vs gen4, LOS 100% | **~3050 ±40** |
+| NNUE-0.4 `gen4` | - | 14000 nodos | +3,5 ±9,9 vs gen3 | - |
+| NNUE-0.3 `gen3` | - | 14000 nodos | +6,2 ±11,3 vs clasico | - |
+| NNUE-0.2 `gen2` | v3.0.0 | 14000 nodos | +1,9 vs clasico, H1 | - |
+
+**Lo que la tabla enseña de un vistazo:** siete generaciones de self-play
+llevaron la red de ~3050 a ~3114, es decir **+64 en siete pasos**. Los dos
+cambios siguientes no tocaron ni un dato y valieron **+157** (de 3114 a 3271).
+El problema nunca estuvo en de donde salian las partidas.
+
+**Nets descartadas por el camino** (mismo corpus, mismos hiperparametros, un
+solo eje distinto): `ds1w512` ancho 512 **-76 / -93**, `ds1b8` 8 buckets
+**-15,2** (comparacion NO limpia, ver la nota del final), `ds2` **-108,6**
+(movia tres variables a la vez), `fqw256` ancho 256 **-30,3, H0** ya con
+factorizacion y QAT puestos.
 
 **v4.5.0 changes no net, but it changes what serving one costs.** gen9 is still
 the shipped network; the runtime around it got about 10% faster, and roughly a
@@ -178,6 +275,12 @@ plus the v4.4.0 search work (~+7 by node and nps measurement) should land near
 engine sits around **3100-3150** and that nothing regressed - the gauntlet
 confirms position, it does not resolve a delta of this size.
 
+> **SUPERADO el 2026-08-10.** Esa banda de 3100-3150 fue cierta durante cuatro
+> versiones y dejo de serlo con `fq60`: **3271 ±40** sobre 600 partidas, +128
+> sobre los 3143 de v4.5.0, y el primer salto que sale limpiamente fuera de la
+> barra de la version vecina. Lo de abajo se conserva porque explica como se
+> llego hasta aqui, no donde esta el motor.
+
 ### The capacity axis is now closed in both directions
 
 Two capacity experiments were trained on gen9's exact corpus and
@@ -193,6 +296,18 @@ lambda 0.85, ft_out 128, l1_out 32 and the same 70 shards for both, with
 `out_buckets` the only difference - so it is not the undertraining that sank
 gen8. Wider loses and more heads loses. **Do not re-propose network capacity as
 the next NNUE lever**; if this axis reopens it will be from the data side.
+
+> **CONFIRMADO el 2026-08-11, tras reabrirlo y equivocarme.** El eje se reabrió
+> con el argumento de que estas medidas venían del entrenador roto. Repetido con
+> factorización y QAT puestos, el ancho 256 mide **−30,3 [−52,4, −8,5], H0 en 494
+> partidas**, y `fqw512` se cortó en la época 5 para no gastar 13,5 horas
+> confirmando la misma dirección. La frase de arriba se mantiene, ahora con
+> evidencia válida detrás. Nota aparte sobre los buckets: **`ds1b8` no era una
+> comparación limpia** después de todo, porque un net con buckets solo se exporta
+> como arch 3 (int8, QA=127) mientras la base era arch 1 (int16, QA=255), así que
+> aquel −15,2 mezcla buckets con cuantización. Los mismos 8 buckets midieron
+> **+20,1 con LOS 99,8%** en v4.2.0 sobre otro corpus, y esa contradicción sigue
+> sin resolver: por eso `fqb1`/`fqb8` van EN PAREJA en la cola.
 
 Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`

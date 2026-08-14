@@ -66,6 +66,24 @@ param(
     # 60 is the baseline's value. Change it only when EPOCHS is the axis.
     [int]$Epochs = 60,
 
+    # 128 is the baseline's width, and the reference runs 1024. Width was
+    # measured at 512 on 2026-08-08 and REJECTED at -76/-93, which closed the
+    # capacity axis in the CHANGELOG - but that was two days before feature
+    # factorization, when 85.6% of the transformer quantised to zero. Widening
+    # makes exactly that defect worse: the same signal spread over more neurons
+    # gives smaller per-weight magnitudes, and small weights are what rounds
+    # away. So the rejection was measured through a broken instrument and the
+    # axis is open again. Cost is priced and sub-linear (`nnuewidth`: 256 =
+    # 1.51x, 512 = 2.64x), so it is a real trade, not free.
+    [int]$FtOut = 128,
+
+    # 1 is the baseline's value; the reference runs 8. Note that a bucketed net
+    # can only be exported as arch 3, which is int8 with QA=127, so raising this
+    # against an arch-1 baseline moves TWO variables at once - buckets AND
+    # quantisation. Pair it with a 1-bucket arch-2 control (also int8) if the
+    # buckets themselves are the question.
+    [int]$OutBuckets = 1,
+
     # 1 = int16 L1, QA=255, which is what the baseline net and every shipping
     # net use. Do not change this without meaning to.
     [int]$Arch = 1,
@@ -92,6 +110,7 @@ try {
     Write-Host "factorized     : $Factorized"
     Write-Host "qat            : $Qat"
     Write-Host "ft weight decay: $(if ([double]::IsNaN($FtWeightDecay)) {'inherited (1e-5)'} else {$FtWeightDecay})"
+    Write-Host "ft width       : $FtOut$(if ($FtOut -ne 128) {' (AXIS UNDER TEST)'})"
     Write-Host "export arch    : $Arch"
     Write-Host "checkpoint     : checkpoints\$Name.pt"
     Write-Host ""
@@ -124,9 +143,9 @@ try {
         --weight-decay 1e-5 `
         --val-fraction 0.05 `
         --seed 1 `
-        --ft-out 128 `
+        --ft-out $FtOut `
         --l1-out 32 `
-        --out-buckets 1 `
+        --out-buckets $OutBuckets `
         @extra
     if ($LASTEXITCODE -ne 0) { throw "training failed with exit code $LASTEXITCODE" }
 
