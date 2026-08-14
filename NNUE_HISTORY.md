@@ -28,17 +28,73 @@ filas 1 y 8), o sea que ninguna característica legal se ignora.
 **Conversión SPRT propio → campo: +195,4 se quedó en +128.** Anotarlo antes de
 prometer nada a partir de un SPRT contra uno mismo.
 
-### Tres ejes medidos, y los tres apuntan al corpus
+### Los ejes, remedidos el 2026-08-14: son los DATOS, no el profesor
 
 | eje | medido | cómo |
 |---|---|---|
-| mejores ETIQUETAS | **+22,1** [+6,8, +35,9] | prueba del profesor, 1.288 partidas |
+| más DATOS (20M a 324M) | **+104,6** [+68,8, +142,8] | `told` vs `fq60`, H1 en 171 partidas |
 | más DATOS a igual cómputo | **+182** ±16,6 | calibración de escala, LOS 100% |
+| mejores ETIQUETAS a 20M | **+21,2** [+6,8, +35,7] | prueba del profesor, 1.295 partidas |
+| mejores ETIQUETAS a 324M | **+10,7** [−3,4, +24,9] | `fqc60` vs `fq60`, 1.100 partidas, sin concluir |
 | más CAPACIDAD (ancho 256) | **−30,3** [−52,4, −8,5] | `fqw256`, H0 en 494 partidas |
 
-**El cuello de botella es el corpus, no la forma de la red.** En curso: regenerar
-las 324.297.032 posiciones con `fq60` como profesor (~60 h), todo idéntico al
-corpus viejo salvo quién etiqueta.
+**El cuello de botella son las POSICIONES, y el profesor importa poco.** Las dos
+filas de etiquetas son la misma pregunta a dos escalas de corpus: **+21,2 con 20M
+posiciones por brazo se quedó en +10,7 con las 324M reales**. Es la lección cara de
+esta campaña, y está escrita aparte porque se repite: **un efecto medido con un
+corpus pequeño no predice el mismo efecto con el corpus completo**. Las 59 h de
+datagen que regeneraron las 324.299.195 posiciones con `fq60` como profesor
+compraron una línea base algo mejor, no un salto.
+
+Dos salvedades sobre la primera fila, que es la que manda:
+
+- `told` (20M) y `fq60` (324M) se entrenaron **60 épocas cada una**, así que la de
+  324M recibió también 16 veces más pasos de gradiente. El +104,6 **mezcla más
+  posiciones únicas con más cómputo de entrenamiento** y esta medida no los separa.
+- El **+182** de la calibración no es una medida pura de volumen: comparaba 20M a
+  6.000 nodos contra 4,3M a 28.000, o sea volumen contra profundidad a cómputo
+  igual. La única medida limpia de volumen es la de arriba.
+
+Por duplicación del corpus eso da **+82 Elo abajo** (4,3M a 20M) y **+26 aquí
+arriba** (20M a 324M). Decae rápido, y son dos puntos: no sirven para extrapolar
+la siguiente duplicación.
+
+### Auditoría de los negativos: cuáles de estos entierros valen
+
+Escrita el 2026-08-14 después de estar a punto de enterrar las features de amenazas
+con dos defectos de diseño dentro de la prueba. La regla que faltaba, y que ahora se
+aplica a todo lo que se declare muerto:
+
+**Antes de aceptar un negativo hay que responder cuatro preguntas.** 1) ¿Convergieron
+todos los brazos? 2) ¿Está la configuración en el régimen donde la cosa se sabe que
+funciona? 3) ¿Hay **control positivo**, un brazo que mida algo ya medido como
+ganancia? 4) ¿Qué diferencia queda con la referencia? Si falta cualquiera, el
+veredicto es "sin veredicto", no "no funciona".
+
+Pasando el listado por esas cuatro preguntas:
+
+| conclusión enterrada | estado tras la auditoría |
+|---|---|
+| "el eje de datos está cerrado" | **ERA FALSA**. Nunca se midió. Medida el 2026-08-14: **+104,6** |
+| `fqw512`, ancho 512, perdedor | **INVÁLIDA**: cortada en la **época 5 de 60** para ahorrar 13,5 h. Es exactamente el brazo truncado que la pregunta 1 prohíbe |
+| `fqw256`, ancho 256, −30,3 | **EN DUDA**: 494 partidas, convergida, pero medida sobre la entrada POBRE. Si entrada y capacidad van acopladas, esto mide el acoplamiento, no la anchura |
+| `ds1b8`, buckets, −15,2 | ya se sabía inválida: mezcla buckets con cuantización arch 1 contra arch 3 |
+| "el self-play está agotado" | ya se sabía falsa: medida con el entrenador roto |
+| King safety fase B | **VÁLIDA**: tres medidas independientes, eval clásica, sin dependencia de escala |
+
+Cinco de seis entierros no aguantan la auditoría. El patrón no es que las ideas
+fueran malas: es que **el listón para decir "no" estaba mucho más bajo que el listón
+para decir "sí"**, y eso sesga una campaña entera hacia abandonar cosas que
+funcionaban.
+
+### La red está infra-entrenada, no saturada
+
+La curva de validación de `fqc60` seguía bajando **5,59% en sus últimas diez
+épocas** y solo se aplanó en la 60 porque el coseno del learning rate tocó fondo en
+1,07e-05. Su pérdida de entrenamiento (0,005545) sigue **por debajo** de la de
+validación (0,005866) con la distancia cerrándose, que es lo contrario del
+sobreajuste. En curso: `fqc120`, la misma receta con el coseno estirado a 120
+épocas (`T_max=args.epochs`, comprobado antes de lanzarlo), unas 19 h.
 
 ### Dos conclusiones de este fichero quedan ANULADAS
 
@@ -51,21 +107,38 @@ cuantización borra. **El argumento era razonable y estaba equivocado**: con
 factorización y QAT, el ancho 256 sigue perdiendo 30 Elo. Ahora el eje está
 cerrado con evidencia válida.
 
-**2. "El self-play está agotado" era FALSO.** Cinco generaciones planas dieron esa
-conclusión, medidas con el entrenador que cuantizaba a cero el 85,6% del
-transformador: una generación podía salir plana porque la red no podía aprovechar
-mejores etiquetas, no porque no las hubiera. Repetido con el entrenador arreglado,
-el profesor nuevo gana **+22,1**.
+**2. "El self-play está agotado" era FALSO, pero se quedó a medias.** Cinco
+generaciones planas dieron esa conclusión, medidas con el entrenador que cuantizaba
+a cero el 85,6% del transformador: una generación podía salir plana porque la red
+no podía aprovechar mejores etiquetas, no porque no las hubiera. Repetido con el
+entrenador arreglado, el profesor nuevo gana, pero **+10,7 a escala real, no los
++22 que prometía la prueba a 20M**. La conclusión correcta no es "el profesor
+importa": es que **cambiar de profesor sobre las mismas posiciones da poco, y
+añadir posiciones da mucho**.
 
-### Lo que viene
+### Lo que viene, reordenado el 2026-08-14
 
-`fqb1`/`fqb8` (buckets de salida con su control int8 - un net con buckets solo se
-exporta como arch 3, que es int8 con QA=127, así que medirlo contra `fq60` que es
-arch 1 movería dos variables), luego `fqwd0`, `fqe120`, `fqloss`, `fqlam`. Después,
-**características de amenazas**: la referencia añade a HalfKA un juego entero de
-60.720 dimensiones con 128 activas que codifica qué pieza ataca a cuál, y nosotros
-no tenemos nada de eso. Es contenido de evaluación, no capacidad, que es
-justamente lo que la tabla de arriba dice que falta.
+El orden lo fija el coste por Elo, no el interés de la idea:
+
+1. **`fqc120`**, 120 épocas sobre el corpus nuevo. Ataca la mitad del +104,6 que es
+   cómputo, no requiere generar nada ni tocar el motor, y cuesta 19 h. EN CURSO.
+2. **Más corpus.** Unas 60 h por duplicación, del orden de +26 esperado según la
+   pendiente actual, y conviene medir antes cuánto del +104,6 era cómputo.
+3. **Características de amenazas**: la referencia añade a HalfKA un juego entero de
+   60.720 dimensiones con 128 activas que codifica qué pieza ataca a cuál, y
+   nosotros no tenemos nada de eso. Sigue siendo el ataque estructural, pero son
+   semanas de C# y hay dos ejes más baratos por delante. La sonda que decide si
+   merece la pena ya está escrita y verificada (`probe_threats.py`).
+
+**De la cola vieja sobrevive solo `fqb1`/`fqb8`** (buckets de salida con su control
+int8 - un net con buckets solo se exporta como arch 3, que es int8 con QA=127, así
+que medirlo contra `fq60` que es arch 1 movería dos variables). Sobrevive porque
+resuelve una contradicción real (+20,1 con LOS 99,8% en v4.2.0 contra −15,2 en
+`ds1b8`), no porque ajuste un número. **`fqwd0`, `fqloss` y `fqlam` quedan
+descartados**: son búsqueda de hiperparámetros, viven en la banda ±10-20, y a
+10+0.1 resolver **+10 Elo pide unas 8.700 partidas (45 h)** y **+5 Elo pide unas
+35.000 (181 h)**. No se prueba nada cuyo efecto esperado sea más pequeño que el
+instrumento de medida.
 
 ---
 
