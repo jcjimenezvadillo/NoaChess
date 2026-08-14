@@ -46,7 +46,13 @@ public class HistoryScaleProbe
         var histScores = (int[])typeof(HistoryTable)
             .GetField("_scores", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(hist)!;
-        var contScores = (int[])typeof(ContinuationHistory)
+        // short[] since the multi-level rework: entries are bounded at +-8192,
+        // so six tables at four bytes each were paying 14.2 MB of working set
+        // for fourteen bits of range. This probe reads the field by reflection,
+        // so a storage change lands here as a cast failure rather than as a
+        // compile error - which is exactly what happened, and is the point of
+        // the probe existing at all.
+        var contScores = (short[])typeof(ContinuationHistory)
             .GetField("_scores", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(cont)!;
 
