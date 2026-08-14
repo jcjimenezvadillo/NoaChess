@@ -2158,6 +2158,16 @@ public sealed class AlphaBetaSearch
             int moveHistory = 2 * _history.Get(stm, move)
                 + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
 
+            // The victim, read while it is still ON the board. The LMR block
+            // below computes a statScore that needs it, and that block runs
+            // AFTER the move is made, when PieceTypeAt(move.To) returns the
+            // piece that just arrived rather than the one it captured. The
+            // reference reaches the same place and is safe because it asks
+            // pos.captured_piece(), a value it stored; copying the position of
+            // its code without copying that mechanism read the wrong piece for
+            // every capture.
+            int victimIdx = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
+
             _stackPiece[ply] = movePieceIdx;
             _stackTo[ply] = move.To;
             _stackStatScore[ply] = moveHistory - StatScoreOffset;
@@ -2229,9 +2239,8 @@ public sealed class AlphaBetaSearch
                     // 439 / 0.28 = 1568. Same rule, opposite direction, and the rule
                     // is applied at the consumer site as this project learned to.
                     int statScore = move.IsCapture
-                        ? 873 * StatScoreVictimValue(CaptureHistory.VictimIndex(board, move)) / 128
-                          + _captureHistory.Get(movePieceIdx, move.To,
-                                                CaptureHistory.VictimIndex(board, move))
+                        ? 873 * StatScoreVictimValue(victimIdx) / 128
+                          + _captureHistory.Get(movePieceIdx, move.To, victimIdx)
                         : (2252 * _history.Get(stm, move)
                            + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
                            + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
