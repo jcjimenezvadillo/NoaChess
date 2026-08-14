@@ -27,6 +27,15 @@ public static class PieceImageProvider
 
     private static readonly Dictionary<string, DrawingImage> Cache = [];
 
+    static PieceImageProvider()
+    {
+        // The "pack" URI scheme is registered as a side effect of creating an
+        // Application. Touching PackUriHelper registers it outright, so the
+        // pieces can also be loaded from a tool or a test that never opens a
+        // window - without it, building the URI throws before anything is read.
+        _ = System.IO.Packaging.PackUriHelper.UriSchemePack;
+    }
+
     // Returns the vector image for the given piece, loading it on first use.
     public static DrawingImage Get(Color color, PieceType type)
     {
@@ -35,8 +44,10 @@ public static class PieceImageProvider
             return cached;
 
         // The SVG is embedded as a WPF resource; read it via its pack URI and
-        // let SharpVectors turn it into a WPF drawing tree.
-        var uri = new Uri($"pack://application:,,,/Resources/Pieces/{name}.svg");
+        // let SharpVectors turn it into a WPF drawing tree. The URI names the
+        // assembly explicitly: an unqualified one resolves against whichever
+        // assembly started the process, which is not always this one.
+        var uri = new Uri($"pack://application:,,,/NoaChess.GUI.Wpf;component/Resources/Pieces/{name}.svg");
         using var stream = Application.GetResourceStream(uri)!.Stream;
 
         var reader = new FileSvgReader(new WpfDrawingSettings());
