@@ -1923,6 +1923,19 @@ public sealed class AlphaBetaSearch
         int singularExtension = 0;
         bool multiCut = false;
         int multiCutScore = 0;
+
+        // The depth the CHILD is searched at is fixed here, before the singular
+        // block can touch `depth`.
+        //
+        // The reference assigns `newDepth = depth - 1` at its line 1139, does
+        // `depth++` inside the singular hit at 1253, and only then adds the
+        // extension at 1291 - so its increment reaches the later uses of depth
+        // (the LMR table lookup, the pruning gates) and never the child. This
+        // engine computes newDepth further down, past the block, so without
+        // this snapshot the increment leaked in and every singular hit extended
+        // one ply MORE than intended. Found by reading the source line numbers
+        // rather than the logic, and before the SPRT rather than after it.
+        int depthBeforeSingular = depth;
         if (depth >= 6 + (ttPv ? 1 : 0) && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
             && CanReuseTtScore(entry.Score, board.HalfmoveClock))
@@ -2132,7 +2145,8 @@ public sealed class AlphaBetaSearch
 
             // The singular extension applies to the TT move only: it is the
             // move whose uniqueness the verification search just proved.
-            int newDepth = depth - 1 + (move == ttMove ? singularExtension : 0);
+            // depthBeforeSingular, not depth: see the snapshot above.
+            int newDepth = depthBeforeSingular - 1 + (move == ttMove ? singularExtension : 0);
 
             // The move's combined history signal (2x butterfly + continuation
             // history). Computed HERE, past every pruning test above, because
