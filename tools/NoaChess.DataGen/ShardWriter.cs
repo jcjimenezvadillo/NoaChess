@@ -37,6 +37,12 @@ public sealed class ShardWriter : IDisposable
     public long TotalRecords { get; private set; }
     public int CompletedShards { get; private set; }
 
+    // What was already on disk when this run started. TotalRecords counts the
+    // whole corpus so --positions can mean the finished size, which makes it
+    // useless as a measure of how fast THIS run is going: the rate has to be
+    // this run's records over this run's clock.
+    public long ResumedRecords { get; }
+
     // basePath "data/x.noadata" produces "data/x.0000.noadata", "x.0001.noadata"...
     // A shardSize of 0 means "one shard", which keeps the classic single-file
     // layout for small runs (and for every existing script that expects it).
@@ -55,6 +61,7 @@ public sealed class ShardWriter : IDisposable
         // that stopped at 12M would produce 32M, and every interruption would
         // silently inflate the corpus past what was asked for.
         TotalRecords = CountExistingRecords(basePath, startIndex);
+        ResumedRecords = TotalRecords;
         if (TotalRecords > 0)
             Console.WriteLine($"resume : {TotalRecords:N0} positions already on disk; "
                             + "the --positions target counts these");

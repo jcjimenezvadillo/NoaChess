@@ -41,13 +41,19 @@ param(
     [int]$Nodes = 6000,
 
     [int]$Threads = 24,
-    [int]$Epochs = 60
+    [int]$Epochs = 60,
+
+    # C: is the SSD, F: is a mechanical disk, so every shard the trainer reads
+    # in a loop belongs here. The 324M corpus already lives on C:\NoaData for
+    # this reason; the first run of this script wrote its own shards to F: and
+    # left one arm reading from SSD and the other from spinning rust.
+    [string]$Out = "C:\NoaData\teachertest"
 )
 
 $ErrorActionPreference = "Stop"
 $repo = "F:\Works\Programacion\__Repos\NoaChess"
 $test = "F:\Works\_______________CHESSTEST"
-$out  = Join-Path $repo "data\teachertest"
+$out  = $Out
 $gen  = Join-Path $repo "tools\NoaChess.DataGen\bin\Release\net10.0\NoaChess.DataGen.exe"
 $train = Join-Path $repo "tools\training\nnue"
 $log  = Join-Path $repo "logs\teachertest-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
