@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.0.0";
+    public const string Version = "5.0.1";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
