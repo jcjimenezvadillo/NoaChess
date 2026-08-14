@@ -1,0 +1,102 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.GamePickerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:NoaChess.GUI.Wpf.ViewModels"
+        Title="Choose a game"
+        Width="720" Height="560"
+        MinWidth="520" MinHeight="360"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{StaticResource AppBackground}">
+    <!-- A PGN file usually holds a collection rather than one game. Loading the
+         first and saying nothing would quietly hide the rest. -->
+    <DockPanel Margin="18">
+
+        <Border DockPanel.Dock="Top" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="GAMES IN THIS FILE" Style="{StaticResource SectionHeader}" FontSize="12"/>
+                <TextBlock x:Name="CountLine" Foreground="{StaticResource TextMuted}"
+                           FontSize="12" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Cancel" Style="{StaticResource ToolButton}" Padding="22,6"
+                    IsCancel="True" Margin="0,0,8,0"/>
+            <Button Content="Open" Style="{StaticResource AccentButton}" Padding="22,6"
+                    IsDefault="True" Click="OnOpenClicked"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Card}">
+            <DockPanel>
+                <Grid DockPanel.Dock="Top" Margin="12,8,12,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="34"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="70"/>
+                        <ColumnDefinition Width="52"/>
+                        <ColumnDefinition Width="92"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.Resources>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="FontSize" Value="10.5"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+                        </Style>
+                    </Grid.Resources>
+                    <TextBlock Grid.Column="0" Text="#"/>
+                    <TextBlock Grid.Column="1" Text="PLAYERS"/>
+                    <TextBlock Grid.Column="2" Text="RESULT"/>
+                    <TextBlock Grid.Column="3" Text="MOVES"/>
+                    <TextBlock Grid.Column="4" Text="EVENT"/>
+                </Grid>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8,0,6,8">
+                    <ItemsControl x:Name="GameList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:PgnGameSummary}">
+                                <Border x:Name="Row" CornerRadius="3" Padding="4,5" Margin="0,1"
+                                        Background="Transparent" Cursor="Hand"
+                                        MouseLeftButtonDown="OnRowClicked">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="34"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="70"/>
+                                            <ColumnDefinition Width="52"/>
+                                            <ColumnDefinition Width="92"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Number}"
+                                                   Foreground="{StaticResource TextMuted}" FontSize="12"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Players}"
+                                                   FontSize="13" TextTrimming="CharacterEllipsis"
+                                                   Margin="0,0,8,0"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding Result}"
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                                   Foreground="{StaticResource TextSecondary}"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding MoveCount}"
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                                   Foreground="{StaticResource TextSecondary}"/>
+                                        <TextBlock Grid.Column="4" Text="{Binding Event}"
+                                                   FontSize="11.5" TextTrimming="CharacterEllipsis"
+                                                   Foreground="{StaticResource TextMuted}"/>
+                                    </Grid>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <Trigger SourceName="Row" Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Row" Property="Background"
+                                                Value="{StaticResource PanelHover}"/>
+                                    </Trigger>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter TargetName="Row" Property="Background"
+                                                Value="{StaticResource AccentWash}"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+    </DockPanel>
+</Window>

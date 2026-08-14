@@ -54,6 +54,24 @@ public sealed class UciLoop
     // optimum over the warm TT.
     private string[]? _pendingPonderTokens;
     private readonly Stopwatch _ponderTimer = new();
+
+    // Deepest answer the CURRENT ponder search reached, kept so a ponderhit
+    // relaunch that gets almost no clock cannot throw it away.
+    //
+    // Measured over 127 pondered moves on 2026-08-10: the ponder averages depth
+    // 21.6 against 19.5 for a fresh search, and 91% of relaunches play exactly
+    // what the ponder concluded - answering in a quarter of the time. That is
+    // the design working, not a defect. But the remaining tail contained this:
+    //
+    //   ponder depth 43 said c5d3 | relaunch depth 1 said a5b5 | played a5b5
+    //
+    // A depth-1 search overruling a depth-43 one ON THE SAME POSITION, because
+    // a long opponent think consumed the credit and left the relaunch nothing.
+    // Depth 1 cannot know anything depth 43 did not, so when the relaunch comes
+    // back far shallower AND disagrees, the pondered move stands.
+    private const int PonderTrustMargin = 4; // plies the relaunch may fall short by
+    private int _ponderDepth;
+    private Move _ponderMove = Move.None;
     private volatile bool _suppressBestmove;
 
     private readonly QueuedWriter _queuedOutput;
@@ -92,11 +110,19 @@ public sealed class UciLoop
             // Which SIMD path the evaluator will actually take. The engine
             // branches on Avx2.IsSupported in seven places and never said so,
             // which makes a whole class of problem invisible: the lichess bot
-            // runs the osx-x64 build under Rosetta, where AVX2 does not exist,
-            // so it silently takes the scalar path - a path that is known NOT
-            // to be bit-identical to the AVX2 one. Two machines can therefore
-            // play different moves from the same position with no way to tell
-            // from any log. One line at startup makes it obvious forever.
+            // machine can silently take a different one, and in v4.3.0.4 the
+            // paths were NOT bit-identical: the same position at depth 18 gave
+            // -776 and c2b1 on AVX2 against -792 and c2e4 without it. Two hosts
+            // could play different moves with no way to tell from any log.
+            //
+            // Re-measured on 2026-08-12 with v4.7.0, same positions, same depth,
+            // all three paths (AVX2, no-AVX2, no-intrinsics): identical score,
+            // identical move and IDENTICAL NODE COUNTS - 418,316 exactly, which
+            // is the real proof, since a single differing evaluation anywhere in
+            // the tree would make the searches diverge. The divergence is gone,
+            // most likely fixed as a side effect of the v4.5.0 accumulator
+            // rewrite. The line stays: it costs nothing and it is how the next
+            // divergence gets noticed.
             _output.WriteLine("info string NNUE SIMD path: "
                             + (System.Runtime.Intrinsics.X86.Avx2.IsSupported
                                ? "AVX2" : "scalar (no AVX2 on this machine)"));
@@ -370,7 +396,8 @@ public sealed class UciLoop
                         long ponderedMs = _ponderTimer.ElapsedMilliseconds;
                         _pendingPonderTokens = null;
                         WaitForSearchToFinish(suppressBestmove: true);
-                        HandleGo(goTokens.Where(t => t != "ponder").ToArray(), ponderedMs);
+                        HandleGo(goTokens.Where(t => t != "ponder").ToArray(), ponderedMs,
+                                 fromPonderhit: true);
                     }
                     break;
 
@@ -630,8 +657,17 @@ public sealed class UciLoop
     // already ran; it is charged against this search's clock budget, floored
     // so at least 100 ms of hard budget always remain (a warm-TT iteration
     // needs almost nothing to reproduce the pondered move).
-    private void HandleGo(string[] tokens, long ponderedMs = 0)
+    private void HandleGo(string[] tokens, long ponderedMs = 0, bool fromPonderhit = false)
     {
+        // Any search that is NOT the relaunch of a ponderhit starts from a
+        // position the pondered answer says nothing about. Clearing here is
+        // what stops a stale move from leaking into an unrelated position.
+        if (!fromPonderhit)
+        {
+            _ponderMove = Move.None;
+            _ponderDepth = 0;
+        }
+
         // "go ponder": think on the opponent's time. The search runs without
         // limits (the opponent's clock is ticking, not ours) until the GUI
         // resolves it with "ponderhit" (prediction right -> timed re-search
@@ -692,7 +728,7 @@ public sealed class UciLoop
 
         var cts = new CancellationTokenSource();
         _searchCts = cts;
-        _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop));
+        _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop, ponder, fromPonderhit));
     }
 
     // Mate scores carry distance-to-mate in plies from the root; UCI wants
@@ -721,7 +757,8 @@ public sealed class UciLoop
         return $"cp {score}";
     }
 
-    private void RunSearch(SearchLimits limits, CancellationToken token, bool waitForStop)
+    private void RunSearch(SearchLimits limits, CancellationToken token, bool waitForStop,
+                           bool isPonder = false, bool fromPonderhit = false)
     {
         // Never let an exception escape: a faulted task would poison the next
         // WaitForSearchToFinish, and a GUI that never receives "bestmove"
@@ -729,7 +766,7 @@ public sealed class UciLoop
         // move so the game (and the process) survives.
         try
         {
-            RunSearchCore(limits, token, waitForStop);
+            RunSearchCore(limits, token, waitForStop, isPonder, fromPonderhit);
         }
         catch (Exception ex)
         {
@@ -741,7 +778,8 @@ public sealed class UciLoop
         }
     }
 
-    private void RunSearchCore(SearchLimits limits, CancellationToken token, bool waitForStop)
+    private void RunSearchCore(SearchLimits limits, CancellationToken token, bool waitForStop,
+                               bool isPonder = false, bool fromPonderhit = false)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -754,6 +792,14 @@ public sealed class UciLoop
         var progress = new SynchronousProgress(p =>
         {
             lastPv = p.Pv;
+            // Recorded per ITERATION rather than when the ponder search returns:
+            // ponderhit cancels it, and the relaunch would then race the losing
+            // thread's final write.
+            if (isPonder)
+            {
+                _ponderDepth = p.Depth;
+                _ponderMove = p.BestMove;
+            }
             long ms = Math.Max(1, stopwatch.ElapsedMilliseconds);
             long nps = p.NodesSearched * 1000 / ms;
             // Mate scores go out as "score mate N" (moves, signed) per UCI;
@@ -765,6 +811,19 @@ public sealed class UciLoop
         });
 
         var result = _engine.FindBestMove(_board, limits, token, progress);
+
+        // The relaunch searched the position the ponder had already settled. If
+        // it came back far shallower AND disagrees, it is answering from a
+        // budget the pondered time already spent, and the deeper answer wins.
+        if (fromPonderhit && _ponderMove != Move.None
+            && result.BestMove != _ponderMove
+            && _ponderDepth > result.Depth + PonderTrustMargin)
+        {
+            _output.WriteLine($"info string keeping the pondered move {_ponderMove} "
+                            + $"(depth {_ponderDepth}) over {result.BestMove} "
+                            + $"(depth {result.Depth}): the relaunch had no clock left");
+            result = result with { BestMove = _ponderMove };
+        }
 
         // Ponder/infinite search that finished on its own (e.g. a forced
         // mate): park here until the GUI sends "stop" (-> answer below) or

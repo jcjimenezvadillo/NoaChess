@@ -1,5 +1,643 @@
 # CHANGELOG
 
+## 2026-08-13 (v5.0.1) - the engine spent six seconds recapturing a queen it had to recapture
+
+Found in a real game rather than by a test: [lichess.org/E6wD3ggu](https://lichess.org/E6wD3ggu),
+move 47, 180+2, forty-three seconds on the clock.
+
+```
+r7/2k3B1/3b4/1Pp5/5Q2/7P/6P1/3R3K b - - 0 47
+```
+
+Eleven pieces. White takes the queen with Qxf4, and `Bxf4` is the ONLY capture on the board: not
+taking it back is giving a queen away. The engine took **six seconds** over it.
+
+**A move being OBVIOUS and a position being WON are different things, and the time manager treated
+them as one.** The only mechanism that could cut the budget required a decisive score, `|score| >=
+700`. Here the evaluation was -1.6 pawns, so nothing ever fired and a forced recapture was paid for
+at the full rate. That is not an edge case: a recapture in a level position is the clearest easy
+move there is, and it was excluded by construction.
+
+**The first fix was wrong, and measuring it is what said so.** Cutting the clock when the best move
+has been stable for many iterations looks right and is not: a quiet endgame is stable too. Over 40
+positions from the bot's own games it fired on 15 and CHANGED the move in two middlegames where the
+engine had been thinking for nine seconds and was right to.
+
+What actually separates a forced move is not stability but **effort**. On a forced move every
+alternative is refuted at once and nearly the whole iteration goes into the move that gets played;
+a position with a real choice spreads its nodes over several. The root now measures the share of
+each iteration spent on the move it chooses, and the cut requires **90%** of it, on top of the move
+having been settled since depth 4 and never once changed.
+
+**And the first deployment was still too timid.** It shipped, and the same
+complaint came straight back from a live game: two legal replies to a check, one
+of them a recapture, and the engine took nearly two seconds. The trace showed the
+cut firing correctly with `share=1.000` - every single node of the iteration had
+gone into that move - and then leaving 30% of a six second budget on the table
+anyway. When the search reports the decision was UNANIMOUS, 30% is the wrong
+answer. At a share of 0.95 or better the cut now uses the same fraction the
+decisive-score case does, 12%:
+
+| position | 5.0.0 | first cut | now |
+|---|---|---|---|
+| rook recapture, 2 legal moves | 6.30 s | 1.90 s | **0.81 s** |
+| queen recapture | 4.08 s | 1.63 s | **0.74 s** |
+
+Same move in every case.
+
+Measured over the same 40 positions, single-threaded:
+
+| | before | after |
+|---|---|---|
+| cut fired on | - | 13 of 40, **move unchanged in every one** |
+| total time over 40 positions | 238.1 s | 221.9 s (**6.8% less**) |
+| moves differing | - | **0 of 40** |
+
+**The noise floor was measured before trusting any of this.** The same binary against itself
+differs on **three of the same forty**, because a search that stops on a wall clock is not
+reproducible: one position swung between 12.40 s and 1.22 s across two runs of identical code. An
+earlier run of the comparison showed three differences and every one of them was in a position where
+the cut had NOT fired. Across both runs the cut has never changed a move in a position where it
+acted.
+
+**Not measured in Elo.** No SPRT has been run. What is established is that the flagrant waste is
+gone, that the cut fires rarely and only where the search itself says the choice was never in
+doubt, and that the engine does not think less overall.
+
+354 tests (106 Core, 248 Engine).
+
+## 2026-08-12 (v5.0.0) - the desktop board stops being a test harness
+
+The Windows board has been rebuilt. What was there worked and was honest about what it was: a way to click a piece, watch the engine answer and check that the whole stack held together. It could not take back a move, could not show the game that had been played, and showed one line of engine output. This release makes it a board you can actually analyse on.
+
+**The engine is untouched.** Nothing in this version changes how a move is chosen, so nothing in it is measurable in Elo. The version number moves to 5.0.0 because the version constant is shared: `ChessEngine.Version` is what the UCI `id name` reports and what the window title shows, so the engine now reports 5.0.0 as well without a single search change behind it.
+
+### Moving pieces
+
+Pieces are **dragged**. The piece leaves its square, follows the cursor with a shadow under it and drops where it is let go; a drop outside the board or on an illegal square puts it back. Clicking the origin and then the destination still works and always did, and the two get along: a press that does not move is a selection, a press that moves is a drag.
+
+Legal destinations are marked the way online boards mark them: a **dot** on an empty square, a **ring** around a piece that can be taken. The square the cursor is over during a drag is outlined.
+
+### Premoves
+
+A move entered while the engine is thinking is **held and played the instant the turn comes back**. If the position that arrives makes it illegal it is discarded and nothing happens, which is what makes it safe to use at all. Right-click cancels one. A premoved promotion takes the queen rather than stopping to ask.
+
+The candidate squares shown while premoving are a guess by construction: the opponent has not moved yet. They come from the piece's movement pattern over the current occupancy, and the real legality check happens later, against the position that actually turns up.
+
+**Squares occupied by your own pieces are offered as premove targets**, which is not an oversight. The premove that matters most is the RECAPTURE, and when it is entered the target still holds your own piece precisely because the opponent has not taken it yet. Filtering those squares out removed the main reason to premove at all; being generous costs nothing, since an illegal premove is discarded anyway.
+
+### Navigation and the move list
+
+First, previous, next and last, on buttons and on Home, Left, Right and End. The move list writes the game in **figurine notation** (the piece as a picture rather than a letter, including the piece a pawn promotes to), highlights the move on the board and jumps to any move that is clicked.
+
+Playing a move from a rewound position **replaces the continuation**. That is deliberate and it is what makes exploring an alternative line one gesture: go back, play something else. Take back does the same thing for the last full move, so the user gets their own decision back rather than a position where it is the engine's turn again.
+
+### The opening has a name
+
+Above the move list, updated as the game goes: **B90  Sicilian, Najdorf
+Variation**. It goes into the saved PGN as the `ECO` and `Opening` tags, which
+is how every database indexes a game.
+
+**Matching is by POSITION, not by move order.** Each line of the table is
+replayed once at startup and indexed by the Zobrist key of the position it
+reaches, so a line arrived at by transposition gets the same name as the direct
+route - which is the whole reason databases name openings by position. The
+Italian reached through 3.Bc4 Bc5 and through the same moves in a different
+order come out as the same opening, and there is a test that says so.
+
+Walking back through a game shows the name it had **at that point**, not the one
+it ended up with. The saved PGN carries the name at the END of the game, because
+a file tagged with what the game was called on move three would be wrong about
+the game.
+
+The table is a plain text file that ships with the program, `openings.tsv`, and
+anyone can add to it without a rebuild. It holds 86 positions: the main lines,
+not the full ECO index. Every entry is a well established name for the position
+it points at, and the deeper sub-variations are deliberately absent rather than
+guessed at - **a confidently wrong opening name is worse than no name**. There
+is a check that replays every line in the shipped table and fails if any move in
+it is not legal.
+
+### An opponent you can beat
+
+The engine plays at about 3271 CCRL. Shipping that as the only setting would be
+shipping a program almost nobody can win a game against, which is a bad product
+however good the engine is.
+
+**New game** now also asks how hard it should try, from Beginner to Full
+strength. The limit is a **node cap**: the engine may look at that many
+positions and no more. That is honest in a way a "skill level" dial is not - it
+says exactly what it does, and it degrades the way a weaker player does, by
+seeing less far rather than by playing deliberate nonsense. Engines that reach a
+target rating by injecting random blunders produce moves no human of any strength
+would choose.
+
+**The level names are descriptions, not rating claims.** No gauntlet has been run
+at these caps, so putting an Elo number next to them would be inventing a
+measurement, and the dialog says so.
+
+### The engine varies its opening
+
+An engine is deterministic: the same position gives the same move, so every game
+against it is the same game, and it stops being interesting on the third night.
+
+For the first eight plies it now picks at random among the moves it rates within
+a third of a pawn of its best. That is enough spread for a real choice of
+opening and not enough to hand anything away, and it costs nothing at a stage
+where the clock has nothing at stake yet. It can be turned off.
+
+### Hint
+
+The move the engine would play, drawn as a single arrow, on Ctrl+H. It is the
+only arrow that appears during a game, and it appears because the player asked
+for it: the automatic candidate arrows stay out of a game on purpose, since an
+opponent permanently telling you what to play is not an opponent.
+
+### The clock, and choosing a side
+
+**New game** now asks the two questions a chess program asks: which side you take, and how time is measured. Three answers to the first (white, black, or both sides for analysis) and three shapes for the second:
+
+- a **real chess clock**, base time plus increment, with the usual presets from 1+0 to 30+0 and custom fields for anything else. Both clocks are shown beside the players, the running one is lit, the last twenty seconds turn red, and a side that runs out **loses on time**.
+- a **fixed budget per move**, which is what the previous version always did.
+- a **fixed depth**, where neither side can lose on time.
+
+The clocks are measured with a stopwatch rather than by counting timer ticks. A UI timer is not a metronome, and the engine's own progress reports keep the UI thread busy, so counting ticks would run the clocks slow, in the player's favour and against the budget the engine was given. A clock game hands the engine's remaining time to the engine's own time manager, the same scheduler it uses under UCI.
+
+The clock starts with the **first move**, so an application that is merely open burns nobody's time.
+
+### Games in and out: PGN
+
+Open, save, copy and paste, which is how a chess program exchanges games with
+every other chess program.
+
+The reader keeps the **main line** and understands the rest well enough to skip
+it correctly: brace comments, rest-of-line comments, numeric glyphs, and
+variations that nest inside variations. Move numbers glued to their move
+("1.e4") are read, which a naive split loses entirely. A file holding several
+games is split and the first is loaded.
+
+**Nothing is guessed.** Every token is resolved against the position it appears
+in, so a move that is not legal there stops the load and says which move it was,
+rather than skewing everything after it. A game that did not start from the
+initial array carries its FEN both ways.
+
+Loading a game switches to **analysis** mode on purpose: a loaded game is being
+reviewed, not continued, and a play mode would have the engine answer the last
+move of somebody else's game the moment it appeared.
+
+Files are read as UTF-8 and fall back to Latin-1 when the bytes say so, which
+is most of the PGN in the world, and written as UTF-8 with no byte-order mark,
+which is what every database expects.
+
+**Game details** edits the tag pairs, so a saved file says who played rather
+than "You".
+
+### Every move, priced
+
+The engine panel has a second view: **all moves**, every legal move of the
+position ranked best first with the score it earns and how far behind the best
+it is, with a bar behind each row so the shape reads before any number does.
+Clicking one plays it.
+
+This is what a single best line can never show. Each move is searched in its own
+subtree at the same depth, which is what makes the numbers comparable with each
+other; a search of the root prunes most of these away long before it could price
+them, and that is its job rather than a defect.
+
+**On the board, while analysing**, the best few are drawn as arrows on a green
+to orange scale: green for the best, sliding through yellow to orange as they
+give more away, with the best one heavier and more opaque so the eye finds it
+first. The scale saturates at three pawns, past which every move is simply bad
+and a finer gradient would only make good moves look worse than they are.
+
+The arrows appear in **analysis only**, including any game opened from a PGN.
+During a game they would be telling the player what to play, which is a
+different program from this one. The ranking that feeds them runs automatically
+at a shallower depth on every position, because it happens on every position and
+has to be over before it becomes an annoyance; the button runs the full depth.
+
+The full-depth pass is published **as it goes**. Fifty moves at depth twelve
+take a minute and a half, and a panel that stays empty for a minute and a half
+looks broken: this way the good moves surface within a second and settle as the
+rest come in. Closing the panel abandons the pass. The arrows are drawn once, at
+the end, because redrawing them per move scored would have them twitching around
+the board for the whole minute.
+
+### Reviewing a whole game
+
+What Fritz and ChessBase call full analysis: every position of the game is
+searched and the moves that lost material or advantage are marked in the move
+list - **?!** for an inaccuracy, **?** for a mistake, **??** for a blunder - with
+an accuracy percentage and the counts for each side underneath.
+
+Two decisions worth stating:
+
+- **Fixed depth, not a time budget.** A timed review would make the same move a
+  blunder in one run and fine in the next, depending on how busy the machine
+  was. The depth is settable (8 to 20) and defaults to 12.
+- **One search per position, not two.** A search already returns the score AND
+  the move it would have played, so the position before a move and the position
+  after it are each searched exactly once and the result of one step is the
+  "before" of the next. The first draft searched twice and took double the time
+  for the same answer.
+
+A position that is already decided is not marked: sliding from +9 to +6 is not a
+mistake anyone needs pointing out.
+
+### Practise the positions you got wrong
+
+A review tells you where you went wrong. **Practise** puts you back in the chair:
+it replays the game to the position before each mistake and waits for you to
+find something better, one exercise at a time.
+
+The verdict compares your attempt against **the move you played in the game**,
+not against perfection. That is the question a player is actually asking - would
+I do better this time - and a move that gives up less than the game move is a
+better move whether or not it happens to be the engine's first choice. A move
+that gives up nothing is simply right, and it says so even when the engine would
+have chosen differently.
+
+Only mistakes and blunders become exercises. An inaccuracy is not worth setting
+a position up for, and there would be a dozen in every game.
+
+Trying a different move **replaces the continuation** - that is what trying a
+different move means - so practice snapshots the game first and puts it back
+between exercises and at the end. Without that the second exercise would be set
+in a game the first one had already destroyed.
+
+### Several games in one file
+
+A PGN file usually holds a collection, and opening the first game while saying
+nothing about the rest hides most of the file. Opening one now lists what is in
+it: players, result, length and event, one row each. Double-clicking opens.
+
+### Where the game was decided
+
+**This one does not exist in any other chess program**, and it is the reason to
+put an installer round this.
+
+Every chess program marks the moves you got wrong. None of them tells you where
+the DECISIONS were, and those are not the same thing. In a forty-move game,
+thirty-five moves may be forced or irrelevant - it made no difference what you
+played - and the game turned on three positions. The usual review flags move 24
+because half a pawn went missing there. It never mentions move 19, where the
+evaluation swung two pawns depending on what you chose, and where you happened
+to guess right.
+
+That gap is measurable, and the ranking of every legal move already measures it:
+**the distance between the best move and the second best is exactly how much the
+choice was worth**. Twenty moves within a tenth of a pawn is not a decision.
+Best +1.5 against second best -0.8 is the fork in the road, whether or not the
+player found it.
+
+A review now runs a second pass over the game asking that question, and reports
+the positions in order of how much they were worth, saying for each one what was
+played, what the best was, and how long the player actually spent. Clicking one
+jumps the board to it. The headline is the point:
+
+> 3 positions decided this game. You found the best move in 2 of them.
+> You spent 6% of your thinking time on them.
+
+That last sentence is why the move clock is recorded. Knowing where the
+decisions were is only half of it; the other half is finding out whether you were
+looking. Time is only mentioned when there was a real clock to measure - a game
+replayed from a file says nothing about it rather than inventing a percentage.
+
+The pass is deliberately **shallow**. "How far apart were the alternatives" is a
+different question from "was that move a mistake", and its shape is visible long
+before the exact numbers settle; a deep pass would multiply a thirty-move scan by
+every position of the game for an answer that looks the same.
+
+### The material beside each player, and a list that stays put
+
+Three things reported from using it.
+
+**Only the SURPLUS is shown now, not the tally.** Every piece taken used to be
+drawn, so an even trade put a pawn on each side that cancelled visually to
+nothing while taking up the strip. What is drawn is the difference: a pawn each
+way disappears from both sides, and a side that is a knight up shows one knight.
+Per piece type that difference needs no bookkeeping, because both armies started
+with the same number, so (initial - theirs) - (initial - mine) reduces to
+mine - theirs.
+
+**The dark pieces were a silhouette on a silhouette.** Black pieces on a dark
+panel were barely there. They are drawn with a light halo behind them now, which
+costs nothing and leaves the piece set alone; the row of white pieces gets none,
+because it never needed one.
+
+**The move list no longer moves under the hand clicking it.** The scroll was
+jumped to a computed fraction of the list on EVERY ply change, so clicking a
+move you could already see threw the list somewhere else. Two rules replace
+that: a move picked from the list scrolls nothing at all, and a move reached any
+other way scrolls only when it is off screen, and then by the smallest amount
+that brings it back. Verified against the real window: clicking a visible move
+leaves the offset at exactly where it was, and stepping to a move below the fold
+still brings it into view.
+
+### The keyboard, and the space bar playing a move for either side
+
+Set up a king and pawn against a king, press space, and the engine plays the
+move for whoever is to move. Press it again and it plays the reply. Nobody has
+to be assigned a colour: it is the position on the board that decides who is
+being moved for, which is what makes a set-up ending walkable one move at a
+time. While the engine is already thinking it still means the other thing it
+always meant, stop and take the move you have.
+
+**The bare keys had to be taken back from whatever had the focus.** A WPF button
+treats space as a click and a list treats the arrows as its own navigation, and
+both of them HANDLE the key before the window's input bindings are ever
+consulted. So after clicking any button the space bar silently repeated that
+button, and after clicking a move in the list the arrows scrolled the list
+instead of walking the game. The arrows, Home, End and space are caught on the
+way DOWN at the window now, which is the only place that ordering can be won, so
+they do the same thing wherever the focus happens to be, the way the established
+board programs behave. They are left alone while the caret is in a text box,
+because a FEN needs its spaces and its arrows, and combinations with a modifier
+are left to the ordinary bindings, which nothing steals.
+
+### Other engines, and a game between two of them
+
+Any UCI engine on the machine can be loaded and given a colour. **Game, Engines**
+keeps the list; **New game** chooses who plays white and who plays black, and the
+three answers for each are the same: you, NoaChess, or one of the engines on the
+list. Setting both sides to an engine starts a game that plays itself.
+
+An engine is added by pointing at its executable, and it is accepted only if it
+answers `uciok`. A program that starts and says nothing is rejected with what it
+did say, so a wrong file is a sentence rather than a hang. The wait before giving
+up is thirty seconds on purpose: an engine loads its evaluation network before it
+answers a single word, and this engine's own debug build takes ten.
+
+An engine is given the same hash size and thread count as the built-in one, and
+only for the options it actually declared during the handshake: a match where one
+side had been handed eight threads and the other kept its own default would be
+measuring the settings rather than the engines.
+
+Everything the window already shows works the same during a match. The evaluation
+bar, the depth, the node count and the variation follow **whichever engine is
+thinking**, so a game between two other programs reads as one conversation rather
+than going blank on alternate moves. The clock, the move list, the opening name
+and PGN saving do not know the difference.
+
+**Pause** stops a match between the move that is being searched and the next one,
+and tells every engine that could be working to stop, not just the built-in one.
+Resume picks it up from the position on the board.
+
+An engine that answers with a move that is not legal in the position it was given
+has lost track of the game. That colour is not asked again and the game stops
+where it is: asking again would only get the same answer for ever, and playing it
+would corrupt a game that is still worth saving.
+
+Each engine is a child process, started on its first move and shut down with the
+game. Closing the window while one is thinking is a normal way to close the
+window, and it stops being an unhandled exception on a thread nobody owns.
+
+### The rest of it
+
+- **Replay**: the game plays itself through from the start, at three speeds.
+- **The board as a picture**, copied to the clipboard or saved as a PNG, rendered
+  at twice its logical size so it is usable in a document rather than a blurry
+  screenshot.
+- **The window remembers where it was**, unless that position falls outside every
+  screen currently attached: a window restored onto a monitor that has been
+  unplugged is a window nobody can reach.
+
+### Endgame tablebases
+
+The Syzygy folder is a setting now, remembered between runs. With the tables
+loaded the last few pieces stop being an estimate and become a fact, which is
+the difference between an endgame analysis being useful and being decorative.
+The menu bar says which are loaded.
+
+### Setting up a position
+
+A board editor, reachable from Game. Pick a piece from the rack and click the squares; the right button clears one. Side to move and castling rights sit alongside, and the FEN box works both ways: it shows what has been built and it loads whatever is pasted into it.
+
+It refuses to hand back a position that is not one, and says why: a side without exactly one king, a pawn on the first or last rank, or a check against the side that is NOT to move, which would mean the previous move left its own king attacked. Placing a second king moves the first rather than making two, and castling rights are dropped silently when the king or that rook is not home.
+
+### The engine no longer thinks before the game starts
+
+The idle analysis used to begin on the start position, so opening the window put a core to work commenting an opening the player had not chosen yet. Nothing is analysed until the first move has been played. Analysis mode is the exception, because there the engine's opinion is what the window is for.
+
+### Engine output
+
+A table, one row per completed search iteration, newest first: depth, evaluation, elapsed time, node count and the **principal variation written in real notation**. The variation is replayed on a copy of the position to be written that way, and a move that does not fit stops the line rather than corrupting it, because a variation reconstructed from a hash table can end in a stale move.
+
+The evaluation also drives a **bar beside the board** through the same win-probability curve online boards use, so it tracks winning chances rather than material, and it turns over when the board is flipped.
+
+- **Dark theme throughout.** Every control the window uses is retemplated, because the stock ones are drawn for a light window and come back as white boxes on a dark one.
+- **Five board colour schemes**, coordinates on the edge squares, and check drawn as a glow under the king.
+- **Captured pieces and the material count** above and below the board.
+- **The NNUE network is loaded automatically** if one is found beside the executable or in the repository, so the board plays at the engine's real strength instead of on the classical evaluator. Which evaluator is active is stated in the menu bar.
+- **Threads and hash size** are settings, and they persist between runs along with the time control, the board colours and the display options.
+- **Play as white, play as black, or analysis** where the user plays both sides and the engine only comments.
+- Copy the position as FEN, copy the game as PGN, paste a FEN to set up a position.
+- The release notes open once after an upgrade instead of on every launch.
+
+### Seven defects found while building it
+
+None of them was found by reading the code. Every one came out of driving the
+window from a harness and looking at what it did, or from somebody using it.
+
+**Two searches could run in the same engine at once.** A search cancels the previous one and waits for it, but cancelling is itself an await: three requests arriving before the first of those awaits resumes all saw an idle engine, and two of them went on to search the same instance. The engine documents that this is not allowed, and it is not a theoretical hazard - driving the board quickly crashed it with an index out of range deep inside the move loop. Search requests now queue on a gate, and one that is overtaken while it waits gives up instead of running a search nobody wants any more.
+
+**Engine progress could reach the panels on the wrong thread.** The reports were marshalled by the ambient synchronization context, which is not installed everywhere the ViewModel can be built. They now go through the dispatcher explicitly.
+
+**Closing the window while the engine was thinking threw.** Disposing an engine disposed the gate that serialises its searches, and the search still waiting on that gate then had to run its finally and release it. The result was an ObjectDisposedException on a thread nobody is catching, in both the built-in engine and the external ones. The built-in case is the ordinary one: in analysis mode the idle search is running almost all the time, so almost any close hit it. The gate is not disposed any more, which costs nothing: a SemaphoreSlim that was never waited on as a handle holds nothing worth reclaiming.
+
+**Pausing a game between two engines only silenced the built-in one**, which in a match between two other programs is precisely the engine that is not working.
+
+**A move refused as illegal did not actually stop the game.** The status line said it had, and nothing had: the scheduler came straight back and asked the same engine the same question. An engine that answers with a move that is not legal in the position it was given has lost track of the game, so that colour is not asked again.
+
+**The evaluation waited on work nobody had asked for.** In analysis mode every
+position was put through a full ranking of every legal move BEFORE the analysis
+of the position itself was allowed to start. That is thirty to forty searches,
+so after each move the evaluation, the depth and the variation simply were not
+there: measured on the start position, **2727 ms of nothing**, and a middlegame
+with more legal moves is worse. The order is inverted now, and the ranking is
+also deferred by six hundred milliseconds after the position settles: the
+evaluation appears in **71 ms** and the arrows follow it, and stepping quickly
+through a game no longer pays for a ranking of every position it passes through.
+The old comment in that code said the pass "delays the evaluation, the depth and
+the variation as well" and treated a depth cap as the answer. It was not the
+answer; the ordering was.
+
+**The opening name handed out null strings and crashed the PGN.** It is a struct, so "no opening" is its default value, and a default struct has null strings whatever the declaration says. That is every game set up from a position, and saving one threw. The fix is in the struct rather than in each caller: the stored fields are nullable and the ones that are read are not, so nobody gets a null from it. This is the second crash from that same trap, which is why it was worth fixing at the source.
+
+### Notation
+
+`San.Format` joins `San.TryParse` in the Core: the reader had no writer, and a move list needs one. It is the exact inverse of the parser, including the minimum disambiguation each move needs, and it leaves the board it inspects exactly as it found it. Twenty tests, one of which round-trips every legal move of a middlegame position through both directions.
+
+354 tests (106 Core, 248 Engine).
+
+## 2026-08-10 (v4.7.0) - two ways the engine could choose a move it had already refuted
+
+Both defects were found while building a harness that replays a lost bullet game while speaking the ponder protocol and spending the opponent's real think time. That last part was the whole difficulty: five earlier reproduction attempts resolved the ponder instantly, which leaves the move budget intact, and with a full budget the engine found the right move every single time. The engine charges the ponder's wall clock against the next search, so in the game the reply came out of a 10 ms search and in every reproduction out of a 5 s one.
+
+The harness still does not reproduce that specific game. What it did do is put the search under the conditions the game ran under, and two defects were visible there on inspection.
+
+### A worker that believed it was being mated took the move from everyone else
+
+The Lazy SMP vote tested for a decisive line with `Math.Abs(score) >= MateScore - 1000`, so **a forced LOSS satisfied it**. That test short-circuits the vote ahead of any weighting, so one worker announcing its own defeat took the move outright, whatever the other workers had found. And once such a result held the lead, the branch below it kept whichever decisive score had the larger magnitude - which among losses is the **shortest** mate. Given only bad news, the vote actively chose to be mated sooner.
+
+The symptom is the same one v4.6.2 addressed from the other end: the engine plays a move its own printed variation never mentions, because the variation comes from the main worker and the move comes from the vote. The depth filter added in v4.6.2 stopped blind shallow workers from voting; it did nothing about a deep worker with a lost score, which passes the depth test cleanly.
+
+Decisive now means winning. Being mated is not a claim worth acting on - every alternative is at least as good - and the existing `score > -decisiveBound` test already kept lost results out of the ordinary vote, so with the sign restored they can no longer win anything. A worker that finds a genuine forced win still overrules one that does not. Three tests in `VoteBestResultTests` cover it.
+
+### A soft stop inside a fail-low returned a score the search never proved
+
+When the aspiration window fails low, every root move came back at or below alpha and the score is an upper bound waiting on a re-search. If the soft time limit fired during that re-search, the partial result was recorded anyway, typically hundreds of centipawns below the last completed iteration.
+
+That number then left by two doors: it is what `info score` prints, and it is what the SMP vote weighs the worker by, since the weight **is** the score. A worker stopped inside a fail-low was handing the vote a figure its own next re-search would have refuted - and a big ponder credit makes exactly this stop, at exactly this moment, the normal case rather than a rare one.
+
+The last completed iteration now survives a fail-low stop. The partial is used only when no iteration has finished at all and there is nothing else. Fail-high is untouched: a move proved at or above beta is good news and safe to take.
+
+### Measurement
+
+Neither fix is measurable the same way. The fail-low change affects every search and is on the single-thread SPRT (`sprt_463_vs_462.bat`). The vote change does not exist below two threads and is on `sprt_463_vs_462_smp.bat` at four threads, the configuration the bot runs. The vote defect is rare and catastrophic rather than a steady drip, so that SPRT is there to show the fix costs nothing; it is not the kind of bug an Elo number is good at finding.
+
+## 2026-08-10 (v4.6.2) - the training pipeline was the bottleneck, not the search: +195.4 Elo from a change the engine never sees
+
+The largest measured gain in the project's history, and it required no engine change at all. It also cost two blunders in live games from a bug this release fixes, both of which are documented below because the sequence matters more than the result.
+
+### The feature transformer was mostly zero, and it was measurable
+
+Quantising `ds1e60` - the net that had been shipping since v4.4.0 - and comparing it against its own float weights:
+
+- **85.6% of the feature transformer quantised to exactly zero** at QA=255 (89.8% at QA=127)
+- **2,221 of 22,528 features were entirely dead**: they contributed nothing to any evaluation
+- the largest quantised weight reached **52 of the 127** available
+
+Then, quantising each stage alone against the float forward pass over 4,000 real positions:
+
+| stage quantised | mean absolute error |
+|---|---|
+| feature transformer only | **38.77 cp** |
+| head (L1 + output) only | 4.9 cp |
+
+against a mean absolute evaluation of 231 cp. The engine was evaluating **16.6% away from the network that had been trained**, p95 98 cp, essentially all of it in the transformer.
+
+The cause is structural. A HalfKAv2_hm index is (king bucket, piece, square), so each of the 22,528 features only ever fires when the king sits in one of 32 regions. Individually they are rare, their weights never grow, and quantisation rounds them away.
+
+### Feature factorization: +195.4 +/- 57.5 Elo
+
+Training now optionally adds **704 virtual (piece, square) features**. Every real feature fires its own row **and** the king-independent row it is a copy of, so the shared row collects 32x the gradient and carries the bulk signal while the real rows learn only the per-king-bucket deviation. At export each virtual row is added into its 32 copies.
+
+**The fold is exact, not an approximation**: the sum the accumulator computes over the active features is unchanged, so the exported file evaluates every position to the value the trained net produces. The engine, the header and the arithmetic are untouched - the virtual features exist only while gradients are flowing.
+
+Trained on the same 70 files, the same 60 epochs, the same hyperparameters and the same export arch as the baseline, one axis:
+
+| | ds1e60 | fact60 |
+|---|---|---|
+| validation loss | 0.005301 | 0.004848 |
+| quantisation error | 38.79 cp | **17.63 cp** |
+| correlation with the teacher | 0.9402 | 0.9531 |
+| regression slope | compressed | 0.976 |
+| weights quantising to zero | 85.6% | **21.3%** |
+| dead features | 2,221 | **1,024** |
+
+The dead count of exactly 1,024 is worth keeping: those are precisely the **structurally impossible** features, pawns on ranks 1 and 8, being 32 impossible base features across 32 king buckets. The factorized net has **zero legal features it ignores**, against the baseline's 1,197.
+
+**SPRT: +195.4 +/- 57.5 Elo, LOS 100%, H1 accepted in 102 games** at 10+0.1, the same binary on both sides with only `EvalFile` differing. This is not a CCRL figure - it is measured against a version of itself, and the cascade has never added up in this project.
+
+Predicted at 35% to pass, with eval scale drift named as the main risk. Both wrong. That is the second failed prediction of this kind (output buckets were predicted at ~0 and measured +20.1), and the pattern is consistent: on this engine, fixing a measured defect in the training pipeline has paid far more than expected.
+
+### Quantization-aware training, implemented and verified, not yet measured in games
+
+Behind `--qat`. Weights are rounded and activations floored inside the forward pass with a straight-through estimator, at exactly the scales the exporter uses. The two roundings are different on purpose: weights round because export rounds them, activations **floor** because the engine's L1 divides by QB with integer division, which truncates. Rounding there would train against arithmetic the engine does not perform, and the bias is systematic rather than noise.
+
+With it on, the trained net's float forward pass and the engine's integer arithmetic **agree to 0.47 cp**, inside the engine's final truncation to a whole centipawn. Without it they differ by up to 31 cp.
+
+### Weight decay reached the feature transformer
+
+`Adam(model.parameters(), weight_decay=...)` applied decay to the transformer as well as the head, and because `EmbeddingBag` produces a dense gradient, every one of the 22,528 rows was decayed on every one of ~1.1M steps, including rows whose feature never appeared in the batch. `--ft-weight-decay` separates them. On a matched pair (same data, same epochs, decay 1e-5 against 1e-4) the mean absolute weight moves 0.00149 to 0.00045 and the dead fraction 86.2% to 95.5%.
+
+Honest caveat: on that same pair the **relative quantisation error barely moved** (15.8% to 17.3%), so the mechanism by which this buys Elo is plausible and not established. That is what its SPRT is for.
+
+### The Lazy SMP vote could be overruled by a blind worker
+
+`SearchResult` carried `(Move, Score, Nodes)` and no depth, so the vote compared a worker at depth 1 with one at depth 17 as though their scores meant the same thing. They do not: the shallow one reports a rosier number purely because it has not met the refutation yet, and the score weighting then hands it the vote by a wide margin.
+
+On 2026-08-09 this played **two mates in one in four minutes** on Lichess. Both games printed the correct move on every `info` line and then played a different one, because the PV comes from the main worker and the move came from the vote:
+
+```
+info depth 12 score cp -1613 nodes 554 pv e7f6 e3c2 b7b6 ...
+bestmove c2e3
+```
+
+With the real numbers, the depth-1 helper won **656 votes to 14**. `SearchResult` now carries the depth and a helper may only vote from at least the main worker's depth; deeper helpers still vote, which is the entire point of the vote.
+
+This defect had been recorded for months as an unexplained "PV does not match bestmove" residue at ~2% of moves. It was not cosmetic: it decides moves.
+
+### Helper threads are a persistent pool
+
+They were brand new OS threads created on **every search**, which made the thread count a fixed latency cost paid before a single node was searched. Measured, delay to `info depth 1`:
+
+| Threads | per-search threads | persistent pool |
+|---|---|---|
+| 1 | 0.7 ms | 0.7 ms |
+| 8 | 2.9 ms | 0.7 ms |
+| 16 | 6.5 ms | 3.4 ms |
+| 24 | **34.1 ms** | **2.2 ms** |
+
+The curve flattens: 24 threads now cost what 2 did. The bot had been forced down to 8 threads to stay alive at 1+1.
+
+**This change made the vote bug far more frequent, which is how it was found.** With threads created per search the helpers started ~34 ms late and often never wrote a result at all, leaving `Move.None`, which the vote skips. Parked threads start instantly, so they now reliably returned a depth-1 result - and won.
+
+### Ponderhit keeps the deeper answer
+
+Measured over 127 pondered moves: the ponder reaches **depth 21.6** against 19.5 for a fresh search, and **91% of relaunches play exactly what the ponder concluded**, in a quarter of the time. The fast reply after a ponderhit is the design working, and an earlier claim here that it was a time-management defect was wrong.
+
+The tail was not. One case in a hundred looked like this:
+
+```
+ponder depth 43 said c5d3 | relaunch depth 1 said a5b5 | played a5b5
+```
+
+A depth-1 search overruling a depth-43 one on the same position, because a long opponent think consumed the credit and left the relaunch nothing. When the relaunch comes back five or more plies shallower **and** disagrees, the pondered move now stands. The guard has been verified not to leak across positions; it has **not** been observed firing, because the starvation could not be reproduced synthetically.
+
+### Not released: v4.6.0 and v4.6.1
+
+v4.6.0 was a node-prologue cleanup in the search (dead variable, hoisted computations past the pruning, per-ply slices instead of `stackalloc`, deferred in-check test). Paired measurement: **0.0%** (+0.29% slower pooled, p = 0.22). The engine is memory-latency bound, so removing instructions does nothing while changing memory layout does - the opposite conclusion to v4.5.0's array flattening, from the same kind of measurement. It ships inside this release because it is harmless, not because it is worth anything.
+
+v4.6.1 was the vote fix alone and lived two hours before v4.6.2 replaced it.
+
+### Also in the training pipeline
+
+- **`--loss-style reference`**: an antisymmetric win-rate target with its own offset and scaling per side and an exponent of 2.5, against the previous squared error on a single 400 cp scale.
+- **`--start-lambda` / `--end-lambda`**: linear interpolation over the run.
+- **`--prefetch`**: batches built on a background thread. Measured **1.06x**, not the 1.6x predicted, and reported as such.
+- **`list_checkpoint_data.py`** and a rewritten `Noa-DataScale-Train.ps1`: a candidate now inherits its dataset list from the baseline **checkpoint** instead of globbing, and takes an explicit export arch. A run that was meant to test data volume differed from its baseline in three ways at once - epochs 60 to 22, export arch 1 to 2, and a silently dropped shard - and measured -108.6 Elo for reasons that had nothing to do with what it was testing.
+- **A correction that closes an axis**: `--max-records` is inert in the streaming loader, so every net had already trained on the whole 324,297,032-position corpus. The data axis was never open.
+
+### Measured
+
+**Net: +195.4 +/- 57.5 Elo (SPRT, H1, 102 games) over the previous net.** 245 tests.
+
+### Field gauntlet: 3271 +/-40 CCRL, +128 over v4.5.0
+
+600 games at 60+0.6 against the same 12-engine field (2862-3281), single-threaded, ponder off, no tablebases for anyone, rating solved for R by `audit/gauntlet.py`:
+
+| opponent | score | performance |
+|---|---|---|
+| 3281 Patricia 3.0 | 40.0% | 3211 |
+| 3250 Defenchess 2.2 | 60.0% | 3320 |
+| 3230 Princhess 0.19.0 | 56.0% | 3272 |
+| 3150 Rubichess 1.5 | 76.0% | 3350 |
+| 3120 Winter 1.0 | 67.0% | 3243 |
+| 3010 Bit-Genie 9 | 83.0% | 3285 |
+| 2978 Pedone 1.5 | 84.0% | 3266 |
+| 2917 Tcheran 6.0 | 90.0% | 3299 |
+| 2910 Ethereal 8.62 | 92.0% | 3334 |
+| 2905 Inanis 1.5.0 | 81.0% | 3157 |
+| 2900 Marvin 3.5.0 | 90.0% | 3282 |
+| 2862 Colossus 2025b | 89.0% | 3225 |
+| **total** | **75.7%** | **3271 +/-40** |
+
+Per-opponent performances span 3157 to 3350, so no single pairing carries the figure. Against v4.5.0's **3143 +/-31** this is **+128**, well outside what two measurements of this size leave uncertain, and the crossover has moved above the field: the only negative result is Patricia at the top, while Defenchess 3250 and Princhess 3230 both go 56% or better.
+
+The self-SPRT said +195.4 and the field says +128. That gap is the usual direction and worth recording as such: a figure measured against a version of itself is not a CCRL figure, and this project has now put a number on the shortfall.
+
 ## 2026-08-08 (v4.5.0) - the same search, about 10% faster, with every step proved by byte-identical node counts
 
 Three changes, none of which alters a single node the search visits. That is the whole point: every one of them was gated on the same test, `audit/bench_identical.py` reporting **byte-identical node counts position by position** over 150 positions at depth 12, plus a control comparing the bench against itself. 34,690,140 nodes, identical in every comparison. Anything else and the change is reverted, whatever the unit tests say - the discipline that stopped a full SEE implementation in v4.4.0 after it passed ~70k equivalence comparisons and still moved node counts 1.8%.
@@ -247,6 +885,17 @@ Over 40 searches of that position - every clock budget from 100 ms to 120 s, 1 a
 While chasing this, the same position at the same depth gave different scores and sometimes different moves depending on the vector path (`AVX2` / `no AVX2` / no intrinsics): -776 / -792 / -799 cp on move 51, -1174 / -1135 / -1217 on move 52. A build should not change its mind because of the vector width, so this is a real defect and a parity test across the three paths is pending.
 
 It is **not**, however, affecting the bot. The first reading of it was wrong: the macOS host was assumed to be Apple Silicon running the x64 build under Rosetta 2 (no AVX2, hence the scalar path), and that assumption was never checked. It is an **Intel** Mac - the arm64 build refuses to start on it with `bad CPU type in executable` - so it takes the same AVX2 path as Windows. Verified rather than argued: `go depth 20` from the start position at `Threads=1` returns **identical node counts, scores and PV on both machines** (12,066,208 nodes, cp 46). The two hosts are the same engine bit for bit; games played on either are equally good evidence. The parity defect matters for a future non-AVX2 target, not for anything deployed today.
+
+> **RESUELTO el 2026-08-12, y no a proposito.** Re-medido en v4.7.0 con **las
+> mismas dos posiciones, la misma profundidad 18 y las tres rutas**: puntuacion
+> identica (-821 y -1174), jugada identica (`c2e4`) y **recuento de nodos
+> identico - 418.316 y 463.848 exactos**. Ese ultimo dato es la prueba y no un
+> detalle: si la evaluacion difiriera en un solo nodo del arbol, las busquedas
+> divergirian y los nodos se separarian. Confirmado ademas sobre 28 posiciones
+> mas, 22 de ellas de una partida real del bot, a profundidad 10-11: 28 de 28
+> identicas. El defecto era real aqui y desaparecio por el camino, con la
+> reescritura del acumulador perezoso de v4.5.0 como candidato mas probable.
+> Nadie lo cerro porque nadie lo estaba arreglando. Arnes: `scratchpad/simd3.py`.
 
 ### The ponder audit
 

@@ -1,83 +1,909 @@
-﻿<Window x:Class="NoaChess.GUI.Wpf.MainWindow"
+<Window x:Class="NoaChess.GUI.Wpf.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:NoaChess.GUI.Wpf.ViewModels"
-        Title="NoaChess" Height="640" Width="560"
-        MinHeight="400" MinWidth="380">
-    <!-- Main window. The DataContext (BoardViewModel) is assigned in code-behind.
-         Everything painted comes through bindings: the view never touches the Board. -->
-    <DockPanel Margin="8">
+        Title="NoaChess" Height="880" Width="1340"
+        MinHeight="660" MinWidth="1040"
+        Background="{StaticResource AppBackground}"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True">
 
-        <!-- Top bar: basic game actions -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="New game" Padding="10,4" Click="OnNewGameClicked"/>
-            <Button Content="Flip board" Padding="10,4" Margin="8,0,0,0" Click="OnFlipBoardClicked"/>
-        </StackPanel>
+    <!-- Main window. The DataContext (MainViewModel) is assigned in code-behind.
+         Everything painted comes through bindings: the view never touches the
+         Board, and the only logic in the code-behind is turning mouse
+         coordinates into board squares. -->
 
-        <!-- Status bar: game status (turn, check, mate, "thinking...") on the
-             left; live engine info (evaluation and search depth in plies,
-             updated after each completed iteration) on the right. -->
-        <StatusBar DockPanel.Dock="Bottom" Margin="0,8,0,0">
-            <StatusBarItem>
-                <TextBlock Text="{Binding StatusText}" FontSize="13"/>
-            </StatusBarItem>
-            <StatusBarItem HorizontalAlignment="Right">
+    <!-- Only modifier combinations live here. The bare keys (arrows, Home,
+         End, space) are taken in PreviewKeyDown instead, because a focused
+         button or list handles them before these bindings are ever seen. -->
+    <Window.InputBindings>
+        <KeyBinding Key="F"  Modifiers="Control" Command="{Binding FlipCommand}"/>
+        <KeyBinding Key="N"  Modifiers="Control" Command="{Binding NewGameCommand}"/>
+        <KeyBinding Key="Z"  Modifiers="Control" Command="{Binding TakeBackCommand}"/>
+        <KeyBinding Key="C"  Modifiers="Control+Shift" Command="{Binding CopyFenCommand}"/>
+        <KeyBinding Key="O"  Modifiers="Control" Command="{Binding OpenPgnCommand}"/>
+        <KeyBinding Key="S"  Modifiers="Control" Command="{Binding SavePgnCommand}"/>
+        <KeyBinding Key="H" Modifiers="Control" Command="{Binding HintCommand}"/>
+    </Window.InputBindings>
+
+    <Window.Resources>
+
+        <!-- ============ One square of the board ============
+             Layers, bottom to top: base colour, the highlights that describe
+             the position (last move, premove, selection, check), the
+             coordinates, the piece, and finally the move hints, which have to
+             sit ON TOP of a piece to ring it as a capture. -->
+        <DataTemplate x:Key="SquareTemplate" DataType="{x:Type vm:SquareViewModel}">
+            <Grid>
+                <Rectangle Fill="{Binding BaseBrush}"/>
+
+                <Rectangle Fill="#66CDD26A"
+                           Visibility="{Binding IsLastMove, Converter={StaticResource BoolToVis}}"/>
+                <Rectangle Fill="#663E86C8"
+                           Visibility="{Binding IsPremove, Converter={StaticResource BoolToVis}}"/>
+                <Rectangle Fill="#6620B03C"
+                           Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}"/>
+
+                <Ellipse Visibility="{Binding IsCheck, Converter={StaticResource BoolToVis}}">
+                    <Ellipse.Fill>
+                        <RadialGradientBrush>
+                            <GradientStop Color="#E8FF4632" Offset="0"/>
+                            <GradientStop Color="#90E62D1B" Offset="0.55"/>
+                            <GradientStop Color="#00C41A0A" Offset="1"/>
+                        </RadialGradientBrush>
+                    </Ellipse.Fill>
+                </Ellipse>
+
+                <!-- Vector pieces (classic Cburnett set) rescale losslessly with
+                     the board. Margin 6 on an 80-unit square leaves the piece at
+                     about 85% of it, the proportion the big online boards use. -->
+                <Image Source="{Binding PieceImage}" Margin="6" Opacity="{Binding PieceOpacity}"/>
+
+                <!-- Coordinates go ON TOP of the piece. Underneath, every label
+                     on the first rank and the a file would be hidden by a rook
+                     or a pawn, which is most of the time. -->
+                <TextBlock Text="{Binding RankLabel}" Foreground="{Binding LabelBrush}"
+                           FontSize="13" FontWeight="Bold"
+                           HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,2,0,0"/>
+                <TextBlock Text="{Binding FileLabel}" Foreground="{Binding LabelBrush}"
+                           FontSize="13" FontWeight="Bold"
+                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,4,1"/>
+
+                <Ellipse Width="24" Height="24" Fill="#33000000"
+                         Visibility="{Binding ShowMoveDot, Converter={StaticResource BoolToVis}}"/>
+                <Ellipse Width="72" Height="72" Stroke="#33000000" StrokeThickness="7"
+                         Visibility="{Binding ShowCaptureRing, Converter={StaticResource BoolToVis}}"/>
+
+                <Rectangle Stroke="#D0FFFFFF" StrokeThickness="4"
+                           Visibility="{Binding IsDragHover, Converter={StaticResource BoolToVis}}"/>
+            </Grid>
+        </DataTemplate>
+
+        <!-- ============ One move in the move list ============
+             The piece is a figurine and the rest is text, which is how printed
+             chess has always been set. -->
+        <DataTemplate x:Key="MoveCellTemplate" DataType="{x:Type vm:MoveCellViewModel}">
+            <Border x:Name="Chrome" CornerRadius="3" Padding="6,3" Background="Transparent"
+                    Cursor="Hand" MouseLeftButtonDown="OnMoveCellClicked">
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="{Binding EvaluationText}" FontSize="13" FontWeight="SemiBold"/>
-                    <Separator Margin="8,0" Width="1"/>
-                    <TextBlock Text="{Binding DepthText}" FontSize="13"/>
+                    <Image Source="{Binding LeadFigurine}" Width="17" Height="17"
+                           VerticalAlignment="Center" Margin="0,0,1,0"
+                           Visibility="{Binding LeadFigurine, Converter={StaticResource NullToVis}}"/>
+                    <TextBlock Text="{Binding Text}" VerticalAlignment="Center" FontSize="13.5"/>
+                    <Image Source="{Binding TrailFigurine}" Width="17" Height="17"
+                           VerticalAlignment="Center"
+                           Visibility="{Binding TrailFigurine, Converter={StaticResource NullToVis}}"/>
+                    <TextBlock Text="{Binding Suffix}" VerticalAlignment="Center" FontSize="13.5"/>
+                    <TextBlock Text="{Binding Annotation}" VerticalAlignment="Center"
+                               FontSize="13.5" FontWeight="Bold" Margin="3,0,0,0"
+                               Foreground="{Binding AnnotationBrush}"/>
                 </StackPanel>
-            </StatusBarItem>
-        </StatusBar>
+            </Border>
+            <DataTemplate.Triggers>
+                <Trigger SourceName="Chrome" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Chrome" Property="Background" Value="{StaticResource PanelHover}"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                    <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentWash}"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
 
-        <!-- 8x8 board. Viewbox scales it while keeping it square.
-             ItemsControl paints DisplaySquares (already ordered per the
-             orientation) onto an 8-column UniformGrid. -->
-        <Viewbox Stretch="Uniform">
-            <ItemsControl ItemsSource="{Binding DisplaySquares}" Width="480" Height="480">
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <UniformGrid Rows="8" Columns="8"/>
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
+        <!-- ============ Material advantage ============
+             Only the pieces a side is UP BY, drawn in the opponent's colour.
+             Overlapped by a negative margin so a whole surplus still fits on
+             one line next to the player's name. The halo that makes the dark
+             pieces readable is applied by the strip, which knows the colour;
+             this template deliberately does not. -->
+        <DataTemplate x:Key="CapturedPieceTemplate">
+            <Image Source="{Binding}" Width="19" Height="19" Margin="-5,0,0,0"/>
+        </DataTemplate>
 
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate DataType="{x:Type vm:SquareViewModel}">
-                        <!-- Each square is a clickable Border. Colors are decided
-                             with triggers on the SquareViewModel properties:
-                             selection > legal destination > last move > base color. -->
-                        <Border MouseLeftButtonDown="OnSquareMouseDown" Cursor="Hand">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <!-- Base color: dark square -->
-                                    <Setter Property="Background" Value="#B58863"/>
+    </Window.Resources>
+
+    <DockPanel>
+
+        <!-- ==================== Menu bar ==================== -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource Panel}"
+                BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,0,0,1">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Left" Text="NoaChess" FontSize="15" FontWeight="Bold"
+                           Foreground="{StaticResource Accent}" VerticalAlignment="Center"
+                           Margin="14,0,4,0"/>
+                <TextBlock DockPanel.Dock="Left" x:Name="VersionBadge" FontSize="11"
+                           Foreground="{StaticResource TextMuted}" VerticalAlignment="Center"
+                           Margin="0,2,10,0"/>
+
+                <TextBlock DockPanel.Dock="Right" Text="{Binding EngineDescription}"
+                           Foreground="{StaticResource TextMuted}" FontSize="12"
+                           VerticalAlignment="Center" Margin="0,0,14,0"/>
+
+                <Menu VerticalAlignment="Center">
+                    <MenuItem Header="_Game">
+                        <MenuItem Header="New game..." InputGestureText="Ctrl+N"
+                                  Command="{Binding NewGameCommand}"/>
+                        <MenuItem Header="Set up a position..." Click="OnSetupPositionClicked"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <!-- The mode is chosen through Click and a Tag rather
+                             than a command parameter: a CommandParameter written
+                             in XAML arrives as a string, and a command expecting
+                             the enum would silently do nothing. -->
+                        <MenuItem Header="Play as white" IsCheckable="True"
+                                  Click="OnModeClicked" Tag="PlayAsWhite"
+                                  IsChecked="{Binding Mode, Mode=OneWay,
+                                              Converter={StaticResource EqualsParam},
+                                              ConverterParameter=PlayAsWhite}"/>
+                        <MenuItem Header="Play as black" IsCheckable="True"
+                                  Click="OnModeClicked" Tag="PlayAsBlack"
+                                  IsChecked="{Binding Mode, Mode=OneWay,
+                                              Converter={StaticResource EqualsParam},
+                                              ConverterParameter=PlayAsBlack}"/>
+                        <MenuItem Header="Analysis (play both sides)" IsCheckable="True"
+                                  Click="OnModeClicked" Tag="Analysis"
+                                  IsChecked="{Binding Mode, Mode=OneWay,
+                                              Converter={StaticResource EqualsParam},
+                                              ConverterParameter=Analysis}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Take back move" InputGestureText="Ctrl+Z"
+                                  Command="{Binding TakeBackCommand}"/>
+                        <MenuItem Header="Play the move for the side to move" InputGestureText="Space"
+                                  Command="{Binding MoveNowCommand}"
+                                  ToolTip="Either side. While the engine is already thinking, it takes the move it has so far"/>
+                        <MenuItem Header="Hint" InputGestureText="Ctrl+H"
+                                  Command="{Binding HintCommand}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Open game (PGN)..." InputGestureText="Ctrl+O"
+                                  Command="{Binding OpenPgnCommand}"/>
+                        <MenuItem Header="Save game (PGN)..." InputGestureText="Ctrl+S"
+                                  Command="{Binding SavePgnCommand}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Game details..." Click="OnGameDetailsClicked"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Copy the board as an image" Click="OnCopyBoardClicked"/>
+                        <MenuItem Header="Save the board as an image..." Click="OnSaveBoardClicked"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Copy game (PGN)" Command="{Binding CopyPgnCommand}"/>
+                        <MenuItem Header="Paste game (PGN)" Command="{Binding PastePgnCommand}"/>
+                        <MenuItem Header="Copy position (FEN)" InputGestureText="Ctrl+Shift+C"
+                                  Command="{Binding CopyFenCommand}"/>
+                        <MenuItem Header="Paste position (FEN)" Command="{Binding PasteFenCommand}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Exit" Click="OnExitClicked"/>
+                    </MenuItem>
+
+                    <MenuItem Header="_Engine">
+                        <MenuItem Header="Threads">
+                            <MenuItem Header="1" IsCheckable="True" Click="OnThreadsClicked" Tag="1"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=1}"/>
+                            <MenuItem Header="2" IsCheckable="True" Click="OnThreadsClicked" Tag="2"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=2}"/>
+                            <MenuItem Header="4" IsCheckable="True" Click="OnThreadsClicked" Tag="4"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=4}"/>
+                            <MenuItem Header="6" IsCheckable="True" Click="OnThreadsClicked" Tag="6"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=6}"/>
+                            <MenuItem Header="8" IsCheckable="True" Click="OnThreadsClicked" Tag="8"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=8}"/>
+                            <MenuItem Header="12" IsCheckable="True" Click="OnThreadsClicked" Tag="12"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=12}"/>
+                            <MenuItem Header="16" IsCheckable="True" Click="OnThreadsClicked" Tag="16"
+                                      IsChecked="{Binding Threads, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=16}"/>
+                        </MenuItem>
+                        <MenuItem Header="Hash table">
+                            <MenuItem Header="32 MB" IsCheckable="True" Click="OnHashClicked" Tag="32"
+                                      IsChecked="{Binding HashMb, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=32}"/>
+                            <MenuItem Header="128 MB" IsCheckable="True" Click="OnHashClicked" Tag="128"
+                                      IsChecked="{Binding HashMb, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=128}"/>
+                            <MenuItem Header="256 MB" IsCheckable="True" Click="OnHashClicked" Tag="256"
+                                      IsChecked="{Binding HashMb, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=256}"/>
+                            <MenuItem Header="512 MB" IsCheckable="True" Click="OnHashClicked" Tag="512"
+                                      IsChecked="{Binding HashMb, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=512}"/>
+                            <MenuItem Header="1024 MB" IsCheckable="True" Click="OnHashClicked" Tag="1024"
+                                      IsChecked="{Binding HashMb, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=1024}"/>
+                        </MenuItem>
+                        <MenuItem Header="Review depth">
+                            <MenuItem Header="8 (fast)" IsCheckable="True" Click="OnReviewDepthClicked" Tag="8"
+                                      IsChecked="{Binding ReviewDepth, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=8}"/>
+                            <MenuItem Header="12 (balanced)" IsCheckable="True" Click="OnReviewDepthClicked" Tag="12"
+                                      IsChecked="{Binding ReviewDepth, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=12}"/>
+                            <MenuItem Header="16 (slow)" IsCheckable="True" Click="OnReviewDepthClicked" Tag="16"
+                                      IsChecked="{Binding ReviewDepth, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=16}"/>
+                            <MenuItem Header="20 (very slow)" IsCheckable="True" Click="OnReviewDepthClicked" Tag="20"
+                                      IsChecked="{Binding ReviewDepth, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=20}"/>
+                        </MenuItem>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Analyse while I think" IsCheckable="True"
+                                  IsChecked="{Binding AnalyseWhileIdle, Mode=TwoWay}"/>
+                        <MenuItem Header="Vary the opening" IsCheckable="True"
+                                  IsChecked="{Binding VaryOpening, Mode=TwoWay}"/>
+                        <MenuItem Header="Find the decisions when reviewing" IsCheckable="True"
+                                  IsChecked="{Binding FindDecisionPoints, Mode=TwoWay}"/>
+                        <MenuItem Header="Load NNUE network..." Click="OnLoadNnueClicked"/>
+                        <MenuItem Header="UCI engines..." Click="OnEnginesClicked"/>
+                        <MenuItem Header="Endgame tablebases folder..." Click="OnTablebasesClicked"/>
+                    </MenuItem>
+
+                    <MenuItem Header="_Board">
+                        <MenuItem Header="Flip board" InputGestureText="Ctrl+F"
+                                  Command="{Binding FlipCommand}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Colours">
+                            <MenuItem Header="Noa" IsCheckable="True" Click="OnPaletteClicked" Tag="Noa"
+                                      IsChecked="{Binding BoardThemeName, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=Noa}"/>
+                            <MenuItem Header="Forest" IsCheckable="True" Click="OnPaletteClicked" Tag="Forest"
+                                      IsChecked="{Binding BoardThemeName, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=Forest}"/>
+                            <MenuItem Header="Slate" IsCheckable="True" Click="OnPaletteClicked" Tag="Slate"
+                                      IsChecked="{Binding BoardThemeName, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=Slate}"/>
+                            <MenuItem Header="Walnut" IsCheckable="True" Click="OnPaletteClicked" Tag="Walnut"
+                                      IsChecked="{Binding BoardThemeName, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=Walnut}"/>
+                            <MenuItem Header="Ink" IsCheckable="True" Click="OnPaletteClicked" Tag="Ink"
+                                      IsChecked="{Binding BoardThemeName, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=Ink}"/>
+                        </MenuItem>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Show coordinates" IsCheckable="True"
+                                  IsChecked="{Binding ShowCoordinates, Mode=TwoWay}"/>
+                        <MenuItem Header="Show legal moves" IsCheckable="True"
+                                  IsChecked="{Binding ShowLegalMoves, Mode=TwoWay}"/>
+                        <Separator Style="{StaticResource MenuSeparator}"/>
+                        <MenuItem Header="Replay speed">
+                            <MenuItem Header="Fast" IsCheckable="True" Click="OnReplaySpeedClicked" Tag="400"
+                                      IsChecked="{Binding ReplaySpeedMs, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=400}"/>
+                            <MenuItem Header="Normal" IsCheckable="True" Click="OnReplaySpeedClicked" Tag="900"
+                                      IsChecked="{Binding ReplaySpeedMs, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=900}"/>
+                            <MenuItem Header="Slow" IsCheckable="True" Click="OnReplaySpeedClicked" Tag="1800"
+                                      IsChecked="{Binding ReplaySpeedMs, Mode=OneWay, Converter={StaticResource EqualsParam}, ConverterParameter=1800}"/>
+                        </MenuItem>
+                    </MenuItem>
+
+                    <MenuItem Header="_Help">
+                        <MenuItem Header="Version notes" Click="OnChangelogClicked"/>
+                        <MenuItem Header="How to use the board" Click="OnHelpClicked"/>
+                    </MenuItem>
+                </Menu>
+            </DockPanel>
+        </Border>
+
+        <!-- ==================== Status bar ==================== -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource Panel}"
+                BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,1,0,0">
+            <Grid Margin="14,5">
+                <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel.Resources>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                        </Style>
+                    </StackPanel.Resources>
+                    <TextBlock Text="eval" Foreground="{StaticResource TextMuted}" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding EvaluationText}" FontWeight="Bold"
+                               Foreground="{StaticResource Accent}" Margin="0,0,16,0"/>
+                    <TextBlock Text="depth" Foreground="{StaticResource TextMuted}" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding DepthText}" Margin="0,0,16,0"/>
+                    <TextBlock Text="nodes" Foreground="{StaticResource TextMuted}" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding NodesText}" Margin="0,0,16,0"/>
+                    <TextBlock Text="speed" Foreground="{StaticResource TextMuted}" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding NpsText}" Margin="0,0,16,0"/>
+                    <TextBlock Text="time" Foreground="{StaticResource TextMuted}" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding TimeText}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== Side panels ==================== -->
+        <Grid DockPanel.Dock="Right" Width="460" Margin="0,10,10,10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="2*" MinHeight="140"/>
+                <RowDefinition Height="6"/>
+                <RowDefinition Height="3*" MinHeight="160"/>
+            </Grid.RowDefinitions>
+
+            <!-- Move list -->
+            <Border Grid.Row="0" Style="{StaticResource Card}">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Padding="12,8,10,6"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,0,0,1">
+                        <DockPanel>
+                            <TextBlock Text="MOVES" Style="{StaticResource SectionHeader}"
+                                       VerticalAlignment="Center"/>
+                            <Button DockPanel.Dock="Right" Content="{Binding ReviewButtonText}"
+                                    Style="{StaticResource ToolButton}" Padding="10,3"
+                                    FontSize="11.5" Margin="10,0,0,0"
+                                    Command="{Binding ReviewGameCommand}"
+                                    ToolTip="Search every position of the game and mark the mistakes"/>
+                            <Button DockPanel.Dock="Right" Content="Practise"
+                                    Style="{StaticResource ToolButton}" Padding="10,3"
+                                    FontSize="11.5" Margin="8,0,0,0"
+                                    Command="{Binding TrainCommand}"
+                                    ToolTip="Play the positions you got wrong again"/>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding ModeText}"
+                                       HorizontalAlignment="Right" FontSize="11"
+                                       Foreground="{StaticResource TextMuted}" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
+                    <Border DockPanel.Dock="Bottom" Padding="12,7"
+                            Background="{StaticResource PanelRaised}"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,1,0,0"
+                            Visibility="{Binding HasReview, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding ReviewText}" TextWrapping="Wrap" FontSize="11.5"
+                                   Foreground="{StaticResource TextSecondary}"/>
+                    </Border>
+
+                    <!-- Practice. The board is the exercise, so this strip only
+                         has to say what is being asked and how it went. -->
+                    <Border DockPanel.Dock="Bottom" Padding="12,8"
+                            Background="{StaticResource AccentWash}"
+                            BorderBrush="{StaticResource AccentDim}" BorderThickness="0,1,0,0"
+                            Visibility="{Binding HasTraining, Converter={StaticResource BoolToVis}}">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="Next" FontSize="11.5"
+                                    Style="{StaticResource ToolButton}" Padding="12,3"
+                                    VerticalAlignment="Top" Margin="10,0,0,0"
+                                    Command="{Binding NextTrainingCommand}"/>
+                            <TextBlock Text="{Binding TrainingText}" TextWrapping="Wrap"
+                                       FontSize="12" Foreground="{StaticResource TextPrimary}"/>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- The opening, above the moves, the way a chess program
+                         has always shown it. Hidden entirely when the game has
+                         no name rather than leaving an empty strip. -->
+                    <Border DockPanel.Dock="Top" Padding="12,7,10,7"
+                            Background="{StaticResource PanelRaised}"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,0,0,1"
+                            Visibility="{Binding HasOpening, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding OpeningText}" FontSize="12.5"
+                                   FontWeight="SemiBold" TextWrapping="Wrap"
+                                   Foreground="{StaticResource Accent}"/>
+                    </Border>
+
+                    <ScrollViewer x:Name="MoveScroller" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Padding="6,4">
+                        <ItemsControl ItemsSource="{Binding MoveRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:MoveRowViewModel}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="42"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding NumberText}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   HorizontalAlignment="Right" Margin="0,3,8,3"
+                                                   FontSize="12.5"/>
+                                        <ContentControl Grid.Column="1" Content="{Binding White}"
+                                                        ContentTemplate="{StaticResource MoveCellTemplate}"/>
+                                        <ContentControl Grid.Column="2" Content="{Binding Black}"
+                                                        ContentTemplate="{StaticResource MoveCellTemplate}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch"
+                          VerticalAlignment="Center" ResizeBehavior="PreviousAndNext"/>
+
+            <!-- Engine output, one row per completed iteration -->
+            <Border Grid.Row="2" Style="{StaticResource Card}">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Padding="12,8,10,6"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="0,0,0,1">
+                        <DockPanel>
+                            <!-- The docked children come FIRST and the label
+                                 last: a DockPanel gives its remaining space to
+                                 whichever child is last, and a button that
+                                 stretches across the whole header is not a
+                                 button any more. -->
+                            <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right"
+                                       Text="{Binding EvaluationText}" FontWeight="Bold"
+                                       Foreground="{StaticResource Accent}" VerticalAlignment="Center"
+                                       Margin="10,0,0,0"/>
+                            <Button DockPanel.Dock="Right" Content="Decisions" FontSize="11.5"
+                                    Command="{Binding DecisionsCommand}"
+                                    ToolTip="The positions where the choice actually mattered">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource ToolButton}">
+                                        <Setter Property="Padding" Value="10,3"/>
+                                        <Setter Property="Margin" Value="8,0,0,0"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ShowDecisions}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                                <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                            <Button DockPanel.Dock="Right" Content="All moves" FontSize="11.5"
+                                    Command="{Binding CandidatesCommand}"
+                                    ToolTip="Score every legal move of this position, best first">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource ToolButton}">
+                                        <Setter Property="Padding" Value="10,3"/>
+                                        <Setter Property="Margin" Value="10,0,0,0"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ShowCandidates}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                                <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                            <TextBlock Text="ENGINE" Style="{StaticResource SectionHeader}"
+                                       VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- The engine's speed is not a column here: it is already
+                         in the status bar, and the variation needs the room
+                         more than a number that barely changes between rows. -->
+                    <Grid DockPanel.Dock="Top" Margin="10,5,10,4"
+                          Visibility="{Binding ShowIterations, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28"/>
+                            <ColumnDefinition Width="56"/>
+                            <ColumnDefinition Width="48"/>
+                            <ColumnDefinition Width="56"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.Resources>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontSize" Value="10.5"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+                            </Style>
+                        </Grid.Resources>
+                        <TextBlock Grid.Column="0" Text="D"/>
+                        <TextBlock Grid.Column="1" Text="SCORE"/>
+                        <TextBlock Grid.Column="2" Text="TIME"/>
+                        <TextBlock Grid.Column="3" Text="NODES"/>
+                        <TextBlock Grid.Column="4" Text="VARIATION"/>
+                    </Grid>
+
+                    <!-- Where the game was actually decided. Not the mistakes:
+                         the positions where the choice was worth something,
+                         whether or not the player found it. -->
+                    <DockPanel Visibility="{Binding ShowDecisions, Converter={StaticResource BoolToVis}}">
+                        <Border DockPanel.Dock="Top" Background="{StaticResource AccentWash}"
+                                BorderBrush="{StaticResource AccentDim}" BorderThickness="0,0,0,1"
+                                Padding="12,8">
+                            <TextBlock Text="{Binding DecisionsHeadline}" TextWrapping="Wrap"
+                                       FontSize="12.5" Foreground="{StaticResource TextPrimary}"/>
+                        </Border>
+
+                        <Grid DockPanel.Dock="Top" Margin="10,6,10,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="48"/>
+                                <ColumnDefinition Width="52"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="46"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="FontSize" Value="10.5"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                    <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+                                </Style>
+                            </Grid.Resources>
+                            <TextBlock Grid.Column="0" Text="MOVE"/>
+                            <TextBlock Grid.Column="1" Text="WORTH"/>
+                            <TextBlock Grid.Column="2" Text="PLAYED"/>
+                            <TextBlock Grid.Column="3" Text="TIME"/>
+                        </Grid>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled" Padding="10,2,8,8">
+                            <ItemsControl ItemsSource="{Binding Decisions}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:DecisionPointViewModel}">
+                                        <Border x:Name="Row" CornerRadius="3" Margin="0,1" Cursor="Hand"
+                                                Background="Transparent"
+                                                MouseLeftButtonDown="OnDecisionClicked">
+                                            <Grid>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="{Binding BarFraction, Converter={StaticResource Bar}}"/>
+                                                        <ColumnDefinition Width="{Binding BarFraction, Converter={StaticResource BarRest}}"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Rectangle Grid.Column="0" Fill="{StaticResource AccentWash}"
+                                                               RadiusX="3" RadiusY="3" Opacity="0.6"/>
+                                                </Grid>
+                                                <Grid Margin="8,5">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="48"/>
+                                                        <ColumnDefinition Width="52"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="46"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding MoveText}"
+                                                               Foreground="{StaticResource TextMuted}" FontSize="12"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding SpreadText}"
+                                                               FontFamily="{StaticResource MonoFont}"
+                                                               FontWeight="Bold" FontSize="12.5"
+                                                               Foreground="{StaticResource Accent}"/>
+                                                    <TextBlock Grid.Column="2" Text="{Binding PlayedText}"
+                                                               FontSize="12.5" TextTrimming="CharacterEllipsis"
+                                                               Margin="0,0,8,0">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <!-- Green when the player found it, plain
+                                                                     when they did not: the point is what
+                                                                     was there, not a scolding. -->
+                                                                <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding TookIt}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{StaticResource Positive}"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock Grid.Column="3" Text="{Binding TimeText}"
+                                                               FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                               Foreground="{StaticResource TextMuted}"/>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                        <DataTemplate.Triggers>
+                                            <Trigger SourceName="Row" Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Row" Property="Background"
+                                                        Value="{StaticResource PanelHover}"/>
+                                            </Trigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+
+                    <!-- Every legal move, priced and ranked. What a single best
+                         line can never show: what the alternatives were worth. -->
+                    <DockPanel Visibility="{Binding ShowCandidates, Converter={StaticResource BoolToVis}}">
+                        <TextBlock DockPanel.Dock="Bottom" Text="{Binding CandidatesStatus}"
+                                   Foreground="{StaticResource TextMuted}" FontSize="11"
+                                   Margin="12,4,10,8" TextWrapping="Wrap"/>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled" Padding="10,4,8,0">
+                            <ItemsControl ItemsSource="{Binding Candidates}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:CandidateMoveViewModel}">
+                                        <Border x:Name="Row" CornerRadius="3" Margin="0,1" Cursor="Hand"
+                                                Background="Transparent"
+                                                MouseLeftButtonDown="OnCandidateClicked">
+                                            <Grid>
+                                                <!-- The bar sits BEHIND the text and its width is the
+                                                     move's share of the best one, so the panel reads
+                                                     at a glance before any number does. -->
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="{Binding BarFraction, Converter={StaticResource Bar}}"/>
+                                                        <ColumnDefinition Width="{Binding BarFraction, Converter={StaticResource BarRest}}"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Rectangle Grid.Column="0" Fill="{StaticResource AccentWash}"
+                                                               RadiusX="3" RadiusY="3" Opacity="0.75"/>
+                                                </Grid>
+                                                <Grid Margin="8,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="30"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="66"/>
+                                                        <ColumnDefinition Width="54"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding RankText}"
+                                                               Foreground="{StaticResource TextMuted}" FontSize="12"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding San}"
+                                                               FontWeight="SemiBold" FontSize="13.5"
+                                                               Margin="0,0,10,0"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Grid.Column="2" Text="{Binding ScoreText}"
+                                                               FontFamily="{StaticResource MonoFont}" FontSize="12.5"
+                                                               FontWeight="Bold"
+                                                               Foreground="{Binding WhiteScore, Converter={StaticResource ScoreBrush}}"/>
+                                                    <TextBlock Grid.Column="3" Text="{Binding BehindText}"
+                                                               FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                               Foreground="{StaticResource TextMuted}"/>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                        <DataTemplate.Triggers>
+                                            <Trigger SourceName="Row" Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Row" Property="Background"
+                                                        Value="{StaticResource PanelHover}"/>
+                                            </Trigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Padding="10,0,8,6"
+                                  Visibility="{Binding ShowIterations, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl ItemsSource="{Binding AnalysisLines}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:AnalysisLineViewModel}">
+                                    <Grid Background="Transparent">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="28"/>
+                                            <ColumnDefinition Width="56"/>
+                                            <ColumnDefinition Width="48"/>
+                                            <ColumnDefinition Width="56"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.Resources>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                                                <Setter Property="Margin" Value="0,1"/>
+                                                <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                            </Style>
+                                        </Grid.Resources>
+                                        <TextBlock Grid.Column="0" Text="{Binding DepthText}"
+                                                   Foreground="{StaticResource TextPrimary}"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding ScoreText}"
+                                                   FontWeight="Bold"
+                                                   Foreground="{Binding WhiteScore, Converter={StaticResource ScoreBrush}}"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding TimeText}"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding NodesText}"/>
+                                        <!-- The full line is always one hover away, however long it is. -->
+                                        <TextBlock Grid.Column="4" Text="{Binding PvText}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   ToolTip="{Binding PvText}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- ==================== Board column ==================== -->
+        <Grid Margin="14,10,8,10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Top player -->
+            <Grid Grid.Row="0" Margin="0,0,0,6" HorizontalAlignment="Center"
+                  Width="{Binding ActualWidth, ElementName=BoardBox}">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center"
+                             Fill="{StaticResource Accent}"
+                             Visibility="{Binding TopPlayer.IsToMove, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{Binding TopPlayer.Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding TopPlayer.Role}" Foreground="{StaticResource TextMuted}"
+                               FontSize="11.5" VerticalAlignment="Center" Margin="8,1,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <ItemsControl ItemsSource="{Binding TopPlayer.Captured}"
+                                  Effect="{Binding TopPlayer.CapturedHalo}"
+                                  ItemTemplate="{StaticResource CapturedPieceTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding TopPlayer.MaterialText}" Margin="8,0,0,0"
+                               Foreground="{StaticResource TextSecondary}" FontSize="12"
+                               VerticalAlignment="Center"/>
+                                    <Border Background="{StaticResource Panel}" CornerRadius="4" Padding="10,3"
+                            Margin="14,0,0,0" MinWidth="76"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="1"
+                            Visibility="{Binding TopPlayer.HasClock, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding TopPlayer.ClockText}" FontFamily="{StaticResource MonoFont}"
+                                   FontSize="19" FontWeight="Bold" TextAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsLightSquare}" Value="True">
-                                            <Setter Property="Background" Value="#F0D9B5"/>
+                                        <!-- The side to move is the one whose clock is
+                                             actually running, so it is the one lit. -->
+                                        <DataTrigger Binding="{Binding TopPlayer.IsToMove}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
                                         </DataTrigger>
-                                        <DataTrigger Binding="{Binding IsLastMove}" Value="True">
-                                            <Setter Property="Background" Value="#CDD26A"/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding IsLegalTarget}" Value="True">
-                                            <Setter Property="Background" Value="#8FBC8F"/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                            <Setter Property="Background" Value="#6699CC"/>
+                                        <DataTrigger Binding="{Binding TopPlayer.IsLowTime}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource Negative}"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
-                            </Border.Style>
-                            <!-- Piece image (classic Cburnett set). The source is a
-                                 vector DrawingImage built from SVG, so it rescales
-                                 losslessly when the board is resized.
-                                 Margin 7 on a 60-unit square makes the piece take
-                                 ~77% of the square, the proportion used by
-                                 chess.com and lichess (75-80%). -->
-                            <Image Source="{Binding PieceImage}" Margin="7"/>
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </Viewbox>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <!-- The board, with the evaluation bar glued to it.
+                 Both live INSIDE the Viewbox so they scale together: laid out
+                 side by side outside it, the bar would drift away from the
+                 board every time the window changed shape. -->
+            <Viewbox Grid.Row="1" x:Name="BoardBox" Stretch="Uniform" HorizontalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+
+                <Border Width="22" Height="640" Margin="0,0,14,0"
+                        CornerRadius="4" ClipToBounds="True"
+                        BorderBrush="{StaticResource BorderStrong}" BorderThickness="1">
+                    <!-- Two hard stops at the same offset make a sharp split, so
+                         a single gradient draws the whole bar with no converter
+                         and no layout maths. -->
+                    <Rectangle>
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,1" EndPoint="0,0">
+                                <GradientStop Color="{Binding EvalBottomColor}" Offset="{Binding EvalFraction}"/>
+                                <GradientStop Color="{Binding EvalTopColor}" Offset="{Binding EvalFraction}"/>
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
+                </Border>
+
+                <Border CornerRadius="4" ClipToBounds="True"
+                        BorderBrush="{StaticResource BorderStrong}" BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.45" Color="#000000"/>
+                    </Border.Effect>
+                    <Grid x:Name="BoardSurface" Width="640" Height="640" Background="Transparent"
+                          MouseLeftButtonDown="OnBoardMouseDown"
+                          MouseMove="OnBoardMouseMove"
+                          MouseLeftButtonUp="OnBoardMouseUp"
+                          MouseRightButtonDown="OnBoardRightDown"
+                          MouseLeave="OnBoardMouseLeave"
+                          LostMouseCapture="OnBoardLostCapture">
+
+                        <ItemsControl ItemsSource="{Binding Board.DisplaySquares}"
+                                      ItemTemplate="{StaticResource SquareTemplate}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Rows="8" Columns="8"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+
+                        <!-- The moves the engine has priced, best in green and
+                             sliding to orange as they get worse. Not hit
+                             testable: the board underneath stays clickable. -->
+                        <ItemsControl ItemsSource="{Binding Board.Arrows}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><Canvas Width="640" Height="640"/></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Path Data="{Binding Shape}" Fill="{Binding Fill}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- The piece under the cursor. It lives outside the grid
+                             of squares so it can be drawn over its neighbours and
+                             follow the pointer exactly. -->
+                        <Canvas x:Name="DragLayer" IsHitTestVisible="False" ClipToBounds="False">
+                            <Image x:Name="DragGhost" Width="80" Height="80" Visibility="Collapsed"
+                                   Opacity="0.95">
+                                <Image.Effect>
+                                    <DropShadowEffect BlurRadius="12" ShadowDepth="3" Opacity="0.5" Color="#000000"/>
+                                </Image.Effect>
+                            </Image>
+                        </Canvas>
+                    </Grid>
+                </Border>
+              </StackPanel>
+            </Viewbox>
+
+            <!-- Bottom player -->
+            <Grid Grid.Row="2" Margin="0,6,0,0" HorizontalAlignment="Center"
+                  Width="{Binding ActualWidth, ElementName=BoardBox}">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center"
+                             Fill="{StaticResource Accent}"
+                             Visibility="{Binding BottomPlayer.IsToMove, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{Binding BottomPlayer.Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding BottomPlayer.Role}" Foreground="{StaticResource TextMuted}"
+                               FontSize="11.5" VerticalAlignment="Center" Margin="8,1,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <ItemsControl ItemsSource="{Binding BottomPlayer.Captured}"
+                                  Effect="{Binding BottomPlayer.CapturedHalo}"
+                                  ItemTemplate="{StaticResource CapturedPieceTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding BottomPlayer.MaterialText}" Margin="8,0,0,0"
+                               Foreground="{StaticResource TextSecondary}" FontSize="12"
+                               VerticalAlignment="Center"/>
+                                    <Border Background="{StaticResource Panel}" CornerRadius="4" Padding="10,3"
+                            Margin="14,0,0,0" MinWidth="76"
+                            BorderBrush="{StaticResource BorderSoft}" BorderThickness="1"
+                            Visibility="{Binding BottomPlayer.HasClock, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding BottomPlayer.ClockText}" FontFamily="{StaticResource MonoFont}"
+                                   FontSize="19" FontWeight="Bold" TextAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                    <Style.Triggers>
+                                        <!-- The side to move is the one whose clock is
+                                             actually running, so it is the one lit. -->
+                                        <DataTrigger Binding="{Binding BottomPlayer.IsToMove}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding BottomPlayer.IsLowTime}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource Negative}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <!-- Navigation -->
+            <Grid Grid.Row="3" Margin="0,10,0,0" HorizontalAlignment="Center"
+                  Width="{Binding ActualWidth, ElementName=BoardBox}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <StackPanel.Resources>
+                        <Style TargetType="Button" BasedOn="{StaticResource NavButton}">
+                            <Setter Property="Margin" Value="3,0"/>
+                            <Setter Property="FontFamily" Value="Segoe UI Symbol"/>
+                        </Style>
+                    </StackPanel.Resources>
+                    <Button Content="&#x23EE;" Command="{Binding FirstCommand}" ToolTip="First move (Home)"/>
+                    <Button Content="&#x25C0;" Command="{Binding PreviousCommand}" ToolTip="Previous move (Left arrow)"/>
+                    <Button Content="&#x25B6;" Command="{Binding NextCommand}" ToolTip="Next move (Right arrow)"/>
+                    <Button Content="&#x23ED;" Command="{Binding LastCommand}" ToolTip="Last move (End)"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                    <Button Content="New game" Style="{StaticResource AccentButton}"
+                            Command="{Binding NewGameCommand}" Height="32"/>
+                    <Button Content="Flip" Style="{StaticResource ToolButton}" Margin="6,0,0,0"
+                            Command="{Binding FlipCommand}" Height="32"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="{Binding ReplayButtonText}" Style="{StaticResource ToolButton}"
+                            Command="{Binding ReplayCommand}" Height="32" MinWidth="72"
+                            ToolTip="Play the game through from the start"/>
+                    <Button Content="{Binding PauseButtonText}" Style="{StaticResource ToolButton}"
+                            Command="{Binding PauseMatchCommand}" Height="32" MinWidth="72"
+                            Margin="6,0,0,0" ToolTip="Stop or restart a game between two engines"
+                            Visibility="{Binding IsEngineMatch, Converter={StaticResource BoolToVis}}"/>
+                    <Button Content="Hint" Style="{StaticResource ToolButton}" Margin="6,0,0,0"
+                            Command="{Binding HintCommand}" Height="32"
+                            ToolTip="Show the move NoaChess would play (Ctrl+H)"/>
+                    <Button Content="Take back" Style="{StaticResource ToolButton}" Margin="6,0,0,0"
+                            Command="{Binding TakeBackCommand}" Height="32"/>
+                    <Button Content="Move now" Style="{StaticResource ToolButton}" Margin="6,0,0,0"
+                            Command="{Binding MoveNowCommand}" Height="32"
+                            ToolTip="Play the move for whoever is to move (Space). While the engine is thinking it takes the move it has so far"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
     </DockPanel>
 </Window>

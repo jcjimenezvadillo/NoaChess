@@ -146,7 +146,7 @@ public sealed class AlphaBetaSearch
     // Number of positions this search resolved from tablebases.
     public long TbHits { get; private set; }
 
-    private const int MaxPly = 128;
+    internal const int MaxPly = 128;
 
     // Tunable search parameters (aspiration window width, LMR triggers...).
     // Selected via the UCI "Profile" option; see EngineProfile.
@@ -166,6 +166,43 @@ public sealed class AlphaBetaSearch
     private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
     private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
+
+    // An OBVIOUS move is not the same thing as a WON position, and treating
+    // them as one was a real defect: a recapture in a level position is the
+    // clearest easy move there is and the decisive-score gate above excluded it
+    // by construction. Measured in a real game (lichess E6wD3ggu, move 47, 180+2
+    // with 43 s left): the opponent takes the queen, the only capture on the
+    // board takes it back, the engine never once changes its mind - and it spent
+    // SIX SECONDS on it, because the score was -1.6 pawns and so nothing ever
+    // cut the budget.
+    //
+    // The corroboration a decisive score used to provide is replaced by a much
+    // stricter demand on stability, and the saving is smaller to match: this
+    // fires only when the choice has not moved for twelve straight iterations
+    // and no worker ever changed its mind, which a genuinely difficult position
+    // does not do.
+    // MEASURED, and the first version of this was wrong. "Unchanged for twelve
+    // iterations" is satisfied by any quiet endgame that reaches depth 30 having
+    // settled at depth 18, and cutting those changed the move in 2 of 40 real
+    // positions - the engine was thinking for seven seconds there and it was
+    // right to. What separates a forced move is that it was NEVER in doubt: it
+    // is chosen at the first iterations and survives every one after. Requiring
+    // the choice to have settled by depth 4 is what encodes that, and it is the
+    // condition the recapture satisfies and a hard endgame does not.
+    private const int ObviousMoveSettledBy = 4;      // best move fixed from this depth on
+    private const int ObviousMoveStableDepth = 12;   // and unchanged for this many iterations
+    private const double ObviousMoveMaxChanges = 0.05; // decayed root changes: none, in practice
+    private const double ObviousMoveNodeShare = 0.90; // and this share of the search went into it
+    private const double ObviousMoveFraction = 0.30; // less aggressive than a decisive score
+
+    // A share at or above this means the alternatives were not merely worse,
+    // they were refuted outright: every node of the iteration went into the one
+    // move. Reported in a real game at 0.999 and 1.000 on a position with TWO
+    // legal replies to a check, one of them a recapture - and 30% of a six
+    // second budget is still two seconds to play the only move there is. When
+    // the search itself says the decision was unanimous, treat it like the
+    // decisive-score case and bank the clock for a position that needs it.
+    private const double ObviousMoveUnanimousShare = 0.95;
 
     // Proven-short-mate stop (clock mode). Once a completed iteration proves a
     // forced mate in <= 3 plies for us - which cannot get materially shorter -
@@ -250,6 +287,16 @@ public sealed class AlphaBetaSearch
     // FLAT, not Move[12, 64]: read once per node and written on every quiet
     // cutoff. Layout: piece * 64 + to.
     private readonly Move[] _counterMoves = new Move[12 * 64];
+
+    // Moves already tried at a node, kept so a beta cutoff can apply the
+    // history malus to the ones that failed to produce it. Preallocated per ply
+    // instead of stackalloc'd per node: a stackalloc is zero-initialised on
+    // every call, and this is 224 bytes of memset at every node for data that
+    // is always written before it is read.
+    private const int MaxTriedQuiets = 64;
+    private const int MaxTriedCaptures = 48;
+    private readonly Move[] _triedQuiets = new Move[(MaxPly + 2) * MaxTriedQuiets];
+    private readonly Move[] _triedCaptures = new Move[(MaxPly + 2) * MaxTriedCaptures];
 
     // Search stack: piece index (color*6+type) and destination of the move
     // played to REACH each ply. -1 piece marks "no usable previous move"
@@ -353,6 +400,11 @@ public sealed class AlphaBetaSearch
     }
 
     private long _nodes;
+
+    // Share of the last completed root iteration spent on the move it chose.
+    // Near 1.0 when every alternative was refuted at once, which is what a
+    // forced move looks like from the inside.
+    public double BestMoveNodeShare { get; private set; }
     private long _hardTimeMs;
     // Node-level (mid-iteration) deadline. Equals _hardTimeMs except under Lazy
     // SMP, where it is tightened to a small multiple of the soft budget so a
@@ -583,6 +635,10 @@ public sealed class AlphaBetaSearch
 
         SearchResult best = default;
         int previousScore = 0;
+        // What the TIME MANAGER carries to the next move, which is not always
+        // what the search returns. They diverge on exactly one case (a soft
+        // stop inside a fail-low) and the scheduler wants the raw number there.
+        int carryScore = ScoreNone;
 
         // Last move actually announced to the caller through 'progress', and the
         // depth it was announced at. Only COMPLETED iterations report, but an
@@ -656,9 +712,13 @@ public sealed class AlphaBetaSearch
 
             int score;
             Move bestMove;
+            // Whether the window was still failing LOW when the loop ended.
+            // Recorded before alpha is widened below, which would erase it.
+            bool failedLow = false;
             while (true)
             {
                 score = SearchRoot(board, depth, alpha, beta, out bestMove);
+                failedLow = score <= alpha;
                 if (_stopped || _softStopped || (score > alpha && score < beta))
                     break;
 
@@ -697,12 +757,45 @@ public sealed class AlphaBetaSearch
                 // take the returned score). On a hard stop keep the last
                 // completed iteration's result; fall back to the partial only
                 // when no iteration has finished yet.
+                // depth - 1: this iteration did NOT complete, so the deepest
+                // fully searched one is the previous. Claiming `depth` here
+                // would let a partial result outvote a complete one.
+                //
+                // A soft stop that lands while the window is still FAILING LOW
+                // is the one case where the partial result must be thrown away.
+                // Nothing was proved there: every root move came back at or
+                // below alpha, so the score is an upper bound the search never
+                // resolved, typically hundreds of centipawns below the last
+                // completed iteration. That number then leaves by two doors -
+                // it is what "info score" prints, and it is what the Lazy SMP
+                // vote weighs this worker by, since the weight is the score
+                // itself. A worker stopped inside a fail-low was handing the
+                // vote a figure its own next re-search would have refuted.
+                // The last COMPLETED iteration is the deepest thing actually
+                // proved, so that is what survives; the partial is used only
+                // when no iteration has finished at all and it is all there is.
+                //
+                // THERE IS A THIRD DOOR, and withholding the score from it was
+                // a regression. `_bestPreviousScore` seeds the next move's
+                // falling-eval term, so a fail-low is also how the scheduler
+                // learns the position is coming apart and buys time for it.
+                // Suppressing that fed a tuned time manager an input it had
+                // never been tuned against, on the moves that need the time
+                // most. `carryScore` therefore keeps the old value exactly:
+                // the vote and the report get the proved score, the scheduler
+                // still sees the drop, and at one thread - where there is no
+                // vote at all - the whole change is once again a no-op.
                 if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
-                    best = new SearchResult(bestMove, score, _nodes);
+                {
+                    carryScore = score;
+                    if (best.BestMove == Move.None || !failedLow)
+                        best = new SearchResult(bestMove, score, _nodes, depth - 1);
+                }
                 break;
             }
 
-            best = new SearchResult(bestMove, score, _nodes);
+            best = new SearchResult(bestMove, score, _nodes, depth);
+            carryScore = score;
             previousScore = score;
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
@@ -856,6 +949,25 @@ public sealed class AlphaBetaSearch
                 if (easyMoveEligible)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
 
+                // Obvious move: the score says nothing, but twelve iterations
+                // have agreed on the same move and not one worker has changed
+                // its mind all search. Deeper iterations are buying a decision
+                // that was made at depth one. See the constants above for the
+                // game this came from.
+                bool obviousMoveEligible = !easyMoveEligible
+                    && depth >= EasyMoveMinDepth
+                    && lastBestMoveDepth <= ObviousMoveSettledBy
+                    && lastBestMoveDepth + ObviousMoveStableDepth <= depth
+                    && totBestMoveChanges <= ObviousMoveMaxChanges
+                    && BestMoveNodeShare >= ObviousMoveNodeShare;
+                if (obviousMoveEligible)
+                {
+                    double share = BestMoveNodeShare >= ObviousMoveUnanimousShare
+                        ? EasyMoveFraction
+                        : ObviousMoveFraction;
+                    totalTime = Math.Min(totalTime, _softTimeMs * share);
+                }
+
                 // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.
                 // Prints the target, every factor applied to it, the score and
                 // what has actually been spent, so a disagreement between the
@@ -867,12 +979,15 @@ public sealed class AlphaBetaSearch
                 // repeated self-play position resolving in a couple of cheap
                 // iterations, for instance - which this alone cannot name, but
                 // ruling out the two known causes narrows it down by elimination.
-                string reason = easyMoveEligible ? "easy-move" : "budget";
+                string reason = easyMoveEligible ? "easy-move"
+                              : obviousMoveEligible ? "obvious-move"
+                              : "budget";
                 if (TimeDebug)
                     Console.Out.WriteLine(
                         $"info string TM d={depth} score={score} reason={reason}"
                       + $" soft={_softTimeMs} fe={fallingEval:F3}"
                       + $" red={reduction:F3} inst={bestMoveInstability:F3}"
+                      + $" share={BestMoveNodeShare:F3}"
                       + $" total={totalTime:F0} elapsed={ElapsedMs}"
                       + $" softDl={_softDeadlineMs} maxT={_maxTimeMs} hardT={_hardTimeMs}");
 
@@ -908,8 +1023,12 @@ public sealed class AlphaBetaSearch
             _previousTimeReduction = timeReduction;
             if (best.BestMove != Move.None)
             {
-                _bestPreviousScore = best.Score;
-                _bestPreviousAverageScore = averageScore == ScoreNone ? best.Score : averageScore;
+                // carryScore, not best.Score: see the fail-low note in the
+                // iteration loop. These two feed the falling-eval term and must
+                // keep seeing the drop the returned result no longer carries.
+                int carried = carryScore == ScoreNone ? best.Score : carryScore;
+                _bestPreviousScore = carried;
+                _bestPreviousAverageScore = averageScore == ScoreNone ? carried : averageScore;
             }
         }
 
@@ -983,9 +1102,19 @@ public sealed class AlphaBetaSearch
         // needs the window this node actually started with.
         int originalAlpha = alpha;
 
+        // Effort per root move. Best-move STABILITY alone cannot tell a forced
+        // move from a merely quiet one - measured on 40 real positions, cutting
+        // the clock on stability changed the move in middlegames where the
+        // engine was thinking for nine seconds and was right to. Effort can:
+        // on a forced move every alternative fails low at once and nearly the
+        // whole iteration goes into the move that gets played, while a position
+        // with a real choice spreads its nodes over several.
+        long iterationNodes = 0, bestMoveNodes = 0;
+
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
+            long nodesBefore = _nodes;
             _stackPiece[0] = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
             _stackTo[0] = move.To;
             _stackStatScore[0] = (move.IsCapture || move.IsPromotion ? 0
@@ -1015,6 +1144,9 @@ public sealed class AlphaBetaSearch
             board.UnmakeMove();
             searched++;
 
+            long nodesSpent = _nodes - nodesBefore;
+            iterationNodes += nodesSpent;
+
             // A score computed after the stop signal is garbage; only use it
             // if we have nothing at all yet.
             if (_stopped && bestMove != Move.None)
@@ -1030,6 +1162,7 @@ public sealed class AlphaBetaSearch
             {
                 bestScore = score;
                 bestMove = move;
+                bestMoveNodes = nodesSpent;
 
                 // Best-move change bookkeeping for the time manager: a root
                 // move other than the first one taking over the lead signals
@@ -1061,6 +1194,14 @@ public sealed class AlphaBetaSearch
                 break;
             }
         }
+
+        // The share of this iteration that went into the move being played. A
+        // fail-low iteration proves nothing about effort (every move was
+        // searched with a window it could not beat), so it reports zero and the
+        // time manager simply does not use the signal there.
+        BestMoveNodeShare = iterationNodes > 0 && bestScore > originalAlpha
+            ? bestMoveNodes / (double)iterationNodes
+            : 0.0;
 
         // A partial (soft-stopped) iteration must not be recorded in the TT
         // as if the position had been fully searched at this depth.
@@ -1328,7 +1469,12 @@ public sealed class AlphaBetaSearch
         if (ply >= MaxPly)
             return _evaluator.Evaluate(board);
 
-        bool inCheck = board.IsInCheck();
+        // NOTE: the check test is NOT computed here. It is two magic-bitboard
+        // lookups into multi-megabyte tables, and everything between this point
+        // and the static evaluation below can return first: the transposition
+        // cutoff, the tablebase probe, and above all the depth<=0 delegation to
+        // quiescence - which computes the same thing again on the same board.
+        // The two rare paths that need it before then ask for it themselves.
 
         // ---- Draws by rule. Checked before the TT: a cached score cannot
         // know the path's repetition count or fifty-move clock. Checkmate has
@@ -1337,7 +1483,7 @@ public sealed class AlphaBetaSearch
         // allocation-free legal-move probe.
         if (board.HalfmoveClock >= 100)
         {
-            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+            if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
                 return 0;
             return -MateScore + ply;
         }
@@ -1458,6 +1604,11 @@ public sealed class AlphaBetaSearch
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
             return Quiescence(board, alpha, beta, ply);
+
+        // Only now, past every early return above. Same board, so the same
+        // answer as computing it at the top - just not paid by the nodes that
+        // never reach here.
+        bool inCheck = board.IsInCheck();
 
         // Non-PV nodes are searched with a null window (beta == alpha + 1);
         // the aggressive prunings below only fire there, never on the principal
@@ -1761,9 +1912,16 @@ public sealed class AlphaBetaSearch
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
         // before the cutoff move and did not refute.
-        Span<Move> triedCaptures = stackalloc Move[48];
+        // Per-ply slices of a preallocated buffer, not stackalloc. A stackalloc
+        // is ZERO-INITIALISED on every call - 224 bytes here, at every node, for
+        // data that is always written before it is read. The per-ply aliasing is
+        // the same one _moveLists already relies on and is safe for the same
+        // reason: the singular verification search runs at this same ply but
+        // returns before the move loop below writes anything, and every read is
+        // bounded by the local count.
+        Span<Move> triedCaptures = _triedCaptures.AsSpan(ply * MaxTriedCaptures, MaxTriedCaptures);
         int triedCaptureCount = 0;
-        Span<Move> triedQuiets = stackalloc Move[64];
+        Span<Move> triedQuiets = _triedQuiets.AsSpan(ply * MaxTriedQuiets, MaxTriedQuiets);
         int triedQuietCount = 0;
 
         for (int i = 0; ; i++)
@@ -1806,23 +1964,13 @@ public sealed class AlphaBetaSearch
                 continue; // Singular verification searches everything BUT this.
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
-            // The move's combined history signal (2x butterfly + continuation
-            // history) and the depth it would actually receive after LMR:
-            // the shallow-pruning margins below scale with the REDUCED depth
-            // (reference lmrDepth), not the nominal one - a move that will be
-            // probed shallow anyway is pruned against that shallower horizon.
-            int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
-            int moveHistory = 2 * _history.Get(stm, move)
-                + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
-            int lmrDepth = depth - 1;
-            if (searched > 0)
-            {
-                // In 1024ths like the reduction proper, truncated once here.
-                int rEst = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
-                if (nonPv) rEst += LmrScale;
-                if (!improving) rEst += LmrScale;
-                lmrDepth = Math.Max(depth - 1 - rEst / LmrScale, 0);
-            }
+            // NOTE for whoever ports the reference's lmrDepth-scaled pruning
+            // margins: an `lmrDepth` used to be estimated here - a full
+            // LmrReductions lookup plus two conditionals and a division, on
+            // every move - and NOTHING read it. It existed for the reshape the
+            // futility block below documents as deferred, and was left behind
+            // when that was cut. Recompute it here if the reshape is ever
+            // attempted; until then it is pure cost.
 
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
             //      check, at least one move already searched so a best move is
@@ -1871,6 +2019,16 @@ public sealed class AlphaBetaSearch
             // The singular extension applies to the TT move only: it is the
             // move whose uniqueness the verification search just proved.
             int newDepth = depth - 1 + (move == ttMove ? singularExtension : 0);
+
+            // The move's combined history signal (2x butterfly + continuation
+            // history). Computed HERE, past every pruning test above, because
+            // it is only ever read by the stack write below: a pruned or
+            // illegal move used to pay both table reads for nothing, and the
+            // continuation-history table is 2.3 MB, so that lookup is a likely
+            // cache miss bought for a move that is never made.
+            int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+            int moveHistory = 2 * _history.Get(stm, move)
+                + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
 
             _stackPiece[ply] = movePieceIdx;
             _stackTo[ply] = move.To;
@@ -2030,11 +2188,13 @@ public sealed class AlphaBetaSearch
                             _killers.Store(ply, move);
                             _history.AddBonus(stm, move, depth);
 
-                            int piece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+                            // movePieceIdx already holds exactly this: it was
+                            // read from the same square of the same position,
+                            // and the board has been unmade above.
                             if (prevPiece >= 0)
                             {
                                 _counterMoves[(prevPiece * 64) + prevTo] = move;
-                                _contHist[0].AddBonus(prevPiece, prevTo, piece, move.To, depth);
+                                _contHist[0].AddBonus(prevPiece, prevTo, movePieceIdx, move.To, depth);
                             }
 
                             for (int q = 0; q < triedQuietCount; q++)
@@ -2056,7 +2216,7 @@ public sealed class AlphaBetaSearch
                             // ordering reads. The board is restored here, so
                             // the victim is back on its square.
                             _captureHistory.AddBonus(
-                                ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From)),
+                                movePieceIdx,
                                 move.To, CaptureHistory.VictimIndex(board, move), depth * depth);
                         }
 
@@ -2166,11 +2326,14 @@ public sealed class AlphaBetaSearch
         if (_stopped)
             return 0;
 
-        bool inCheck = board.IsInCheck();
+        // Same reasoning as the main search: the check test is two magic-bitboard
+        // lookups and the transposition cutoff below can finish the node without
+        // it, which v4.4.0 made the common case by giving quiescence a TT probe
+        // at all. The two rare paths that need it first ask for it themselves.
 
         // Ply ceiling, checked before the per-ply move list is indexed.
         if (ply >= MaxPly)
-            return inCheck ? 0 : _evaluator.Evaluate(board);
+            return board.IsInCheck() ? 0 : _evaluator.Evaluate(board);
 
         // Quiet check evasions can reach clock 100 or complete a repetition,
         // so every qsearch node must enforce the rules, not only checked ones.
@@ -2178,7 +2341,7 @@ public sealed class AlphaBetaSearch
         // draw claim and is verified by the rare legal-move probe.
         if (board.HalfmoveClock >= 100)
         {
-            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+            if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
                 return 0;
             return -MateScore + ply;
         }
@@ -2240,6 +2403,9 @@ public sealed class AlphaBetaSearch
         int futilityBase;
         int rawEval = TTEntry.NoStaticEval;
         Move bestMove = Move.None;
+
+        // Only now, past the transposition cutoff above.
+        bool inCheck = board.IsInCheck();
 
         if (inCheck)
         {
