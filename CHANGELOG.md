@@ -1,5 +1,123 @@
 # CHANGELOG
 
+## 2026-08-10 (v4.6.2) - the training pipeline was the bottleneck, not the search: +195.4 Elo from a change the engine never sees
+
+The largest measured gain in the project's history, and it required no engine change at all. It also cost two blunders in live games from a bug this release fixes, both of which are documented below because the sequence matters more than the result.
+
+### The feature transformer was mostly zero, and it was measurable
+
+Quantising `ds1e60` - the net that had been shipping since v4.4.0 - and comparing it against its own float weights:
+
+- **85.6% of the feature transformer quantised to exactly zero** at QA=255 (89.8% at QA=127)
+- **2,221 of 22,528 features were entirely dead**: they contributed nothing to any evaluation
+- the largest quantised weight reached **52 of the 127** available
+
+Then, quantising each stage alone against the float forward pass over 4,000 real positions:
+
+| stage quantised | mean absolute error |
+|---|---|
+| feature transformer only | **38.77 cp** |
+| head (L1 + output) only | 4.9 cp |
+
+against a mean absolute evaluation of 231 cp. The engine was evaluating **16.6% away from the network that had been trained**, p95 98 cp, essentially all of it in the transformer.
+
+The cause is structural. A HalfKAv2_hm index is (king bucket, piece, square), so each of the 22,528 features only ever fires when the king sits in one of 32 regions. Individually they are rare, their weights never grow, and quantisation rounds them away.
+
+### Feature factorization: +195.4 +/- 57.5 Elo
+
+Training now optionally adds **704 virtual (piece, square) features**. Every real feature fires its own row **and** the king-independent row it is a copy of, so the shared row collects 32x the gradient and carries the bulk signal while the real rows learn only the per-king-bucket deviation. At export each virtual row is added into its 32 copies.
+
+**The fold is exact, not an approximation**: the sum the accumulator computes over the active features is unchanged, so the exported file evaluates every position to the value the trained net produces. The engine, the header and the arithmetic are untouched - the virtual features exist only while gradients are flowing.
+
+Trained on the same 70 files, the same 60 epochs, the same hyperparameters and the same export arch as the baseline, one axis:
+
+| | ds1e60 | fact60 |
+|---|---|---|
+| validation loss | 0.005301 | 0.004848 |
+| quantisation error | 38.79 cp | **17.63 cp** |
+| correlation with the teacher | 0.9402 | 0.9531 |
+| regression slope | compressed | 0.976 |
+| weights quantising to zero | 85.6% | **21.3%** |
+| dead features | 2,221 | **1,024** |
+
+The dead count of exactly 1,024 is worth keeping: those are precisely the **structurally impossible** features, pawns on ranks 1 and 8, being 32 impossible base features across 32 king buckets. The factorized net has **zero legal features it ignores**, against the baseline's 1,197.
+
+**SPRT: +195.4 +/- 57.5 Elo, LOS 100%, H1 accepted in 102 games** at 10+0.1, the same binary on both sides with only `EvalFile` differing. This is not a CCRL figure - it is measured against a version of itself, and the cascade has never added up in this project.
+
+Predicted at 35% to pass, with eval scale drift named as the main risk. Both wrong. That is the second failed prediction of this kind (output buckets were predicted at ~0 and measured +20.1), and the pattern is consistent: on this engine, fixing a measured defect in the training pipeline has paid far more than expected.
+
+### Quantization-aware training, implemented and verified, not yet measured in games
+
+Behind `--qat`. Weights are rounded and activations floored inside the forward pass with a straight-through estimator, at exactly the scales the exporter uses. The two roundings are different on purpose: weights round because export rounds them, activations **floor** because the engine's L1 divides by QB with integer division, which truncates. Rounding there would train against arithmetic the engine does not perform, and the bias is systematic rather than noise.
+
+With it on, the trained net's float forward pass and the engine's integer arithmetic **agree to 0.47 cp**, inside the engine's final truncation to a whole centipawn. Without it they differ by up to 31 cp.
+
+### Weight decay reached the feature transformer
+
+`Adam(model.parameters(), weight_decay=...)` applied decay to the transformer as well as the head, and because `EmbeddingBag` produces a dense gradient, every one of the 22,528 rows was decayed on every one of ~1.1M steps, including rows whose feature never appeared in the batch. `--ft-weight-decay` separates them. On a matched pair (same data, same epochs, decay 1e-5 against 1e-4) the mean absolute weight moves 0.00149 to 0.00045 and the dead fraction 86.2% to 95.5%.
+
+Honest caveat: on that same pair the **relative quantisation error barely moved** (15.8% to 17.3%), so the mechanism by which this buys Elo is plausible and not established. That is what its SPRT is for.
+
+### The Lazy SMP vote could be overruled by a blind worker
+
+`SearchResult` carried `(Move, Score, Nodes)` and no depth, so the vote compared a worker at depth 1 with one at depth 17 as though their scores meant the same thing. They do not: the shallow one reports a rosier number purely because it has not met the refutation yet, and the score weighting then hands it the vote by a wide margin.
+
+On 2026-08-09 this played **two mates in one in four minutes** on Lichess. Both games printed the correct move on every `info` line and then played a different one, because the PV comes from the main worker and the move came from the vote:
+
+```
+info depth 12 score cp -1613 nodes 554 pv e7f6 e3c2 b7b6 ...
+bestmove c2e3
+```
+
+With the real numbers, the depth-1 helper won **656 votes to 14**. `SearchResult` now carries the depth and a helper may only vote from at least the main worker's depth; deeper helpers still vote, which is the entire point of the vote.
+
+This defect had been recorded for months as an unexplained "PV does not match bestmove" residue at ~2% of moves. It was not cosmetic: it decides moves.
+
+### Helper threads are a persistent pool
+
+They were brand new OS threads created on **every search**, which made the thread count a fixed latency cost paid before a single node was searched. Measured, delay to `info depth 1`:
+
+| Threads | per-search threads | persistent pool |
+|---|---|---|
+| 1 | 0.7 ms | 0.7 ms |
+| 8 | 2.9 ms | 0.7 ms |
+| 16 | 6.5 ms | 3.4 ms |
+| 24 | **34.1 ms** | **2.2 ms** |
+
+The curve flattens: 24 threads now cost what 2 did. The bot had been forced down to 8 threads to stay alive at 1+1.
+
+**This change made the vote bug far more frequent, which is how it was found.** With threads created per search the helpers started ~34 ms late and often never wrote a result at all, leaving `Move.None`, which the vote skips. Parked threads start instantly, so they now reliably returned a depth-1 result - and won.
+
+### Ponderhit keeps the deeper answer
+
+Measured over 127 pondered moves: the ponder reaches **depth 21.6** against 19.5 for a fresh search, and **91% of relaunches play exactly what the ponder concluded**, in a quarter of the time. The fast reply after a ponderhit is the design working, and an earlier claim here that it was a time-management defect was wrong.
+
+The tail was not. One case in a hundred looked like this:
+
+```
+ponder depth 43 said c5d3 | relaunch depth 1 said a5b5 | played a5b5
+```
+
+A depth-1 search overruling a depth-43 one on the same position, because a long opponent think consumed the credit and left the relaunch nothing. When the relaunch comes back five or more plies shallower **and** disagrees, the pondered move now stands. The guard has been verified not to leak across positions; it has **not** been observed firing, because the starvation could not be reproduced synthetically.
+
+### Not released: v4.6.0 and v4.6.1
+
+v4.6.0 was a node-prologue cleanup in the search (dead variable, hoisted computations past the pruning, per-ply slices instead of `stackalloc`, deferred in-check test). Paired measurement: **0.0%** (+0.29% slower pooled, p = 0.22). The engine is memory-latency bound, so removing instructions does nothing while changing memory layout does - the opposite conclusion to v4.5.0's array flattening, from the same kind of measurement. It ships inside this release because it is harmless, not because it is worth anything.
+
+v4.6.1 was the vote fix alone and lived two hours before v4.6.2 replaced it.
+
+### Also in the training pipeline
+
+- **`--loss-style reference`**: an antisymmetric win-rate target with its own offset and scaling per side and an exponent of 2.5, against the previous squared error on a single 400 cp scale.
+- **`--start-lambda` / `--end-lambda`**: linear interpolation over the run.
+- **`--prefetch`**: batches built on a background thread. Measured **1.06x**, not the 1.6x predicted, and reported as such.
+- **`list_checkpoint_data.py`** and a rewritten `Noa-DataScale-Train.ps1`: a candidate now inherits its dataset list from the baseline **checkpoint** instead of globbing, and takes an explicit export arch. A run that was meant to test data volume differed from its baseline in three ways at once - epochs 60 to 22, export arch 1 to 2, and a silently dropped shard - and measured -108.6 Elo for reasons that had nothing to do with what it was testing.
+- **A correction that closes an axis**: `--max-records` is inert in the streaming loader, so every net had already trained on the whole 324,297,032-position corpus. The data axis was never open.
+
+### Measured
+
+**Net: +195.4 +/- 57.5 Elo (SPRT, H1, 102 games) over the previous net.** No field gauntlet yet, so there is no CCRL figure for this release. 245 tests.
+
 ## 2026-08-08 (v4.5.0) - the same search, about 10% faster, with every step proved by byte-identical node counts
 
 Three changes, none of which alters a single node the search visits. That is the whole point: every one of them was gated on the same test, `audit/bench_identical.py` reporting **byte-identical node counts position by position** over 150 positions at depth 12, plus a control comparing the bench against itself. 34,690,140 nodes, identical in every comparison. Anything else and the change is reverted, whatever the unit tests say - the discipline that stopped a full SEE implementation in v4.4.0 after it passed ~70k equivalence comparisons and still moved node counts 1.8%.

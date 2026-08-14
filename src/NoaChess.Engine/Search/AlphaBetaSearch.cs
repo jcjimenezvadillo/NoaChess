@@ -251,6 +251,16 @@ public sealed class AlphaBetaSearch
     // cutoff. Layout: piece * 64 + to.
     private readonly Move[] _counterMoves = new Move[12 * 64];
 
+    // Moves already tried at a node, kept so a beta cutoff can apply the
+    // history malus to the ones that failed to produce it. Preallocated per ply
+    // instead of stackalloc'd per node: a stackalloc is zero-initialised on
+    // every call, and this is 224 bytes of memset at every node for data that
+    // is always written before it is read.
+    private const int MaxTriedQuiets = 64;
+    private const int MaxTriedCaptures = 48;
+    private readonly Move[] _triedQuiets = new Move[(MaxPly + 2) * MaxTriedQuiets];
+    private readonly Move[] _triedCaptures = new Move[(MaxPly + 2) * MaxTriedCaptures];
+
     // Search stack: piece index (color*6+type) and destination of the move
     // played to REACH each ply. -1 piece marks "no usable previous move"
     // (a null move); continuation history and counter moves then skip it.
@@ -697,12 +707,15 @@ public sealed class AlphaBetaSearch
                 // take the returned score). On a hard stop keep the last
                 // completed iteration's result; fall back to the partial only
                 // when no iteration has finished yet.
+                // depth - 1: this iteration did NOT complete, so the deepest
+                // fully searched one is the previous. Claiming `depth` here
+                // would let a partial result outvote a complete one.
                 if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
-                    best = new SearchResult(bestMove, score, _nodes);
+                    best = new SearchResult(bestMove, score, _nodes, depth - 1);
                 break;
             }
 
-            best = new SearchResult(bestMove, score, _nodes);
+            best = new SearchResult(bestMove, score, _nodes, depth);
             previousScore = score;
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
@@ -1328,7 +1341,12 @@ public sealed class AlphaBetaSearch
         if (ply >= MaxPly)
             return _evaluator.Evaluate(board);
 
-        bool inCheck = board.IsInCheck();
+        // NOTE: the check test is NOT computed here. It is two magic-bitboard
+        // lookups into multi-megabyte tables, and everything between this point
+        // and the static evaluation below can return first: the transposition
+        // cutoff, the tablebase probe, and above all the depth<=0 delegation to
+        // quiescence - which computes the same thing again on the same board.
+        // The two rare paths that need it before then ask for it themselves.
 
         // ---- Draws by rule. Checked before the TT: a cached score cannot
         // know the path's repetition count or fifty-move clock. Checkmate has
@@ -1337,7 +1355,7 @@ public sealed class AlphaBetaSearch
         // allocation-free legal-move probe.
         if (board.HalfmoveClock >= 100)
         {
-            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+            if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
                 return 0;
             return -MateScore + ply;
         }
@@ -1458,6 +1476,11 @@ public sealed class AlphaBetaSearch
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
             return Quiescence(board, alpha, beta, ply);
+
+        // Only now, past every early return above. Same board, so the same
+        // answer as computing it at the top - just not paid by the nodes that
+        // never reach here.
+        bool inCheck = board.IsInCheck();
 
         // Non-PV nodes are searched with a null window (beta == alpha + 1);
         // the aggressive prunings below only fire there, never on the principal
@@ -1761,9 +1784,16 @@ public sealed class AlphaBetaSearch
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
         // before the cutoff move and did not refute.
-        Span<Move> triedCaptures = stackalloc Move[48];
+        // Per-ply slices of a preallocated buffer, not stackalloc. A stackalloc
+        // is ZERO-INITIALISED on every call - 224 bytes here, at every node, for
+        // data that is always written before it is read. The per-ply aliasing is
+        // the same one _moveLists already relies on and is safe for the same
+        // reason: the singular verification search runs at this same ply but
+        // returns before the move loop below writes anything, and every read is
+        // bounded by the local count.
+        Span<Move> triedCaptures = _triedCaptures.AsSpan(ply * MaxTriedCaptures, MaxTriedCaptures);
         int triedCaptureCount = 0;
-        Span<Move> triedQuiets = stackalloc Move[64];
+        Span<Move> triedQuiets = _triedQuiets.AsSpan(ply * MaxTriedQuiets, MaxTriedQuiets);
         int triedQuietCount = 0;
 
         for (int i = 0; ; i++)
@@ -1806,23 +1836,13 @@ public sealed class AlphaBetaSearch
                 continue; // Singular verification searches everything BUT this.
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
-            // The move's combined history signal (2x butterfly + continuation
-            // history) and the depth it would actually receive after LMR:
-            // the shallow-pruning margins below scale with the REDUCED depth
-            // (reference lmrDepth), not the nominal one - a move that will be
-            // probed shallow anyway is pruned against that shallower horizon.
-            int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
-            int moveHistory = 2 * _history.Get(stm, move)
-                + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
-            int lmrDepth = depth - 1;
-            if (searched > 0)
-            {
-                // In 1024ths like the reduction proper, truncated once here.
-                int rEst = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
-                if (nonPv) rEst += LmrScale;
-                if (!improving) rEst += LmrScale;
-                lmrDepth = Math.Max(depth - 1 - rEst / LmrScale, 0);
-            }
+            // NOTE for whoever ports the reference's lmrDepth-scaled pruning
+            // margins: an `lmrDepth` used to be estimated here - a full
+            // LmrReductions lookup plus two conditionals and a division, on
+            // every move - and NOTHING read it. It existed for the reshape the
+            // futility block below documents as deferred, and was left behind
+            // when that was cut. Recompute it here if the reshape is ever
+            // attempted; until then it is pure cost.
 
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
             //      check, at least one move already searched so a best move is
@@ -1871,6 +1891,16 @@ public sealed class AlphaBetaSearch
             // The singular extension applies to the TT move only: it is the
             // move whose uniqueness the verification search just proved.
             int newDepth = depth - 1 + (move == ttMove ? singularExtension : 0);
+
+            // The move's combined history signal (2x butterfly + continuation
+            // history). Computed HERE, past every pruning test above, because
+            // it is only ever read by the stack write below: a pruned or
+            // illegal move used to pay both table reads for nothing, and the
+            // continuation-history table is 2.3 MB, so that lookup is a likely
+            // cache miss bought for a move that is never made.
+            int movePieceIdx = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+            int moveHistory = 2 * _history.Get(stm, move)
+                + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo, movePieceIdx, move.To) : 0);
 
             _stackPiece[ply] = movePieceIdx;
             _stackTo[ply] = move.To;
@@ -2030,11 +2060,13 @@ public sealed class AlphaBetaSearch
                             _killers.Store(ply, move);
                             _history.AddBonus(stm, move, depth);
 
-                            int piece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+                            // movePieceIdx already holds exactly this: it was
+                            // read from the same square of the same position,
+                            // and the board has been unmade above.
                             if (prevPiece >= 0)
                             {
                                 _counterMoves[(prevPiece * 64) + prevTo] = move;
-                                _contHist[0].AddBonus(prevPiece, prevTo, piece, move.To, depth);
+                                _contHist[0].AddBonus(prevPiece, prevTo, movePieceIdx, move.To, depth);
                             }
 
                             for (int q = 0; q < triedQuietCount; q++)
@@ -2056,7 +2088,7 @@ public sealed class AlphaBetaSearch
                             // ordering reads. The board is restored here, so
                             // the victim is back on its square.
                             _captureHistory.AddBonus(
-                                ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From)),
+                                movePieceIdx,
                                 move.To, CaptureHistory.VictimIndex(board, move), depth * depth);
                         }
 
@@ -2166,11 +2198,14 @@ public sealed class AlphaBetaSearch
         if (_stopped)
             return 0;
 
-        bool inCheck = board.IsInCheck();
+        // Same reasoning as the main search: the check test is two magic-bitboard
+        // lookups and the transposition cutoff below can finish the node without
+        // it, which v4.4.0 made the common case by giving quiescence a TT probe
+        // at all. The two rare paths that need it first ask for it themselves.
 
         // Ply ceiling, checked before the per-ply move list is indexed.
         if (ply >= MaxPly)
-            return inCheck ? 0 : _evaluator.Evaluate(board);
+            return board.IsInCheck() ? 0 : _evaluator.Evaluate(board);
 
         // Quiet check evasions can reach clock 100 or complete a repetition,
         // so every qsearch node must enforce the rules, not only checked ones.
@@ -2178,7 +2213,7 @@ public sealed class AlphaBetaSearch
         // draw claim and is verified by the rare legal-move probe.
         if (board.HalfmoveClock >= 100)
         {
-            if (!inCheck || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
+            if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
                 return 0;
             return -MateScore + ply;
         }
@@ -2240,6 +2275,9 @@ public sealed class AlphaBetaSearch
         int futilityBase;
         int rawEval = TTEntry.NoStaticEval;
         Move bestMove = Move.None;
+
+        // Only now, past the transposition cutoff above.
+        bool inCheck = board.IsInCheck();
 
         if (inCheck)
         {
