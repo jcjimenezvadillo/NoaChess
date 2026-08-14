@@ -55,11 +55,40 @@ public sealed class ContinuationHistory
     // better than the move six plies back, so its bonuses carry weights
     // {1040, 780, 290, 502, 132, 418} out of 1024. Kept as a separate entry
     // point so the single-level callers stay byte-identical.
+    //
+    // DAMPING. The reference feeds the continuation update `bonus * 750 / 1024`
+    // where the butterfly table gets the bonus whole, so continuation history
+    // moves about three quarters as fast. With gravity that does not change
+    // where an entry SATURATES - the equilibrium is the bound either way - it
+    // changes how heavily the table weights what happened recently. Without
+    // this the port ran roughly 1.75x faster than the reference on the one
+    // mechanism it is being re-run for being unfaithful.
+    //
+    // Not modelled: the reference also multiplies by a consistency factor of
+    // 94-126 depending on how many nearer distances already hold a positive
+    // entry. That needs state this engine does not keep, so it is left out
+    // rather than guessed, and it is the remaining known gap.
+    private const int ContinuationDamping = 750;
+
+    // ONE division, not two, and in 64-bit.
+    //
+    // Dividing by 1024 for the damping and again by 1024 for the weight
+    // truncates twice, and at shallow depths the second truncation took the far
+    // distances to exactly zero: at depth 2 and 3 the tables for four, five and
+    // six plies back learned NOTHING. That is the same failure as the gravity
+    // term of v2.8.2, which looked implemented, evaluated to zero on every
+    // realistic update, and was credited with Elo it could not have produced.
+    //
+    // The 64-bit cast is not decoration either: depth can reach the ply cap, so
+    // depth*depth*750*1040 overflows a signed 32-bit int well before it.
+    private static int Scale(int depth, int weight)
+        => (int)((long)depth * depth * ContinuationDamping * weight / (1024L * 1024L));
+
     public void AddWeighted(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
-        => Update(prevPiece, prevTo, piece, to, depth * depth * weight / 1024);
+        => Update(prevPiece, prevTo, piece, to, Scale(depth, weight));
 
     public void AddWeightedMalus(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
-        => Update(prevPiece, prevTo, piece, to, -depth * depth * weight / 1024);
+        => Update(prevPiece, prevTo, piece, to, -Scale(depth, weight));
 
     private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
