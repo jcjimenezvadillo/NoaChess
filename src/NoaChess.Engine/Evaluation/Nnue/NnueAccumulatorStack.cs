@@ -34,7 +34,24 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // - Null move: nothing changes but the side to move.
 public sealed class NnueAccumulatorStack
 {
+    // Must stay ABOVE the search's own ply ceiling, which is what actually
+    // bounds how deep the stack is pushed. The two constants live in different
+    // files and neither knows about the other: today the search stops at 128 and
+    // this is 160, so there are 31 spare slots, but raising the search ceiling
+    // past this number would make PushMove write past the end of _pending with
+    // no bounds check and no exception on a release build. The assertion below
+    // turns that silent corruption into a build-time failure.
     private const int MaxPly = 160;
+
+    // Build-time, not run-time: the failure this guards against has no symptom
+    // to catch at run time on a release build.
+    static NnueAccumulatorStack()
+    {
+        if (MaxPly <= Search.AlphaBetaSearch.MaxPly)
+            throw new InvalidOperationException(
+                $"NnueAccumulatorStack.MaxPly ({MaxPly}) must exceed the search ceiling "
+              + $"({Search.AlphaBetaSearch.MaxPly}): PushMove writes _pending[_top + 1] unchecked.");
+    }
 
     // What one push would do to the accumulators, captured at push time because
     // the board is only in the PRE-move position then (the victim's piece type

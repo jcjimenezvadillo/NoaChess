@@ -1,5 +1,71 @@
 # CHANGELOG
 
+## 2026-08-13 (v5.0.1) - the engine spent six seconds recapturing a queen it had to recapture
+
+Found in a real game rather than by a test: [lichess.org/E6wD3ggu](https://lichess.org/E6wD3ggu),
+move 47, 180+2, forty-three seconds on the clock.
+
+```
+r7/2k3B1/3b4/1Pp5/5Q2/7P/6P1/3R3K b - - 0 47
+```
+
+Eleven pieces. White takes the queen with Qxf4, and `Bxf4` is the ONLY capture on the board: not
+taking it back is giving a queen away. The engine took **six seconds** over it.
+
+**A move being OBVIOUS and a position being WON are different things, and the time manager treated
+them as one.** The only mechanism that could cut the budget required a decisive score, `|score| >=
+700`. Here the evaluation was -1.6 pawns, so nothing ever fired and a forced recapture was paid for
+at the full rate. That is not an edge case: a recapture in a level position is the clearest easy
+move there is, and it was excluded by construction.
+
+**The first fix was wrong, and measuring it is what said so.** Cutting the clock when the best move
+has been stable for many iterations looks right and is not: a quiet endgame is stable too. Over 40
+positions from the bot's own games it fired on 15 and CHANGED the move in two middlegames where the
+engine had been thinking for nine seconds and was right to.
+
+What actually separates a forced move is not stability but **effort**. On a forced move every
+alternative is refuted at once and nearly the whole iteration goes into the move that gets played;
+a position with a real choice spreads its nodes over several. The root now measures the share of
+each iteration spent on the move it chooses, and the cut requires **90%** of it, on top of the move
+having been settled since depth 4 and never once changed.
+
+**And the first deployment was still too timid.** It shipped, and the same
+complaint came straight back from a live game: two legal replies to a check, one
+of them a recapture, and the engine took nearly two seconds. The trace showed the
+cut firing correctly with `share=1.000` - every single node of the iteration had
+gone into that move - and then leaving 30% of a six second budget on the table
+anyway. When the search reports the decision was UNANIMOUS, 30% is the wrong
+answer. At a share of 0.95 or better the cut now uses the same fraction the
+decisive-score case does, 12%:
+
+| position | 5.0.0 | first cut | now |
+|---|---|---|---|
+| rook recapture, 2 legal moves | 6.30 s | 1.90 s | **0.81 s** |
+| queen recapture | 4.08 s | 1.63 s | **0.74 s** |
+
+Same move in every case.
+
+Measured over the same 40 positions, single-threaded:
+
+| | before | after |
+|---|---|---|
+| cut fired on | - | 13 of 40, **move unchanged in every one** |
+| total time over 40 positions | 238.1 s | 221.9 s (**6.8% less**) |
+| moves differing | - | **0 of 40** |
+
+**The noise floor was measured before trusting any of this.** The same binary against itself
+differs on **three of the same forty**, because a search that stops on a wall clock is not
+reproducible: one position swung between 12.40 s and 1.22 s across two runs of identical code. An
+earlier run of the comparison showed three differences and every one of them was in a position where
+the cut had NOT fired. Across both runs the cut has never changed a move in a position where it
+acted.
+
+**Not measured in Elo.** No SPRT has been run. What is established is that the flagrant waste is
+gone, that the cut fires rarely and only where the search itself says the choice was never in
+doubt, and that the engine does not think less overall.
+
+354 tests (106 Core, 248 Engine).
+
 ## 2026-08-12 (v5.0.0) - the desktop board stops being a test harness
 
 The Windows board has been rebuilt. What was there worked and was honest about what it was: a way to click a piece, watch the engine answer and check that the whole stack held together. It could not take back a move, could not show the game that had been played, and showed one line of engine output. This release makes it a board you can actually analyse on.
@@ -401,6 +467,8 @@ answer; the ordering was.
 ### Notation
 
 `San.Format` joins `San.TryParse` in the Core: the reader had no writer, and a move list needs one. It is the exact inverse of the parser, including the minimum disambiguation each move needs, and it leaves the board it inspects exactly as it found it. Twenty tests, one of which round-trips every legal move of a middlegame position through both directions.
+
+354 tests (106 Core, 248 Engine).
 
 ## 2026-08-10 (v4.7.0) - two ways the engine could choose a move it had already refuted
 

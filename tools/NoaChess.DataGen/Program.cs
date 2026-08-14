@@ -361,9 +361,18 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
                 if (done % 50 == 0)
                 {
                     double perGame = stopwatch.Elapsed.TotalSeconds / done;
+
+                    // The rate is THIS run's records over THIS run's clock.
+                    // Dividing the elapsed time by the whole corpus credited the
+                    // resumed millions to a stopwatch that never timed them, so a
+                    // resumed run opened with an absurdly fast rate and the
+                    // estimate CLIMBED all day as the lie wore off.
+                    long producedHere = totalRecords - shards.ResumedRecords;
+                    double perRecord = stopwatch.Elapsed.TotalSeconds / Math.Max(1, producedHere);
+
                     string progress = options.TargetPositions > 0
                         ? $"{totalRecords:N0}/{options.TargetPositions:N0} positions, "
-                          + $"ETA {(options.TargetPositions - totalRecords) * (stopwatch.Elapsed.TotalSeconds / Math.Max(1, totalRecords)) / 3600:F1} h"
+                          + $"ETA {(options.TargetPositions - totalRecords) * perRecord / 3600:F1} h"
                         : $"{done}/{options.Games} games, {totalRecords:N0} positions, "
                           + $"ETA {(options.Games - done) * perGame / 60:F0} min";
                     Console.WriteLine($"  {progress}, {perGame:F1}s/game");
