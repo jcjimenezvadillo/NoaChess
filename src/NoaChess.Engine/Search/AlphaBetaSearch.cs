@@ -146,7 +146,7 @@ public sealed class AlphaBetaSearch
     // Number of positions this search resolved from tablebases.
     public long TbHits { get; private set; }
 
-    private const int MaxPly = 128;
+    internal const int MaxPly = 128;
 
     // Tunable search parameters (aspiration window width, LMR triggers...).
     // Selected via the UCI "Profile" option; see EngineProfile.
@@ -166,6 +166,43 @@ public sealed class AlphaBetaSearch
     private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
     private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
+
+    // An OBVIOUS move is not the same thing as a WON position, and treating
+    // them as one was a real defect: a recapture in a level position is the
+    // clearest easy move there is and the decisive-score gate above excluded it
+    // by construction. Measured in a real game (lichess E6wD3ggu, move 47, 180+2
+    // with 43 s left): the opponent takes the queen, the only capture on the
+    // board takes it back, the engine never once changes its mind - and it spent
+    // SIX SECONDS on it, because the score was -1.6 pawns and so nothing ever
+    // cut the budget.
+    //
+    // The corroboration a decisive score used to provide is replaced by a much
+    // stricter demand on stability, and the saving is smaller to match: this
+    // fires only when the choice has not moved for twelve straight iterations
+    // and no worker ever changed its mind, which a genuinely difficult position
+    // does not do.
+    // MEASURED, and the first version of this was wrong. "Unchanged for twelve
+    // iterations" is satisfied by any quiet endgame that reaches depth 30 having
+    // settled at depth 18, and cutting those changed the move in 2 of 40 real
+    // positions - the engine was thinking for seven seconds there and it was
+    // right to. What separates a forced move is that it was NEVER in doubt: it
+    // is chosen at the first iterations and survives every one after. Requiring
+    // the choice to have settled by depth 4 is what encodes that, and it is the
+    // condition the recapture satisfies and a hard endgame does not.
+    private const int ObviousMoveSettledBy = 4;      // best move fixed from this depth on
+    private const int ObviousMoveStableDepth = 12;   // and unchanged for this many iterations
+    private const double ObviousMoveMaxChanges = 0.05; // decayed root changes: none, in practice
+    private const double ObviousMoveNodeShare = 0.90; // and this share of the search went into it
+    private const double ObviousMoveFraction = 0.30; // less aggressive than a decisive score
+
+    // A share at or above this means the alternatives were not merely worse,
+    // they were refuted outright: every node of the iteration went into the one
+    // move. Reported in a real game at 0.999 and 1.000 on a position with TWO
+    // legal replies to a check, one of them a recapture - and 30% of a six
+    // second budget is still two seconds to play the only move there is. When
+    // the search itself says the decision was unanimous, treat it like the
+    // decisive-score case and bank the clock for a position that needs it.
+    private const double ObviousMoveUnanimousShare = 0.95;
 
     // Proven-short-mate stop (clock mode). Once a completed iteration proves a
     // forced mate in <= 3 plies for us - which cannot get materially shorter -
@@ -363,6 +400,11 @@ public sealed class AlphaBetaSearch
     }
 
     private long _nodes;
+
+    // Share of the last completed root iteration spent on the move it chose.
+    // Near 1.0 when every alternative was refuted at once, which is what a
+    // forced move looks like from the inside.
+    public double BestMoveNodeShare { get; private set; }
     private long _hardTimeMs;
     // Node-level (mid-iteration) deadline. Equals _hardTimeMs except under Lazy
     // SMP, where it is tightened to a small multiple of the soft budget so a
@@ -907,6 +949,25 @@ public sealed class AlphaBetaSearch
                 if (easyMoveEligible)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
 
+                // Obvious move: the score says nothing, but twelve iterations
+                // have agreed on the same move and not one worker has changed
+                // its mind all search. Deeper iterations are buying a decision
+                // that was made at depth one. See the constants above for the
+                // game this came from.
+                bool obviousMoveEligible = !easyMoveEligible
+                    && depth >= EasyMoveMinDepth
+                    && lastBestMoveDepth <= ObviousMoveSettledBy
+                    && lastBestMoveDepth + ObviousMoveStableDepth <= depth
+                    && totBestMoveChanges <= ObviousMoveMaxChanges
+                    && BestMoveNodeShare >= ObviousMoveNodeShare;
+                if (obviousMoveEligible)
+                {
+                    double share = BestMoveNodeShare >= ObviousMoveUnanimousShare
+                        ? EasyMoveFraction
+                        : ObviousMoveFraction;
+                    totalTime = Math.Min(totalTime, _softTimeMs * share);
+                }
+
                 // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.
                 // Prints the target, every factor applied to it, the score and
                 // what has actually been spent, so a disagreement between the
@@ -918,12 +979,15 @@ public sealed class AlphaBetaSearch
                 // repeated self-play position resolving in a couple of cheap
                 // iterations, for instance - which this alone cannot name, but
                 // ruling out the two known causes narrows it down by elimination.
-                string reason = easyMoveEligible ? "easy-move" : "budget";
+                string reason = easyMoveEligible ? "easy-move"
+                              : obviousMoveEligible ? "obvious-move"
+                              : "budget";
                 if (TimeDebug)
                     Console.Out.WriteLine(
                         $"info string TM d={depth} score={score} reason={reason}"
                       + $" soft={_softTimeMs} fe={fallingEval:F3}"
                       + $" red={reduction:F3} inst={bestMoveInstability:F3}"
+                      + $" share={BestMoveNodeShare:F3}"
                       + $" total={totalTime:F0} elapsed={ElapsedMs}"
                       + $" softDl={_softDeadlineMs} maxT={_maxTimeMs} hardT={_hardTimeMs}");
 
@@ -1038,9 +1102,19 @@ public sealed class AlphaBetaSearch
         // needs the window this node actually started with.
         int originalAlpha = alpha;
 
+        // Effort per root move. Best-move STABILITY alone cannot tell a forced
+        // move from a merely quiet one - measured on 40 real positions, cutting
+        // the clock on stability changed the move in middlegames where the
+        // engine was thinking for nine seconds and was right to. Effort can:
+        // on a forced move every alternative fails low at once and nearly the
+        // whole iteration goes into the move that gets played, while a position
+        // with a real choice spreads its nodes over several.
+        long iterationNodes = 0, bestMoveNodes = 0;
+
         for (int i = 0; i < moves.Count; i++)
         {
             Move move = moves[i];
+            long nodesBefore = _nodes;
             _stackPiece[0] = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
             _stackTo[0] = move.To;
             _stackStatScore[0] = (move.IsCapture || move.IsPromotion ? 0
@@ -1070,6 +1144,9 @@ public sealed class AlphaBetaSearch
             board.UnmakeMove();
             searched++;
 
+            long nodesSpent = _nodes - nodesBefore;
+            iterationNodes += nodesSpent;
+
             // A score computed after the stop signal is garbage; only use it
             // if we have nothing at all yet.
             if (_stopped && bestMove != Move.None)
@@ -1085,6 +1162,7 @@ public sealed class AlphaBetaSearch
             {
                 bestScore = score;
                 bestMove = move;
+                bestMoveNodes = nodesSpent;
 
                 // Best-move change bookkeeping for the time manager: a root
                 // move other than the first one taking over the lead signals
@@ -1116,6 +1194,14 @@ public sealed class AlphaBetaSearch
                 break;
             }
         }
+
+        // The share of this iteration that went into the move being played. A
+        // fail-low iteration proves nothing about effort (every move was
+        // searched with a window it could not beat), so it reports zero and the
+        // time manager simply does not use the signal there.
+        BestMoveNodeShare = iterationNodes > 0 && bestScore > originalAlpha
+            ? bestMoveNodes / (double)iterationNodes
+            : 0.0;
 
         // A partial (soft-stopped) iteration must not be recorded in the TT
         // as if the position had been fully searched at this depth.

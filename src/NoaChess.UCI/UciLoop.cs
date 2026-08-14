@@ -110,11 +110,19 @@ public sealed class UciLoop
             // Which SIMD path the evaluator will actually take. The engine
             // branches on Avx2.IsSupported in seven places and never said so,
             // which makes a whole class of problem invisible: the lichess bot
-            // runs the osx-x64 build under Rosetta, where AVX2 does not exist,
-            // so it silently takes the scalar path - a path that is known NOT
-            // to be bit-identical to the AVX2 one. Two machines can therefore
-            // play different moves from the same position with no way to tell
-            // from any log. One line at startup makes it obvious forever.
+            // machine can silently take a different one, and in v4.3.0.4 the
+            // paths were NOT bit-identical: the same position at depth 18 gave
+            // -776 and c2b1 on AVX2 against -792 and c2e4 without it. Two hosts
+            // could play different moves with no way to tell from any log.
+            //
+            // Re-measured on 2026-08-12 with v4.7.0, same positions, same depth,
+            // all three paths (AVX2, no-AVX2, no-intrinsics): identical score,
+            // identical move and IDENTICAL NODE COUNTS - 418,316 exactly, which
+            // is the real proof, since a single differing evaluation anywhere in
+            // the tree would make the searches diverge. The divergence is gone,
+            // most likely fixed as a side effect of the v4.5.0 accumulator
+            // rewrite. The line stays: it costs nothing and it is how the next
+            // divergence gets noticed.
             _output.WriteLine("info string NNUE SIMD path: "
                             + (System.Runtime.Intrinsics.X86.Avx2.IsSupported
                                ? "AVX2" : "scalar (no AVX2 on this machine)"));
