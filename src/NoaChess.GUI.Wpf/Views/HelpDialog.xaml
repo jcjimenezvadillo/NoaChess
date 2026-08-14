@@ -1,0 +1,105 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.HelpDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="How to use the board"
+        Width="560" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{StaticResource AppBackground}">
+    <!-- Everything the board understands, in one place. A GUI that needs a
+         manual has failed, but the gestures that are NOT obvious (premoves,
+         the space bar, engines on either colour) are worth stating once. -->
+    <Window.Resources>
+        <Style x:Key="Key" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelRaised}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderStrong}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="22,18,22,16">
+        <TextBlock Text="Moving" Style="{StaticResource SectionHeader}" FontSize="12" Margin="0,0,0,8"/>
+        <StackPanel x:Name="MovingSection">
+            <Grid Margin="0,0,0,7">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Style="{StaticResource Key}" HorizontalAlignment="Left">
+                    <TextBlock Text="Drag a piece"/>
+                </Border>
+                <TextBlock Grid.Column="1" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"
+                           Text="Pick it up and drop it. Clicking the origin and then the destination works too."/>
+            </Grid>
+            <Grid Margin="0,0,0,7">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Style="{StaticResource Key}" HorizontalAlignment="Left">
+                    <TextBlock Text="Premove"/>
+                </Border>
+                <TextBlock Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap"
+                           Foreground="{StaticResource TextSecondary}"
+                           Text="Move while the engine is thinking and it is played the moment your turn arrives. If it turns out to be illegal it is discarded. Right-click cancels it. Recaptures work too: you may premove onto a square your own piece still occupies."/>
+            </Grid>
+        </StackPanel>
+
+        <Rectangle Height="1" Fill="{StaticResource BorderSoft}" Margin="0,10,0,14"/>
+
+        <TextBlock Text="Keyboard" Style="{StaticResource SectionHeader}" FontSize="12" Margin="0,0,0,8"/>
+        <UniformGrid Columns="2" x:Name="KeysSection">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Left / Right"/></Border>
+                <TextBlock Text="Previous / next move" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Home / End"/></Border>
+                <TextBlock Text="First / last move" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Ctrl+Z"/></Border>
+                <TextBlock Text="Take back" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Ctrl+F"/></Border>
+                <TextBlock Text="Flip the board" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Ctrl+N"/></Border>
+                <TextBlock Text="New game" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Border Style="{StaticResource Key}"><TextBlock Text="Space"/></Border>
+                <TextBlock Text="Play the move for the side to move" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondary}"/>
+            </StackPanel>
+        </UniformGrid>
+
+        <Rectangle Height="1" Fill="{StaticResource BorderSoft}" Margin="0,4,0,14"/>
+
+        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" FontSize="12"
+                   Text="Playing a move from a rewound position replaces the moves that followed it, so going back and choosing differently is how you explore an alternative line."/>
+
+        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" FontSize="12"
+                   Margin="0,10,0,0"
+                   Text="Space plays the move for whoever is to move, both sides included. Set up an endgame and press it again and again to walk the position through, the way Arena does. While the engine is already thinking it means the other thing it always meant: stop and take the move you have."/>
+
+        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" FontSize="12"
+                   Margin="0,10,0,0"
+                   Text="Other engines: add them under Game, UCI engines, then give one a colour in New game. Set both colours to an engine and the game plays itself; Pause stops it between moves."/>
+
+        <Button Content="Close" Style="{StaticResource ToolButton}" IsDefault="True" IsCancel="True"
+                HorizontalAlignment="Center" Margin="0,18,0,0" Padding="28,6"/>
+    </StackPanel>
+</Window>

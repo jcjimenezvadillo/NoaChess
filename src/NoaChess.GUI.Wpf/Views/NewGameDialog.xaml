@@ -1,0 +1,211 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.NewGameDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:NoaChess.GUI.Wpf.ViewModels"
+        Title="New game"
+        Width="700" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{StaticResource AppBackground}">
+    <!-- The two decisions a chess program asks for before a game: which side
+         you take, and how the clock works. Presets rather than a form, because
+         the named ones cover nearly every game anyone plays; the custom fields
+         are there for the rest. -->
+
+    <Window.Resources>
+        <!-- One time control offered as a card. The selected one is lit by a
+             trigger on its own flag: a plain Button has no notion of being
+             chosen. -->
+        <DataTemplate x:Key="PresetTemplate" DataType="{x:Type vm:TimePreset}">
+            <Button Command="{Binding DataContext.ChoosePresetCommand,
+                              RelativeSource={RelativeSource AncestorType=Window}}"
+                    CommandParameter="{Binding}">
+                <StackPanel>
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
+                    <TextBlock Text="{Binding Detail}" FontSize="11"
+                               Foreground="{StaticResource TextMuted}" Margin="0,1,0,0"/>
+                </StackPanel>
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource ChoiceButton}">
+                        <Setter Property="Width" Value="132"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </DataTemplate>
+
+        <Style x:Key="PresetRow" TargetType="ItemsControl">
+            <Setter Property="ItemTemplate" Value="{StaticResource PresetTemplate}"/>
+            <Setter Property="Margin" Value="0,6,0,0"/>
+            <Setter Property="ItemsPanel">
+                <Setter.Value>
+                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="24,20,24,18">
+
+        <TextBlock Text="WHO PLAYS" Style="{StaticResource SectionHeader}" FontSize="12"/>
+        <TextBlock Text="Either colour can be you, NoaChess, or any UCI engine you have added. Two engines play each other."
+                   Foreground="{StaticResource TextMuted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                <ItemsControl ItemsSource="{Binding WhiteOptions}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Command="{Binding DataContext.ChooseWhiteCommand,
+                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}" HorizontalAlignment="Stretch">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/>
+                                    <TextBlock Text="{Binding Detail}" FontSize="10.5"
+                                               Foreground="{StaticResource TextMuted}"/>
+                                </StackPanel>
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource ChoiceButton}">
+                                        <Setter Property="Margin" Value="0,0,0,4"/>
+                                        <Setter Property="Padding" Value="10,6"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                                <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Black" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                <ItemsControl ItemsSource="{Binding BlackOptions}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Command="{Binding DataContext.ChooseBlackCommand,
+                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}" HorizontalAlignment="Stretch">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/>
+                                    <TextBlock Text="{Binding Detail}" FontSize="10.5"
+                                               Foreground="{StaticResource TextMuted}"/>
+                                </StackPanel>
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource ChoiceButton}">
+                                        <Setter Property="Margin" Value="0,0,0,4"/>
+                                        <Setter Property="Padding" Value="10,6"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                                <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Grid>
+
+        <Rectangle Height="1" Fill="{StaticResource BorderSoft}" Margin="0,18,0,16"/>
+
+        <TextBlock Text="HOW HARD IT TRIES" Style="{StaticResource SectionHeader}" FontSize="12"/>
+        <TextBlock Text="A cap on how many positions the engine may look at. It is not a rating: no match has been played at these levels, so no Elo is claimed for them."
+                   Foreground="{StaticResource TextMuted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0"/>
+        <ItemsControl ItemsSource="{Binding Strengths}" Margin="0,6,0,0">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Button Command="{Binding DataContext.ChooseStrengthCommand,
+                                      RelativeSource={RelativeSource AncestorType=Window}}"
+                            CommandParameter="{Binding}">
+                        <StackPanel>
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13.5"/>
+                            <TextBlock Text="{Binding Detail}" FontSize="11"
+                                       Foreground="{StaticResource TextMuted}" Margin="0,1,0,0"/>
+                        </StackPanel>
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource ChoiceButton}">
+                                <Setter Property="Width" Value="180"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource AccentWash}"/>
+                                        <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                        <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <Rectangle Height="1" Fill="{StaticResource BorderSoft}" Margin="0,18,0,16"/>
+
+        <TextBlock Text="CLOCK" Style="{StaticResource SectionHeader}" FontSize="12"/>
+        <TextBlock Text="A real chess clock. Both sides get the same start time and the increment is added after every move."
+                   Foreground="{StaticResource TextMuted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0"/>
+        <ItemsControl ItemsSource="{Binding ClockPresets}" Style="{StaticResource PresetRow}"/>
+
+        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+            <TextBlock Text="Custom" VerticalAlignment="Center"
+                       Foreground="{StaticResource TextSecondary}" Margin="0,0,10,0"/>
+            <TextBox Width="52" Text="{Binding CustomMinutes, UpdateSourceTrigger=PropertyChanged}"
+                     TextAlignment="Center"/>
+            <TextBlock Text="min" VerticalAlignment="Center" Margin="6,0,12,0"
+                       Foreground="{StaticResource TextMuted}"/>
+            <TextBox Width="52" Text="{Binding CustomIncrement, UpdateSourceTrigger=PropertyChanged}"
+                     TextAlignment="Center"/>
+            <TextBlock Text="sec increment" VerticalAlignment="Center" Margin="6,0,12,0"
+                       Foreground="{StaticResource TextMuted}"/>
+            <Button Content="Use" Style="{StaticResource ToolButton}" Padding="16,5"
+                    Command="{Binding UseCustomClockCommand}"/>
+        </StackPanel>
+
+        <Rectangle Height="1" Fill="{StaticResource BorderSoft}" Margin="0,18,0,16"/>
+
+        <TextBlock Text="OR A FIXED BUDGET" Style="{StaticResource SectionHeader}" FontSize="12"/>
+        <TextBlock Text="No clock at all: the engine spends the same effort on every move and neither side can lose on time."
+                   Foreground="{StaticResource TextMuted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0"/>
+        <ItemsControl ItemsSource="{Binding MovePresets}" Style="{StaticResource PresetRow}"/>
+        <ItemsControl ItemsSource="{Binding DepthPresets}" Style="{StaticResource PresetRow}"/>
+
+        <Border Background="{StaticResource Panel}" CornerRadius="5" Padding="12,9" Margin="0,14,0,0"
+                BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
+            <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSecondary}"
+                       TextWrapping="Wrap"/>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Cancel" Style="{StaticResource ToolButton}" Padding="22,6"
+                    IsCancel="True" Margin="0,0,8,0"/>
+            <Button Content="Start game" Style="{StaticResource AccentButton}" Padding="22,6"
+                    IsDefault="True" Click="OnStartClicked"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

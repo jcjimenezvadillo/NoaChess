@@ -3,21 +3,33 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:mdxaml="clr-namespace:MdXaml;assembly=MdXaml"
         Title="What's new in NoaChess"
-        Width="620" Height="560"
-        MinWidth="400" MinHeight="300"
+        Width="680" Height="620"
+        MinWidth="460" MinHeight="320"
         WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False">
-    <!-- Modal shown at startup with the rendered CHANGELOG.md, so the version
-         and its contents are visible before playing. It must be closed to
-         reach the board (ShowDialog blocks the main window). -->
-    <DockPanel Margin="12">
-        <Button DockPanel.Dock="Bottom" Content="Close and play"
-                HorizontalAlignment="Center" Padding="24,6" Margin="0,10,0,0"
+        ShowInTaskbar="False"
+        Background="{StaticResource AppBackground}">
+    <!-- The rendered CHANGELOG.md. The document itself sits on paper rather
+         than on the dark shell: markdown brings its own typography and colours,
+         and a long release history is read, not glanced at. -->
+    <DockPanel Margin="16">
+        <Border DockPanel.Dock="Top" Padding="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="RELEASE NOTES" Style="{StaticResource SectionHeader}"/>
+                <TextBlock x:Name="VersionLine" FontSize="17" FontWeight="Bold"
+                           Foreground="{StaticResource Accent}"/>
+            </StackPanel>
+        </Border>
+
+        <Button DockPanel.Dock="Bottom" Content="Close" Style="{StaticResource ToolButton}"
+                HorizontalAlignment="Center" Padding="28,6" Margin="0,12,0,0"
                 IsDefault="True" IsCancel="True" Click="OnCloseClicked"/>
 
-        <!-- MdXaml renders the markdown text set from code-behind. -->
-        <mdxaml:MarkdownScrollViewer x:Name="MarkdownViewer"
-                                     VerticalScrollBarVisibility="Auto"
-                                     ClickAction="OpenBrowser"/>
+        <Border Background="#F5F2EA" CornerRadius="6" Padding="18,12"
+                BorderBrush="{StaticResource BorderStrong}" BorderThickness="1">
+            <mdxaml:MarkdownScrollViewer x:Name="MarkdownViewer"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Foreground="#1E1C19"
+                                         ClickAction="OpenBrowser"/>
+        </Border>
     </DockPanel>
 </Window>
