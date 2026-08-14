@@ -352,6 +352,26 @@ public static class MovePicker
         // any other quiet, so a refutation that keeps working here compounds
         // its bonus instead of being pinned to a fixed rank.
         PieceType mover = board.PieceTypeAt(move.From);
+
+        // Butterfly history at 1x, and NOT the reference's 2x, on purpose.
+        //
+        // Its expression is `2 * mainHistory + 2 * pawnHistory + five
+        // continuation levels at 1x`, so copying the 2 looks like the faithful
+        // thing to do. It is not, because the tables underneath have different
+        // ranges: our butterfly is bounded at 7183 exactly like theirs, but our
+        // continuation table is bounded at 8192 against their ~30000, a
+        // deliberate difference measured in v2.8.3.
+        //
+        //   reference   2x7183 : 5x30000 = 1 : 10.4
+        //   here at 1x   7183  : 5x8192  = 1 :  5.7
+        //   here at 2x  14366  : 5x8192  = 1 :  2.85
+        //
+        // Adopting the 2 would move the balance FURTHER from the reference, not
+        // closer. Constants get ported raw; ratios get measured at the site that
+        // consumes them.
+        //
+        // Also absent and worth its own experiment some day: this engine has no
+        // pawn history, which is the other 2x term in that expression.
         int quietScore = history.Get(board.SideToMove, move);
         if (contHist.IsActive)
         {
