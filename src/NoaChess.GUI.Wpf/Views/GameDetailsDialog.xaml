@@ -1,0 +1,66 @@
+<Window x:Class="NoaChess.GUI.Wpf.Views.GameDetailsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Game details"
+        Width="480" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{StaticResource AppBackground}">
+    <!-- The seven tags every PGN carries. Filling them in is what turns a saved
+         file from "a game" into a game somebody can find again. -->
+    <Window.Resources>
+        <Style TargetType="TextBlock" x:Key="FieldLabel">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,12,0"/>
+        </Style>
+        <Style TargetType="TextBox" x:Key="Field">
+            <Setter Property="Margin" Value="0,4"/>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="22,18,22,16">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="White" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="0" Grid.Column="1" x:Name="WhiteBox" Style="{StaticResource Field}"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Black" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="1" Grid.Column="1" x:Name="BlackBox" Style="{StaticResource Field}"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Event" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="2" Grid.Column="1" x:Name="EventBox" Style="{StaticResource Field}"/>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Site" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="3" Grid.Column="1" x:Name="SiteBox" Style="{StaticResource Field}"/>
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Date" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="4" Grid.Column="1" x:Name="DateBox" Style="{StaticResource Field}"/>
+
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="Round" Style="{StaticResource FieldLabel}"/>
+            <TextBox   Grid.Row="5" Grid.Column="1" x:Name="RoundBox" Style="{StaticResource Field}"/>
+        </Grid>
+
+        <TextBlock Text="The date follows the PGN convention, yyyy.mm.dd."
+                   Foreground="{StaticResource TextMuted}" FontSize="11.5" Margin="90,6,0,0"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Cancel" Style="{StaticResource ToolButton}" Padding="22,6"
+                    IsCancel="True" Margin="0,0,8,0"/>
+            <Button Content="Save" Style="{StaticResource AccentButton}" Padding="22,6"
+                    IsDefault="True" Click="OnSaveClicked"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
