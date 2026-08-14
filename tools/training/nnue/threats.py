@@ -1,299 +1,473 @@
-# Threat features: a PROBE, not the shipping schema.
+# Threat features, ported faithfully from the reference engine's source.
 #
-# WHAT THIS IS FOR. docs/THREAT_FEATURES_SPEC.md identifies one risk that has to
-# be settled before weeks of C# work: the reference carries these features with a
-# transformer 1024 wide, ours is 128, and width has already been MEASURED as a
-# loser (fqw256 at -31.9). Feeding an input four times richer into a transformer
-# eight times narrower can come out flat, and a flat result would not distinguish
-# "threats do not help" from "threats do not fit". That ambiguity is what this
-# module exists to resolve, in Python alone, before anything touches the engine.
+# WHAT A FEATURE IS. One active feature per (attacker piece, from, to, attacked
+# piece): "this piece, standing here, attacks that piece standing there". Both
+# colours of attacker and both colours of attacked are recorded, so a defence of
+# one's own piece is as much a feature as an attack on an enemy one. 60,720
+# dimensions, at most 128 active. The king only orients the board here; unlike
+# HalfKA it does not multiply the space.
 #
-# WHAT IT IS NOT. It is not parity with the reference and does not claim to be.
-# The spec's own arithmetic does not close: summing numValidTargets against the
-# pseudo-attack counts gives 30,360 dimensions, exactly half the 60,720 quoted,
-# so one factor of two in that description is unaccounted for. Rather than guess
-# which, this builds the index from its own construction and REPORTS the
-# dimension it actually produces. For deciding whether a richer input helps at
-# all, the exact reference numbering is irrelevant; the encoding only has to be
-# consistent and informative. If the probe says go, parity gets settled then,
-# against the source, with the usual C#-versus-Python integer check.
+# THE PACKING. A naive (piece, from, to, attacked) index would need 64x64 square
+# pairs, and almost all of them are geometrically impossible. Instead `to` is
+# stored as its RANK WITHIN the pseudo-attack set of `from`, and `offsets` holds
+# the running total of those set sizes over all earlier `from` squares. That is
+# what turns a sparse 64x64 into a dense 336 for a knight or 1456 for a queen.
 #
-# ORIENTATION is the real HalfKAv2_hm one, reused verbatim from dataset.py, so
-# the two feature sets agree about which way the board faces.
+# THE TWO MISTAKES THIS FILE EXISTS TO CORRECT. The previous version of this
+# module produced 30,360 dimensions, exactly half, and the reason was not a
+# missing factor: it doubled the space on the direction bit `from < to`, while
+# the reference doubles it on the COLOUR OF THE ATTACKED PIECE. In the source
+# both entries of index_lut1[..][..][from < to] hold the SAME index; the second
+# one exists only to be thrown out when attacker and attacked share a piece
+# type, because then the relation is symmetric and would otherwise be counted
+# from both ends. So the old encoding was not a scaled-down version of the right
+# one, it was a differently shaped space that happened to be half the size.
+#
+# VERIFIED, NOT ASSUMED. `verify_threats.py` checks this against python-chess for
+# the attack generation, and checks the packing by enumerating every legal
+# (attacker, from, to, attacked) combination: a correct dense packing must reach
+# exactly 60,720 distinct indices with no collision and no gap. That test is what
+# the C# port will be held to as well.
 import numpy as np
 
 # Piece types, as in NoaChess.Core.PieceType.
 PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING = range(6)
 
-# Which (attacker, attacked) pairs are recorded. -1 means "not recorded".
-# Straight from the spec's table: a pawn only records against pawn, knight and
-# rook; a bishop records nothing against a queen; a king records nothing at all.
-PAIR = np.full((6, 6), -1, dtype=np.int16)
-PAIR[PAWN,   [PAWN, KNIGHT, ROOK]]                 = [0, 1, 2]
-PAIR[KNIGHT, [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]]  = [0, 1, 2, 3, 4]
-PAIR[BISHOP, [PAWN, KNIGHT, BISHOP, ROOK]]         = [0, 1, 2, 3]
-PAIR[ROOK,   [PAWN, KNIGHT, BISHOP, ROOK]]         = [0, 1, 2, 3]
-PAIR[QUEEN,  [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]]  = [0, 1, 2, 3, 4]
-
-# Pairs per attacker, doubled by the direction bit (from < to).
-VALID_TARGETS = np.array([2 * int((PAIR[a] >= 0).sum()) for a in range(6)], dtype=np.int64)
+# A coloured piece is colour * 6 + type, so 0-5 are white and 6-11 are black.
+# The reference uses a different packing; only the numbering differs.
+WHITE, BLACK = 0, 1
 
 
-def _rays():
-    """Pseudo-attacks on an empty board, per piece type and origin square."""
-    knight = np.zeros(64, dtype=np.uint64)
-    king = np.zeros(64, dtype=np.uint64)
-    bishop = np.zeros(64, dtype=np.uint64)
-    rook = np.zeros(64, dtype=np.uint64)
+def piece(colour, pt):
+    return colour * 6 + pt
 
+
+# Which (attacker, attacked) type pairs are recorded, and the slot each one gets
+# within that attacker's block. -1 means the pair is not a feature at all.
+# Straight from the reference's `map`: a pawn records nothing against a bishop or
+# a queen, the sliders record nothing against a queen, and a king records nothing
+# at all.
+MAP = np.full((6, 6), -1, dtype=np.int32)
+MAP[PAWN,   [PAWN, KNIGHT, ROOK]]                = [0, 1, 2]
+MAP[KNIGHT, [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]] = [0, 1, 2, 3, 4]
+MAP[BISHOP, [PAWN, KNIGHT, BISHOP, ROOK]]        = [0, 1, 2, 3]
+MAP[ROOK,   [PAWN, KNIGHT, BISHOP, ROOK]]        = [0, 1, 2, 3]
+MAP[QUEEN,  [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]] = [0, 1, 2, 3, 4]
+
+# Twice the number of recorded targets: once for an attacked white piece, once
+# for an attacked black one. THIS is where the factor of two belongs.
+NUM_VALID_TARGETS = np.array([2 * int((MAP[a] >= 0).sum()) for a in range(6)],
+                             dtype=np.int64)
+
+# Which piece types are worth attacking, per attacker type. Mirrors the
+# bitboard filters the reference applies before generating any index, and agrees
+# with MAP by construction.
+TARGET_TYPES = {
+    PAWN:   (PAWN, KNIGHT, ROOK),
+    KNIGHT: (PAWN, KNIGHT, BISHOP, ROOK, QUEEN),
+    BISHOP: (PAWN, KNIGHT, BISHOP, ROOK),
+    ROOK:   (PAWN, KNIGHT, BISHOP, ROOK),
+    QUEEN:  (PAWN, KNIGHT, BISHOP, ROOK, QUEEN),
+    KING:   (),
+}
+
+BISHOP_DELTAS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+ROOK_DELTAS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+KNIGHT_DELTAS = ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2))
+KING_DELTAS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
+
+
+def _leaper(deltas):
+    out = np.zeros(64, dtype=np.uint64)
     for sq in range(64):
         f, r = sq & 7, sq >> 3
-        for df, dr in ((1, 2), (2, 1), (2, -1), (1, -2),
-                       (-1, -2), (-2, -1), (-2, 1), (-1, 2)):
+        bb = 0
+        for df, dr in deltas:
             nf, nr = f + df, r + dr
             if 0 <= nf < 8 and 0 <= nr < 8:
-                knight[sq] |= np.uint64(1) << np.uint64(nr * 8 + nf)
-        for df, dr in ((1, 0), (1, 1), (0, 1), (-1, 1),
-                       (-1, 0), (-1, -1), (0, -1), (1, -1)):
-            nf, nr = f + df, r + dr
-            if 0 <= nf < 8 and 0 <= nr < 8:
-                king[sq] |= np.uint64(1) << np.uint64(nr * 8 + nf)
-        for df, dr in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                bb |= 1 << (nr * 8 + nf)
+        out[sq] = bb
+    return out
+
+
+def _slider(deltas):
+    out = np.zeros(64, dtype=np.uint64)
+    for sq in range(64):
+        f, r = sq & 7, sq >> 3
+        bb = 0
+        for df, dr in deltas:
             nf, nr = f + df, r + dr
             while 0 <= nf < 8 and 0 <= nr < 8:
-                bishop[sq] |= np.uint64(1) << np.uint64(nr * 8 + nf)
+                bb |= 1 << (nr * 8 + nf)
                 nf, nr = nf + df, nr + dr
-        for df, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nf, nr = f + df, r + dr
-            while 0 <= nf < 8 and 0 <= nr < 8:
-                rook[sq] |= np.uint64(1) << np.uint64(nr * 8 + nf)
-                nf, nr = nf + df, nr + dr
-
-    return knight, king, bishop, rook
+        out[sq] = bb
+    return out
 
 
-KNIGHT_ATT, KING_ATT, BISHOP_ATT, ROOK_ATT = _rays()
+KNIGHT_ATT = _leaper(KNIGHT_DELTAS)
+KING_ATT = _leaper(KING_DELTAS)
+BISHOP_ATT = _slider(BISHOP_DELTAS)
+ROOK_ATT = _slider(ROOK_DELTAS)
 QUEEN_ATT = BISHOP_ATT | ROOK_ATT
 
 
 def _pawn_push_or_attacks():
-    """Pushes AND captures, white's view, and only from ranks 2..7.
+    """Both captures and the single push, which is what the reference indexes.
 
-    The spec is explicit that pawns count their advances as well as their
-    captures, which is what makes a pawn feature say "this pawn is coming" and
-    not only "this pawn can take".
+    A pawn feature is not only "attacks that piece": a pawn blocked by another
+    pawn directly in front is a positional fact the net is told about, and it
+    lives in the same table.
     """
-    out = np.zeros(64, dtype=np.uint64)
-    for sq in range(64):
-        f, r = sq & 7, sq >> 3
-        if not (1 <= r <= 6):            # ranks 2..7 only
-            continue
-        for df, dr in ((0, 1), (-1, 1), (1, 1)):
-            nf, nr = f + df, r + dr
-            if 0 <= nf < 8 and 0 <= nr < 8:
-                out[sq] |= np.uint64(1) << np.uint64(nr * 8 + nf)
+    out = np.zeros((2, 64), dtype=np.uint64)
+    for colour, step in ((WHITE, 8), (BLACK, -8)):
+        for sq in range(64):
+            f, r = sq & 7, sq >> 3
+            nr = r + (1 if colour == WHITE else -1)
+            if not 0 <= nr < 8:
+                continue
+            bb = 1 << (sq + step)                       # the push
+            if f > 0:
+                bb |= 1 << (nr * 8 + f - 1)
+            if f < 7:
+                bb |= 1 << (nr * 8 + f + 1)
+            out[colour][sq] = bb
     return out
 
 
-PAWN_ATT = _pawn_push_or_attacks()
-ATTACKS = [PAWN_ATT, KNIGHT_ATT, BISHOP_ATT, ROOK_ATT, QUEEN_ATT, KING_ATT]
+PAWN_PUSH_OR_ATT = _pawn_push_or_attacks()
 
 
-def _build_index():
-    """offsets[piece][from] and slot[piece][from][to], exactly as the spec lays
-    them out: a running total of how many squares each piece attacks from each
-    origin, and which of those destinations a given (from, to) is."""
-    offsets = np.zeros((6, 64), dtype=np.int64)
-    slot = np.full((6, 64, 64), -1, dtype=np.int64)
-    total = np.zeros(6, dtype=np.int64)
-
-    for piece in range(6):
-        running = 0
-        for frm in range(64):
-            offsets[piece][frm] = running
-            bb = int(ATTACKS[piece][frm])
-            k = 0
-            while bb:
-                to = (bb & -bb).bit_length() - 1
-                slot[piece][frm][to] = k
-                bb &= bb - 1
-                k += 1
-            running += k
-        total[piece] = running
-
-    return offsets, slot, total
+def _pseudo(coloured_piece, sq):
+    """The empty-board attack set the packing is built from."""
+    colour, pt = divmod(coloured_piece, 6)
+    if pt == PAWN:
+        # Only ranks 2-7 contribute: a pawn cannot stand on the first or last.
+        return PAWN_PUSH_OR_ATT[colour][sq] if 8 <= sq < 56 else np.uint64(0)
+    return (KNIGHT_ATT, BISHOP_ATT, ROOK_ATT, QUEEN_ATT, KING_ATT)[pt - 1][sq]
 
 
-OFFSETS, SLOT, ATTACKED_SQUARES = _build_index()
+def _build_offsets():
+    """Per piece: where its block starts, and how big one target slot is.
 
-# Where each attacker's block starts, and how big the whole thing is.
-BLOCK_SIZE = VALID_TARGETS * ATTACKED_SQUARES
-BLOCK_BASE = np.concatenate(([0], np.cumsum(BLOCK_SIZE)[:-1]))
-THREAT_INPUT_SIZE = int(BLOCK_SIZE.sum())
-
-
-def describe():
-    lines = [f"threat features: {THREAT_INPUT_SIZE:,} dimensions"]
-    names = "PNBRQK"
-    for p in range(6):
-        lines.append(f"  {names[p]}  pairs*2 {VALID_TARGETS[p]:2d} "
-                     f" attacked squares {ATTACKED_SQUARES[p]:5d} "
-                     f" block {BLOCK_SIZE[p]:6,d}")
-    return "\n".join(lines)
-
-
-def index(perspective, king_sq, attacker, frm, attacked, to):
-    """One threat feature index, or -1 when the pair is not recorded.
-
-    Orientation is HalfKAv2_hm's, the same one dataset.py uses: mirror by the
-    king's file, flip the board for black. The PIECES are oriented too, so a
-    black knight seen from black's perspective indexes as a white knight would.
+    `offsets[p][from]` is the running count of attack targets over every earlier
+    `from` square, so a (from, to) pair costs one index and only the reachable
+    ones are numbered.
     """
-    pair = PAIR[attacker][attacked]
-    if pair < 0:
-        return -1
+    piece_offset = np.zeros(12, dtype=np.int64)      # slot size for this piece
+    block_start = np.zeros(12, dtype=np.int64)       # where this piece's block begins
+    offsets = np.zeros((12, 64), dtype=np.int64)
 
-    vflip = 0 if perspective == 0 else 56
-    orient = 7 if (king_sq & 7) < 4 else 0
-    frm_o = frm ^ orient ^ vflip
-    to_o = to ^ orient ^ vflip
+    cumulative = 0
+    for p in range(12):
+        run = 0
+        for sq in range(64):
+            offsets[p][sq] = run
+            run += int(bin(int(_pseudo(p, sq))).count("1"))
+        piece_offset[p] = run
+        block_start[p] = cumulative
+        cumulative += int(NUM_VALID_TARGETS[p % 6]) * run
 
-    if SLOT[attacker][frm_o][to_o] < 0:
-        return -1                        # not a square this piece attacks
-
-    direction = 1 if frm_o < to_o else 0
-    pair_base = (2 * pair + direction) * ATTACKED_SQUARES[attacker]
-    return int(BLOCK_BASE[attacker] + pair_base
-               + OFFSETS[attacker][frm_o] + SLOT[attacker][frm_o][to_o])
-
-
-# ---------------------------------------------------------------------------
-# Attack generation over a whole block of positions at once.
-#
-# Sliding attacks depend on occupancy, so they cannot be a table lookup. They
-# are walked one step at a time across EVERY position simultaneously: eight
-# directions, seven steps, all numpy. That is 56 vector operations per block,
-# which is the difference between minutes and days at twenty million positions.
-# ---------------------------------------------------------------------------
-
-_NOT_A = np.uint64(0xFEFEFEFEFEFEFEFE)
-_NOT_H = np.uint64(0x7F7F7F7F7F7F7F7F)
+    return block_start, piece_offset, offsets, cumulative
 
 
-def _shift(bb, delta):
-    """One step in a direction, with the file wrap masked off."""
-    if delta == 1:    return (bb & _NOT_H) << np.uint64(1)
-    if delta == -1:   return (bb & _NOT_A) >> np.uint64(1)
-    if delta == 8:    return bb << np.uint64(8)
-    if delta == -8:   return bb >> np.uint64(8)
-    if delta == 9:    return (bb & _NOT_H) << np.uint64(9)
-    if delta == 7:    return (bb & _NOT_A) << np.uint64(7)
-    if delta == -7:   return (bb & _NOT_H) >> np.uint64(7)
-    if delta == -9:   return (bb & _NOT_A) >> np.uint64(9)
-    raise ValueError(delta)
+BLOCK_START, PIECE_OFFSET, OFFSETS, THREAT_INPUT_SIZE = _build_offsets()
 
-
-def slider_attacks(from_bb, occupancy, deltas):
-    """Squares reachable from every set bit of from_bb, stopping ON blockers.
-
-    from_bb and occupancy are arrays of u64, one per position; the walk runs
-    for all of them at the same time.
-    """
-    result = np.zeros_like(from_bb)
-    for d in deltas:
-        ray = from_bb
-        for _ in range(7):
-            ray = _shift(ray, d)
-            if not ray.any():
-                break
-            # The blocker's own square IS attacked; what it stops is everything
-            # beyond it, so it is added to the result and dropped from the ray.
-            result |= ray
-            ray &= ~occupancy
-    return result
-
-
-BISHOP_DELTAS = (9, 7, -7, -9)
-ROOK_DELTAS = (1, -1, 8, -8)
-
-
-# ---------------------------------------------------------------------------
-# From a decoded record to its threat features.
-#
-# One position at a time, but every operation inside is a bitboard operation on
-# the verified primitives above. At roughly a tenth of a millisecond each this
-# is minutes for the few million positions a probe needs, which is the right
-# trade: the fully vectorised version is worth writing only if the probe says
-# these features are worth having at all.
-# ---------------------------------------------------------------------------
+# The reference declares 60,720. If this ever stops matching, the packing has
+# drifted and every trained net on the old numbering is invalid.
+assert THREAT_INPUT_SIZE == 60720, f"packing gives {THREAT_INPUT_SIZE}, reference says 60720"
 
 MAX_ACTIVE_THREATS = 128
 
 
-def _piece_map(occupancy, nibbles):
-    """(square, type, colour) for every occupied square, in ascending order."""
-    out = []
-    bb = int(occupancy)
-    i = 0
-    while bb:
-        sq = (bb & -bb).bit_length() - 1
-        code = (int(nibbles[i >> 1]) >> (4 * (i & 1))) & 0xF
-        out.append((sq, code % 6, code // 6))
-        bb &= bb - 1
-        i += 1
-    return out
+def _build_slot_lut():
+    """`to`'s rank within the attack set of `from`, for every piece and pair."""
+    lut = np.full((12, 64, 64), -1, dtype=np.int32)
+    for p in range(12):
+        for frm in range(64):
+            attacks = int(_pseudo(p, frm))
+            for to in range(64):
+                if attacks >> to & 1:
+                    lut[p][frm][to] = bin(attacks & ((1 << to) - 1)).count("1")
+    return lut
 
 
-def threats_of(occupancy, nibbles, king_sq, perspective):
-    """Threat feature indices for one position, from one perspective.
+SLOT = _build_slot_lut()
 
-    A threat is recorded when a piece attacks an ENEMY piece and the pair is one
-    the table keeps. The attacker's type is oriented for the perspective, which
-    is what makes black's own knight index as white's would.
+
+def _build_pair_lut():
+    """[attacker][attacked][from < to] -> base index, or -1 when dropped.
+
+    Both entries hold the SAME base. The second exists only so that a symmetric
+    relation - a knight attacking a knight, which is also that knight attacking
+    this one - is counted from one end and not from both. Friendly pawns are the
+    exception: pawn A defending pawn B is not the same fact as B defending A,
+    because a pawn cannot defend backwards.
     """
-    pieces = _piece_map(occupancy, nibbles)
-    occ = np.array([int(occupancy)], dtype=np.uint64)
-    by_square = {sq: (t, c) for sq, t, c in pieces}
-    out = []
+    lut = np.full((12, 12, 2), -1, dtype=np.int64)
+    for attacker in range(12):
+        for attacked in range(12):
+            a_colour, a_type = divmod(attacker, 6)
+            d_colour, d_type = divmod(attacked, 6)
 
-    for sq, ptype, colour in pieces:
-        if ptype == KING:
-            continue                      # the king records nothing
+            slot = int(MAP[a_type][d_type])
+            if slot < 0:
+                continue
 
-        one = np.array([np.uint64(1) << np.uint64(sq)], dtype=np.uint64)
-        if ptype == KNIGHT:
-            att = int(KNIGHT_ATT[sq])
-        elif ptype == BISHOP:
-            att = int(slider_attacks(one, occ, BISHOP_DELTAS)[0])
-        elif ptype == ROOK:
-            att = int(slider_attacks(one, occ, ROOK_DELTAS)[0])
-        elif ptype == QUEEN:
-            att = int(slider_attacks(one, occ, BISHOP_DELTAS + ROOK_DELTAS)[0])
-        else:                             # pawn: pushes and captures, its way up
-            att = int(PAWN_ATT[sq] if colour == 0 else PAWN_ATT[sq ^ 56] )
-            if colour == 1:
-                att = int(np.uint64(_flip_bb(att)))
+            base = (BLOCK_START[attacker]
+                    + (d_colour * (NUM_VALID_TARGETS[a_type] // 2) + slot)
+                    * PIECE_OFFSET[attacker])
 
-        att &= int(occupancy)             # only threats against something
-        while att:
-            to = (att & -att).bit_length() - 1
-            att &= att - 1
-            target = by_square.get(to)
-            if target is None or target[1] == colour:
-                continue                  # own piece: not a threat
-            # The attacker is oriented with the perspective, so both sides index
-            # into the same rows.
-            i = index(perspective, king_sq, ptype, sq, target[0], to)
+            enemy = a_colour != d_colour
+            semi_excluded = a_type == d_type and (enemy or a_type != PAWN)
+
+            lut[attacker][attacked][0] = base
+            lut[attacker][attacked][1] = -1 if semi_excluded else base
+    return lut
+
+
+PAIR_LUT = _build_pair_lut()
+
+# Horizontal mirror, and it deliberately does NOT copy the reference here.
+#
+# The reference mirrors so its king ends on files a-d; NoaChess mirrors so the
+# king ends on files e-h, which is what NnueFeatureIndex.Orient has always done
+# for HalfKAv2_hm. Either is correct on its own - the orientation is a pure
+# relabelling of the space - but the two feature sets inside this engine have to
+# face the same way, and HalfKA is the one already frozen into every shipped net.
+#
+# Copying the reference here cost a full parity failure: 252 of 256 cases, all
+# from this one XOR, with the packing tables byte-identical on both sides.
+ORIENT = np.array([7 if (sq & 7) < 4 else 0 for sq in range(64)], dtype=np.int32)
+
+
+def index(perspective, king_sq, attacker, frm, attacked, to):
+    """The feature index, or -1 when this relation is not recorded.
+
+    `attacker` and `attacked` are coloured pieces in absolute terms; the
+    perspective flip is applied here, once, exactly as the reference does it.
+    """
+    orientation = int(ORIENT[king_sq]) ^ (56 * perspective)
+    frm_o = frm ^ orientation
+    to_o = to ^ orientation
+
+    # Flipping perspective swaps the colours of both pieces.
+    att_o = (attacker + 6) % 12 if perspective else attacker
+    dfd_o = (attacked + 6) % 12 if perspective else attacked
+
+    base = PAIR_LUT[att_o][dfd_o][1 if frm_o < to_o else 0]
+    if base < 0:
+        return -1
+
+    # The geometry check the reference does not need and this does. Over there
+    # make_index is only ever reached from a bitboard of real attacks, so `to`
+    # is always in `from`'s attack set. Here the function is also called from
+    # tests and from the feature extractor, and without this line a pair that is
+    # not an attack at all returns base + offset - 1: a perfectly valid-looking
+    # index belonging to some other relation. That is a silent wrong label, the
+    # worst kind, and it took a white pawn "attacking" the square behind it to
+    # surface.
+    slot = int(SLOT[att_o][frm_o][to_o])
+    if slot < 0:
+        return -1
+
+    return int(base + OFFSETS[att_o][frm_o] + slot)
+
+
+NOT_A = ~0x0101010101010101 & 0xFFFFFFFFFFFFFFFF
+NOT_H = ~0x8080808080808080 & 0xFFFFFFFFFFFFFFFF
+
+
+def _shift(bb, d):
+    """One-square shift, with the wrap off the a and h files removed."""
+    if d == 8:
+        return (bb << 8) & 0xFFFFFFFFFFFFFFFF
+    if d == -8:
+        return bb >> 8
+    if d == 9:
+        return (bb & NOT_H) << 9 & 0xFFFFFFFFFFFFFFFF
+    if d == 7:
+        return (bb & NOT_A) << 7 & 0xFFFFFFFFFFFFFFFF
+    if d == -7:
+        return (bb & NOT_H) >> 7
+    if d == -9:
+        return (bb & NOT_A) >> 9
+    raise ValueError(d)
+
+
+def _slider_attacks(frm, occupied, deltas):
+    """Attacks from one square, stopping on the first blocker and including it."""
+    bb = 0
+    f, r = frm & 7, frm >> 3
+    for df, dr in deltas:
+        nf, nr = f + df, r + dr
+        while 0 <= nf < 8 and 0 <= nr < 8:
+            sq = nr * 8 + nf
+            bb |= 1 << sq
+            if occupied >> sq & 1:
+                break
+            nf, nr = nf + df, nr + dr
+    return bb
+
+
+def _bits(bb):
+    while bb:
+        low = bb & -bb
+        yield low.bit_length() - 1
+        bb ^= low
+
+
+def board_from_record(occupancy, nibbles):
+    """(board array, per-piece bitboards) from one NOADATA record.
+
+    Piece codes are colour * 6 + type with type 5 for the king, which is the
+    same coding `dataset.py` uses, so the two feature sets read the record the
+    same way.
+    """
+    board = [-1] * 64
+    bbs = [0] * 12
+    for i, sq in enumerate(_bits(int(occupancy))):
+        code = (int(nibbles[i >> 1]) >> (4 * (i & 1))) & 0xF
+        board[sq] = code
+        bbs[code] |= 1 << sq
+    return board, bbs
+
+
+def active_threats(occupancy, nibbles):
+    """Active threat features for both perspectives.
+
+    Follows the reference's append_active_indices: every attacker of every
+    colour, filtered to the target types that attacker actually records, plus
+    the pawn push that is blocked by another pawn. Returns (white, black).
+    """
+    board, bbs = board_from_record(occupancy, nibbles)
+
+    occupied = 0
+    for b in bbs:
+        occupied |= b
+
+    def of(*types):
+        bb = 0
+        for c in (WHITE, BLACK):
+            for t in types:
+                bb |= bbs[piece(c, t)]
+        return bb
+
+    pawns = of(PAWN)
+    pawn_targets = of(PAWN, KNIGHT, ROOK)
+    minor_slider_targets = of(PAWN, KNIGHT, BISHOP, ROOK)
+    queen_targets = of(PAWN, KNIGHT, BISHOP, ROOK, QUEEN)
+
+    kings = [None, None]
+    for c in (WHITE, BLACK):
+        k = bbs[piece(c, KING)]
+        kings[c] = (k & -k).bit_length() - 1 if k else None
+
+    # Collect the relations once; the two perspectives only renumber them.
+    relations = []
+
+    for c in (WHITE, BLACK):
+        attacker = piece(c, PAWN)
+        c_pawns = bbs[attacker]
+
+        # A pawn stopped by a pawn directly in front. `pawns` is both colours,
+        # exactly as the reference has it: what matters is that the blocker is a
+        # pawn, not whose it is.
+        back = -8 if c == WHITE else 8
+        pushers = _shift(pawns, back) & c_pawns
+        caps = (9, 7) if c == WHITE else (-7, -9)
+        push = 8 if c == WHITE else -8
+
+        for d in caps:
+            for to in _bits(_shift(c_pawns, d) & pawn_targets):
+                relations.append((attacker, to - d, board[to], to))
+        for to in _bits(_shift(pushers, push)):
+            relations.append((attacker, to - push, board[to], to))
+
+        for pt in (KNIGHT, BISHOP, ROOK, QUEEN):
+            attacker = piece(c, pt)
+            targets = queen_targets if pt in (KNIGHT, QUEEN) else minor_slider_targets
+            for frm in _bits(bbs[attacker]):
+                if pt == KNIGHT:
+                    att = int(KNIGHT_ATT[frm])
+                elif pt == BISHOP:
+                    att = _slider_attacks(frm, occupied, BISHOP_DELTAS)
+                elif pt == ROOK:
+                    att = _slider_attacks(frm, occupied, ROOK_DELTAS)
+                else:
+                    att = _slider_attacks(frm, occupied, BISHOP_DELTAS + ROOK_DELTAS)
+                for to in _bits(att & targets):
+                    relations.append((attacker, frm, board[to], to))
+
+    out = ([], [])
+    for perspective in (WHITE, BLACK):
+        ksq = kings[perspective]
+        if ksq is None:
+            continue
+        for att, frm, dfd, to in relations:
+            i = index(perspective, ksq, att, frm, dfd, to)
             if i >= 0:
-                out.append(i)
-
-    return out[:MAX_ACTIVE_THREATS]
-
-
-def _flip_bb(bb):
-    """Mirror a bitboard vertically, rank 1 <-> rank 8."""
-    out = 0
-    for r in range(8):
-        byte = (bb >> (8 * r)) & 0xFF
-        out |= byte << (8 * (7 - r))
+                out[perspective].append(i)
     return out
+
+
+# ---- feature factorization -------------------------------------------------
+#
+# WHY THIS IS HERE AT ALL. Factorization is the largest measured gain this
+# project has ever made (+128 Elo in the field, v4.6.0), and what it does is
+# narrow: it adds shared "virtual" rows that every real feature fires alongside
+# its own, so a row that would starve for gradient collects it 32 times over.
+# That is a cure for feature SPARSITY, and threat features are far sparser than
+# HalfKA - 60,720 dimensions against 22,528, with roughly half the updates per
+# weight on the same corpus. Measuring threats WITHOUT factorization tests them
+# with their characteristic defect left in.
+#
+# THE THREE FACTORS, by analogy with HalfKA dropping the king bucket:
+#   (attacker, attacked)  - what threatens what, regardless of where
+#   (attacker, from)      - this piece standing here, threatening anything
+#   (attacked, to)        - this piece standing here, threatened by anything
+# Each is dense enough to collect gradient from thousands of real features.
+VIRTUAL_PAIR = 12 * 12               # 144
+VIRTUAL_FROM = 12 * 64               # 768
+VIRTUAL_TO = 12 * 64                 # 768
+VIRTUAL_SIZE = VIRTUAL_PAIR + VIRTUAL_FROM + VIRTUAL_TO
+FACTORED_INPUT_SIZE = THREAT_INPUT_SIZE + VIRTUAL_SIZE
+
+
+def _build_virtual_table():
+    """For every reachable threat index, the three virtual rows it also fires.
+
+    Built by enumerating the packing in ORIENTED space (a king on e1 gives
+    orientation 0), which is the same space `index` produces, so the table can
+    be looked up directly by feature index with no decoding at run time.
+    """
+    table = np.full((THREAT_INPUT_SIZE, 3), -1, dtype=np.int32)
+    king_no_mirror = 4                       # e1: file 4, so ORIENT is 0
+    for att in range(12):
+        for dfd in range(12):
+            for frm in range(64):
+                for to in range(64):
+                    i = index(0, king_no_mirror, att, frm, dfd, to)
+                    if i < 0:
+                        continue
+                    table[i] = (
+                        THREAT_INPUT_SIZE + att * 12 + dfd,
+                        THREAT_INPUT_SIZE + VIRTUAL_PAIR + att * 64 + frm,
+                        THREAT_INPUT_SIZE + VIRTUAL_PAIR + VIRTUAL_FROM + dfd * 64 + to,
+                    )
+    return table
+
+
+VIRTUALS = _build_virtual_table()
+
+
+def factorize(indices):
+    """Real threat indices plus the virtual rows they fire, as one flat list."""
+    out = list(indices)
+    for i in indices:
+        out.extend(int(v) for v in VIRTUALS[i] if v >= 0)
+    return out
+
+
+def describe():
+    return (f"threat features: {THREAT_INPUT_SIZE:,} dimensions, "
+            f"<= {MAX_ACTIVE_THREATS} active, ported from the reference source")
