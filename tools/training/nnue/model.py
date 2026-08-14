@@ -8,8 +8,9 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from dataset import INPUT_SIZE  # HalfKAv2_hm feature count (22,528); single source.
+from dataset import INPUT_SIZE, PS_NB, KING_BUCKET_COUNT, MAX_ACTIVE  # schema, single source.
 
 FT_OUT = 128
 L1_OUT = 32
@@ -30,9 +31,69 @@ OUTPUT_SCALE = 400.0  # net output * 400 = centipawns
 # trap, and the failure surfaces hours downstream of the cause.
 OUT_BUCKETS = 1
 
+# Feature factorization (v4.6.0). OFF by default for the same reason buckets are:
+# it changes the shape of ft.weight, so it must be an explicit opt-in.
+#
+# THE PROBLEM IT SOLVES, MEASURED ON THE SHIPPING NET. A HalfKAv2_hm index is
+# (king bucket, piece, square), so each of the 22,528 features only ever fires
+# when the king sits in one of 32 regions. Individually they are rare, their
+# weights never grow, and in ds1e60 89.8% of the feature transformer quantizes
+# to exactly ZERO at QA=127, with 2,389 whole features (10.6%) dead. The largest
+# weight reaches 26 of the 127 available. The transformer is barely used.
+#
+# THE FIX. Train with 704 extra VIRTUAL features - the king-independent
+# (piece, square) part that each real feature is a copy of. Every active feature
+# fires its real row AND its virtual row, so the virtual row collects 32x the
+# gradient and carries the bulk of the signal while the real rows learn only the
+# per-king-bucket deviation. At export the virtual row is ADDED into each of its
+# 32 copies, which is exact: the sum the accumulator computes is unchanged.
+#
+# The engine therefore needs no change at all. The exported file has the same
+# 22,528 rows, the same header and the same arithmetic; the virtual features
+# exist only while gradients are flowing.
+FACTORIZED = False
+
 # Quantization scales (must match the C# loader and export_model.py).
 QA = 255
 QB = 64
+
+# Quantization-aware training (v4.6.0). OFF by default, opt in with --qat.
+#
+# THE PROBLEM IT SOLVES, MEASURED ON THE SHIPPING NET. Quantizing each stage
+# alone against the float forward pass over 4,000 real positions:
+#     feature transformer only   38.77 cp mean absolute error
+#     head (L1 + output) only     4.9  cp
+# against a mean absolute evaluation of 231 cp. The engine therefore evaluates
+# 16.6% away from the network that was trained, p95 98 cp, and essentially all
+# of it is the feature transformer. Training in float and rounding afterwards
+# optimises a network the engine never runs.
+#
+# THE FIX. Round the weights inside the forward pass and let the gradient pass
+# through unchanged (straight-through estimator), so the optimiser sees the
+# error the rounding causes and learns weights that survive it.
+#
+# TWO DIFFERENT ROUNDINGS, AND THE DISTINCTION IS NOT COSMETIC:
+#   weights      -> round(), because export rounds them
+#   activations  -> floor(), because the engine's L1 divides by QB with INTEGER
+#                   division, which truncates. Rounding here would train against
+#                   arithmetic the engine does not perform, and the bias is
+#                   systematic (half a step per hidden unit, same sign every
+#                   time), not noise that averages away.
+# The epsilon keeps a value already sitting exactly on a grid point from being
+# floored down by a representation error.
+FAKE_QUANTIZE_EPS = 1e-5
+
+
+def fake_quantize_weights(value, scale):
+    """Rounds to the quantization grid; gradient passes through untouched."""
+    hard = value.mul(scale).round().div(scale).detach()
+    return hard + (value - value.detach())
+
+
+def fake_quantize_acts(value, scale):
+    """Floors to the grid, mirroring the engine's integer division."""
+    hard = value.mul(scale).add(FAKE_QUANTIZE_EPS).floor().div(scale).detach()
+    return hard + (value - value.detach())
 
 
 def bucket_for_piece_count(piece_count, buckets):
@@ -52,15 +113,26 @@ class NoaNnue(nn.Module):
     # sweep capacity (256, 512, ...). The C# runtime reads every dimension from
     # the model header, so a wider or more bucketed net needs no engine change
     # - only a retrain and an export.
-    def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS):
+    def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS,
+                 factorized=FACTORIZED, qat=False, qa=QA):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
         self.out_buckets = max(1, out_buckets)
+        self.factorized = bool(factorized)
+        # qa MUST match the architecture the net will be exported as: 255 for
+        # arch 1, 127 for arch 2/3. Training against one and exporting as the
+        # other trains for arithmetic the engine will not run.
+        self.qat = bool(qat)
+        self.qa = qa
         # EmbeddingBag with padding trick: sparse sum of feature rows.
-        # Index 0..INPUT_SIZE-1 are real features; INPUT_SIZE is a zero
-        # padding row so batches can be rectangular.
-        self.ft = nn.EmbeddingBag(INPUT_SIZE + 1, ft_out, mode="sum", padding_idx=INPUT_SIZE)
+        # Index 0..INPUT_SIZE-1 are real features. When factorized, the next
+        # PS_NB rows are the virtual (piece, square) features. The last row is a
+        # zero padding row so batches can be rectangular.
+        self.virtual_base = INPUT_SIZE
+        self.pad_index = INPUT_SIZE + (PS_NB if self.factorized else 0)
+        self.ft = nn.EmbeddingBag(self.pad_index + 1, ft_out, mode="sum",
+                                  padding_idx=self.pad_index)
         self.ft_bias = nn.Parameter(torch.zeros(ft_out))
         # The head is bucket-major, matching the C# payload layout exactly:
         # l1 holds buckets * l1_out rows, out holds one row per bucket.
@@ -70,7 +142,7 @@ class NoaNnue(nn.Module):
         # Small init keeps the quantized ranges healthy from the start.
         nn.init.uniform_(self.ft.weight, -0.05, 0.05)
         with torch.no_grad():
-            self.ft.weight[INPUT_SIZE].zero_()
+            self.ft.weight[self.pad_index].zero_()
 
     def forward(self, stm_feats, opp_feats):
         # The piece count is read off the FEATURES, not carried as a separate
@@ -79,19 +151,37 @@ class NoaNnue(nn.Module):
         # unchanged and lets already-decoded shards train a bucketed net.
         piece_count = (stm_feats >= 0).sum(dim=1).long()
 
-        # -1 padding -> the zero row. Features are stored int16 in host RAM to
-        # save memory; INPUT_SIZE (22528) fits int16, and EmbeddingBag needs
-        # Long indices, so cast after remapping. .long() is a no-op when the
-        # caller already passes int64 (e.g. validate_nnue's on-the-fly batches).
-        stm_feats = torch.where(stm_feats < 0, torch.full_like(stm_feats, INPUT_SIZE), stm_feats).long()
-        opp_feats = torch.where(opp_feats < 0, torch.full_like(opp_feats, INPUT_SIZE), opp_feats).long()
+        ft_weight, ft_bias = self.ft.weight, self.ft_bias
+        l1_weight, l1_bias = self.l1.weight, self.l1.bias
+        out_weight, out_bias = self.out.weight, self.out.bias
+        if self.qat:
+            # Every scale below is the one export_model.py uses for that tensor.
+            ft_weight = fake_quantize_weights(ft_weight, self.qa)
+            ft_bias = fake_quantize_weights(ft_bias, self.qa)
+            l1_weight = fake_quantize_weights(l1_weight, QB)
+            l1_bias = fake_quantize_weights(l1_bias, self.qa * QB)
+            out_weight = fake_quantize_weights(out_weight, QB)
+            out_bias = fake_quantize_weights(out_bias, self.qa * QB)
 
-        stm = torch.clamp(self.ft(stm_feats) + self.ft_bias, 0.0, 1.0)
-        opp = torch.clamp(self.ft(opp_feats) + self.ft_bias, 0.0, 1.0)
+        def transform(feats):
+            # The accumulator needs no activation quantization of its own: with
+            # the weights and the bias on the 1/qa grid, an integer number of
+            # them sums to a grid point exactly, which is what the engine's
+            # int16 accumulator holds.
+            acc = F.embedding_bag(self._indices(feats), ft_weight, mode="sum",
+                                  padding_idx=self.pad_index) + ft_bias
+            return torch.clamp(acc, 0.0, 1.0)
 
-        hidden_all = torch.clamp(self.l1(torch.cat([stm, opp], dim=1)), 0.0, 1.0)
+        stm, opp = transform(stm_feats), transform(opp_feats)
+
+        hidden_pre = F.linear(torch.cat([stm, opp], dim=1), l1_weight, l1_bias)
+        if self.qat:
+            # The engine computes clip((l1_b + l1_w @ x) // QB, 0, QA): integer
+            # division first, then the clamp. Same order here.
+            hidden_pre = fake_quantize_acts(hidden_pre, self.qa)
+        hidden_all = torch.clamp(hidden_pre, 0.0, 1.0)
         if self.out_buckets == 1:
-            return self.out(hidden_all).squeeze(1)
+            return F.linear(hidden_all, out_weight, out_bias).squeeze(1)
 
         # Select this sample's bucket. Every bucket is computed and one is
         # gathered, which is wasteful in training and irrelevant in cost (l1_out
@@ -100,9 +190,48 @@ class NoaNnue(nn.Module):
         bucket = bucket_for_piece_count(piece_count, self.out_buckets)
         hidden = hidden_all.view(batch, self.out_buckets, self.l1_out)[
             torch.arange(batch, device=hidden_all.device), bucket]
-        weight = self.out.weight[bucket]        # [batch, l1_out]
-        bias = self.out.bias[bucket]            # [batch]
+        weight = out_weight[bucket]             # [batch, l1_out]
+        bias = out_bias[bucket]                 # [batch]
         return (hidden * weight).sum(dim=1) + bias
+
+    def _indices(self, feats):
+        """Maps stored feature indices to EmbeddingBag rows.
+
+        Padding is -1 in the dataset and becomes the zero padding row. Features
+        are stored int16 in host RAM to save memory and EmbeddingBag needs Long
+        indices, so cast first; .long() is a no-op when the caller already passes
+        int64 (validate_nnue builds its batches that way).
+        """
+        feats = feats.long()
+        pad = torch.full_like(feats, self.pad_index)
+        real = torch.where(feats < 0, pad, feats)
+        if not self.factorized:
+            return real
+
+        # Every real feature also fires the king-independent (piece, square)
+        # feature it is a copy of. A feature index is base + bucket * PS_NB, so
+        # the base is index % PS_NB. Padding stays padding: it contributes
+        # nothing and takes no gradient. mode="sum" then adds real + virtual for
+        # each active feature, which is exactly what fold_features() bakes in.
+        virtual = torch.where(feats < 0, pad, self.virtual_base + feats % PS_NB)
+        return torch.cat([real, virtual], dim=1)
+
+    def fold_features(self):
+        """Feature transformer as the ENGINE must see it: [INPUT_SIZE, ft_out].
+
+        Folding is exact rather than an approximation. Training computes
+        sum over active f of (real[f] + virtual[f % PS_NB]); adding the virtual
+        row into each of its 32 real copies produces a single table whose sum
+        over the same active features is identical, so the exported net
+        evaluates every position to the same value the trained net does.
+        """
+        real = self.ft.weight[:INPUT_SIZE]
+        if not self.factorized:
+            return real.detach().clone()
+        virtual = self.ft.weight[self.virtual_base:self.virtual_base + PS_NB]
+        # repeat tiles the whole block, so row i of the result is virtual[i % PS_NB]
+        # - which is the base feature of real row i, by the identity above.
+        return (real + virtual.repeat(KING_BUCKET_COUNT, 1)).detach()
 
     def clip_weights(self):
         """

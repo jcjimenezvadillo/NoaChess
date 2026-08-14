@@ -113,9 +113,22 @@ def evaluate(model, fen):
     hidden = model["l1_b"][bucket].astype(np.int64) + \
         model["l1_w"][bucket].astype(np.int64) @ activation.astype(np.int64)
 
+    # Floor division is safe HERE only because of the clamp that follows: a
+    # negative quotient differs between floor and truncation, but both land
+    # below zero and the clamp maps them to the same 0.
     a2 = np.clip(hidden // qb, 0, qa)
     output = int(model["out_b"][bucket]) + int(model["out_w"][bucket].astype(np.int64) @ a2)
-    return int(output * model["out_scale"] // (qa * qb)), bucket, len(pieces)
+
+    # The final division has NO clamp after it, so the rounding direction is
+    # visible in the answer. C# integer division TRUNCATES toward zero; Python's
+    # // FLOORS. They agree on every positive evaluation and differ by exactly
+    # one centipawn on every negative one, which is why this script reported a
+    # contract break on the first net whose test position evaluated below zero.
+    # The engine is what plays, so the checker follows the engine.
+    value = output * model["out_scale"]
+    divisor = qa * qb
+    truncated = abs(value) // divisor
+    return int(-truncated if value < 0 else truncated), bucket, len(pieces)
 
 
 def main():

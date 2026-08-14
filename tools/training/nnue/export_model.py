@@ -34,7 +34,8 @@ import struct
 import numpy as np
 import torch
 
-from model import NoaNnue, INPUT_SIZE, FT_OUT, L1_OUT, OUT_BUCKETS, QA, QB, OUTPUT_SCALE
+from model import (NoaNnue, INPUT_SIZE, MAX_ACTIVE, FT_OUT, L1_OUT, OUT_BUCKETS,
+                   QA, QB, OUTPUT_SCALE)
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
@@ -80,6 +81,9 @@ def main():
     # current module constant would build a model whose shape does not match
     # the saved weights and fail to load - or worse, load a reshaped mess.
     buckets = max(1, ckpt_args.get("out_buckets", 1))
+    # Same reasoning: a checkpoint predating factorization has no virtual rows,
+    # and building the wrong shape would fail to load the saved weights.
+    factorized = bool(ckpt_args.get("factorized", False))
 
     # The architecture follows the checkpoint unless overridden: exporting a
     # bucketed net as arch 1/2 would silently drop every bucket but the first.
@@ -93,16 +97,20 @@ def main():
         buckets = 1
     qa = QA_FOR_ARCH[arch]
 
-    model = NoaNnue(ft_out, l1_out, buckets)
+    model = NoaNnue(ft_out, l1_out, buckets, factorized)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
     kind = "int16" if arch == ARCH_INT16_L1 else "int8"
     print(f"exporting arch {arch} ({kind} L1, {buckets} output bucket(s)), "
-          f"ft_out={ft_out} l1_out={l1_out} QA={qa} QB={QB}")
+          f"ft_out={ft_out} l1_out={l1_out} QA={qa} QB={QB}"
+          + (" [factorized: virtual features folded in]" if factorized else ""))
 
-    # EmbeddingBag rows are feature-major already; drop the padding row.
-    ft_w = quantize(model.ft.weight[:INPUT_SIZE], qa, np.int16, 32767, "ftWeights")
+    # EmbeddingBag rows are feature-major already. fold_features drops the
+    # padding row and, when the net was trained factorized, adds each virtual
+    # (piece, square) row into its 32 king-bucket copies - which is exact, so the
+    # exported table evaluates every position to the trained net's value.
+    ft_w = quantize(model.fold_features(), qa, np.int16, 32767, "ftWeights")
     ft_b = quantize(model.ft_bias, qa, np.int16, 32767, "ftBias")
     # nn.Linear stores weight as [out, in] - exactly the row-per-output layout
     # the C# dot product expects.
@@ -125,6 +133,32 @@ def main():
                 f"The int8 kernel would saturate. Lower QA or tighten l1 weight clipping.")
         print(f"  saturation check OK: worst int16 lane = {worst:,} / 32,767 "
               f"({100.0 * worst / 32767:.1f}% of headroom used)")
+
+    # ACCUMULATOR HEADROOM. The engine keeps the perspective accumulator in
+    # int16: ftBias plus one row per active feature, at most MAX_ACTIVE of them.
+    # Folding a factorized net adds two learned rows into every real row, so the
+    # magnitudes it exports are larger than the ones the trainer clipped. Bound
+    # it from the ACTUAL exported values instead of trusting clip_weights: take
+    # the MAX_ACTIVE largest magnitudes per lane, which is an upper bound on any
+    # reachable position.
+    biggest = np.partition(np.abs(ft_w.astype(np.int32)), -MAX_ACTIVE, axis=0)[-MAX_ACTIVE:]
+    acc_worst = int((np.abs(ft_b.astype(np.int32)) + biggest.sum(axis=0)).max())
+    if acc_worst > 32767:
+        raise SystemExit(
+            f"accumulator headroom check FAILED: worst int16 accumulator lane = "
+            f"{acc_worst:,} > 32,767. The engine's accumulator would overflow. "
+            f"Tighten clip_weights (model.py) and retrain or re-export.")
+    print(f"  accumulator headroom OK: worst lane = {acc_worst:,} / 32,767 "
+          f"({100.0 * acc_worst / 32767:.1f}% used, bound over {MAX_ACTIVE} active features)")
+
+    # How much of the transformer survives quantization. 89.8% of ds1e60's
+    # weights rounded to zero, which is what motivated factorization in the
+    # first place, so the number belongs in every export from now on.
+    zero_pct = 100.0 * float((ft_w == 0).mean())
+    dead_rows = int((np.abs(ft_w.astype(np.int32)).sum(axis=1) == 0).sum())
+    print(f"  feature transformer: {zero_pct:.1f}% of weights quantize to zero, "
+          f"{dead_rows:,} of {INPUT_SIZE:,} features dead, max |q| = "
+          f"{int(np.abs(ft_w.astype(np.int32)).max())}")
 
     payload = b"".join([
         ft_w.tobytes(), ft_b.tobytes(),
