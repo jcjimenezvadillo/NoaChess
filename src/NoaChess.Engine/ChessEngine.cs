@@ -1,4 +1,4 @@
-﻿using NoaChess.Core;
+using NoaChess.Core;
 using NoaChess.Engine.Evaluation.Classical;
 using NoaChess.Engine.Evaluation.Nnue;
 using NoaChess.Engine.Search;
@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "4.6.2";
+    public const string Version = "4.7.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -346,13 +346,28 @@ public sealed class ChessEngine
 
             SearchResult best = results[bestIdx];
             SearchResult cur = results[i];
-            bool bestDecisive = Math.Abs(best.Score) >= decisiveBound;
-            bool curDecisive = Math.Abs(cur.Score) >= decisiveBound;
+
+            // DECISIVE MEANS WINNING, NOT "FAR FROM ZERO". These two tests
+            // used Math.Abs, so a worker that had found a forced LOSS counted
+            // as decisive - and `curDecisive` short-circuits the whole vote.
+            // A single worker announcing "I am mated" therefore took the move
+            // outright, no matter what the others had found; and once such a
+            // result sat in bestIdx, the branch below preferred the largest
+            // |score| among decisive ones, which for losses is the SHORTEST
+            // mate. The engine picked the fastest way to be mated and then
+            // printed the main worker's sane PV next to it.
+            //
+            // Being mated is not a claim worth acting on: every alternative is
+            // at least as good. The `cur.Score > -decisiveBound` test below
+            // already keeps mated workers out of the ordinary vote, so with
+            // the sign restored a lost result can no longer win anything.
+            bool bestDecisive = best.Score >= decisiveBound;
+            bool curDecisive = cur.Score >= decisiveBound;
 
             if (bestDecisive)
             {
-                // Among decisive lines prefer the shortest (largest |score|).
-                if (curDecisive && Math.Abs(cur.Score) > Math.Abs(best.Score))
+                // Among winning lines prefer the shortest mate: higher score.
+                if (curDecisive && cur.Score > best.Score)
                     bestIdx = i;
             }
             else if (curDecisive

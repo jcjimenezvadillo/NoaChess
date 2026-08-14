@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## 2026-08-10 (v4.7.0) - two ways the engine could choose a move it had already refuted
+
+Both defects were found while building a harness that replays a lost bullet game while speaking the ponder protocol and spending the opponent's real think time. That last part was the whole difficulty: five earlier reproduction attempts resolved the ponder instantly, which leaves the move budget intact, and with a full budget the engine found the right move every single time. The engine charges the ponder's wall clock against the next search, so in the game the reply came out of a 10 ms search and in every reproduction out of a 5 s one.
+
+The harness still does not reproduce that specific game. What it did do is put the search under the conditions the game ran under, and two defects were visible there on inspection.
+
+### A worker that believed it was being mated took the move from everyone else
+
+The Lazy SMP vote tested for a decisive line with `Math.Abs(score) >= MateScore - 1000`, so **a forced LOSS satisfied it**. That test short-circuits the vote ahead of any weighting, so one worker announcing its own defeat took the move outright, whatever the other workers had found. And once such a result held the lead, the branch below it kept whichever decisive score had the larger magnitude - which among losses is the **shortest** mate. Given only bad news, the vote actively chose to be mated sooner.
+
+The symptom is the same one v4.6.2 addressed from the other end: the engine plays a move its own printed variation never mentions, because the variation comes from the main worker and the move comes from the vote. The depth filter added in v4.6.2 stopped blind shallow workers from voting; it did nothing about a deep worker with a lost score, which passes the depth test cleanly.
+
+Decisive now means winning. Being mated is not a claim worth acting on - every alternative is at least as good - and the existing `score > -decisiveBound` test already kept lost results out of the ordinary vote, so with the sign restored they can no longer win anything. A worker that finds a genuine forced win still overrules one that does not. Three tests in `VoteBestResultTests` cover it.
+
+### A soft stop inside a fail-low returned a score the search never proved
+
+When the aspiration window fails low, every root move came back at or below alpha and the score is an upper bound waiting on a re-search. If the soft time limit fired during that re-search, the partial result was recorded anyway, typically hundreds of centipawns below the last completed iteration.
+
+That number then left by two doors: it is what `info score` prints, and it is what the SMP vote weighs the worker by, since the weight **is** the score. A worker stopped inside a fail-low was handing the vote a figure its own next re-search would have refuted - and a big ponder credit makes exactly this stop, at exactly this moment, the normal case rather than a rare one.
+
+The last completed iteration now survives a fail-low stop. The partial is used only when no iteration has finished at all and there is nothing else. Fail-high is untouched: a move proved at or above beta is good news and safe to take.
+
+### Measurement
+
+Neither fix is measurable the same way. The fail-low change affects every search and is on the single-thread SPRT (`sprt_463_vs_462.bat`). The vote change does not exist below two threads and is on `sprt_463_vs_462_smp.bat` at four threads, the configuration the bot runs. The vote defect is rare and catastrophic rather than a steady drip, so that SPRT is there to show the fix costs nothing; it is not the kind of bug an Elo number is good at finding.
+
 ## 2026-08-10 (v4.6.2) - the training pipeline was the bottleneck, not the search: +195.4 Elo from a change the engine never sees
 
 The largest measured gain in the project's history, and it required no engine change at all. It also cost two blunders in live games from a bug this release fixes, both of which are documented below because the sequence matters more than the result.
@@ -116,7 +142,31 @@ v4.6.1 was the vote fix alone and lived two hours before v4.6.2 replaced it.
 
 ### Measured
 
-**Net: +195.4 +/- 57.5 Elo (SPRT, H1, 102 games) over the previous net.** No field gauntlet yet, so there is no CCRL figure for this release. 245 tests.
+**Net: +195.4 +/- 57.5 Elo (SPRT, H1, 102 games) over the previous net.** 245 tests.
+
+### Field gauntlet: 3271 +/-40 CCRL, +128 over v4.5.0
+
+600 games at 60+0.6 against the same 12-engine field (2862-3281), single-threaded, ponder off, no tablebases for anyone, rating solved for R by `audit/gauntlet.py`:
+
+| opponent | score | performance |
+|---|---|---|
+| 3281 Patricia 3.0 | 40.0% | 3211 |
+| 3250 Defenchess 2.2 | 60.0% | 3320 |
+| 3230 Princhess 0.19.0 | 56.0% | 3272 |
+| 3150 Rubichess 1.5 | 76.0% | 3350 |
+| 3120 Winter 1.0 | 67.0% | 3243 |
+| 3010 Bit-Genie 9 | 83.0% | 3285 |
+| 2978 Pedone 1.5 | 84.0% | 3266 |
+| 2917 Tcheran 6.0 | 90.0% | 3299 |
+| 2910 Ethereal 8.62 | 92.0% | 3334 |
+| 2905 Inanis 1.5.0 | 81.0% | 3157 |
+| 2900 Marvin 3.5.0 | 90.0% | 3282 |
+| 2862 Colossus 2025b | 89.0% | 3225 |
+| **total** | **75.7%** | **3271 +/-40** |
+
+Per-opponent performances span 3157 to 3350, so no single pairing carries the figure. Against v4.5.0's **3143 +/-31** this is **+128**, well outside what two measurements of this size leave uncertain, and the crossover has moved above the field: the only negative result is Patricia at the top, while Defenchess 3250 and Princhess 3230 both go 56% or better.
+
+The self-SPRT said +195.4 and the field says +128. That gap is the usual direction and worth recording as such: a figure measured against a version of itself is not a CCRL figure, and this project has now put a number on the shortfall.
 
 ## 2026-08-08 (v4.5.0) - the same search, about 10% faster, with every step proved by byte-identical node counts
 

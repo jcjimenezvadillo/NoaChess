@@ -593,6 +593,10 @@ public sealed class AlphaBetaSearch
 
         SearchResult best = default;
         int previousScore = 0;
+        // What the TIME MANAGER carries to the next move, which is not always
+        // what the search returns. They diverge on exactly one case (a soft
+        // stop inside a fail-low) and the scheduler wants the raw number there.
+        int carryScore = ScoreNone;
 
         // Last move actually announced to the caller through 'progress', and the
         // depth it was announced at. Only COMPLETED iterations report, but an
@@ -666,9 +670,13 @@ public sealed class AlphaBetaSearch
 
             int score;
             Move bestMove;
+            // Whether the window was still failing LOW when the loop ended.
+            // Recorded before alpha is widened below, which would erase it.
+            bool failedLow = false;
             while (true)
             {
                 score = SearchRoot(board, depth, alpha, beta, out bestMove);
+                failedLow = score <= alpha;
                 if (_stopped || _softStopped || (score > alpha && score < beta))
                     break;
 
@@ -710,12 +718,42 @@ public sealed class AlphaBetaSearch
                 // depth - 1: this iteration did NOT complete, so the deepest
                 // fully searched one is the previous. Claiming `depth` here
                 // would let a partial result outvote a complete one.
+                //
+                // A soft stop that lands while the window is still FAILING LOW
+                // is the one case where the partial result must be thrown away.
+                // Nothing was proved there: every root move came back at or
+                // below alpha, so the score is an upper bound the search never
+                // resolved, typically hundreds of centipawns below the last
+                // completed iteration. That number then leaves by two doors -
+                // it is what "info score" prints, and it is what the Lazy SMP
+                // vote weighs this worker by, since the weight is the score
+                // itself. A worker stopped inside a fail-low was handing the
+                // vote a figure its own next re-search would have refuted.
+                // The last COMPLETED iteration is the deepest thing actually
+                // proved, so that is what survives; the partial is used only
+                // when no iteration has finished at all and it is all there is.
+                //
+                // THERE IS A THIRD DOOR, and withholding the score from it was
+                // a regression. `_bestPreviousScore` seeds the next move's
+                // falling-eval term, so a fail-low is also how the scheduler
+                // learns the position is coming apart and buys time for it.
+                // Suppressing that fed a tuned time manager an input it had
+                // never been tuned against, on the moves that need the time
+                // most. `carryScore` therefore keeps the old value exactly:
+                // the vote and the report get the proved score, the scheduler
+                // still sees the drop, and at one thread - where there is no
+                // vote at all - the whole change is once again a no-op.
                 if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
-                    best = new SearchResult(bestMove, score, _nodes, depth - 1);
+                {
+                    carryScore = score;
+                    if (best.BestMove == Move.None || !failedLow)
+                        best = new SearchResult(bestMove, score, _nodes, depth - 1);
+                }
                 break;
             }
 
             best = new SearchResult(bestMove, score, _nodes, depth);
+            carryScore = score;
             previousScore = score;
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
@@ -921,8 +959,12 @@ public sealed class AlphaBetaSearch
             _previousTimeReduction = timeReduction;
             if (best.BestMove != Move.None)
             {
-                _bestPreviousScore = best.Score;
-                _bestPreviousAverageScore = averageScore == ScoreNone ? best.Score : averageScore;
+                // carryScore, not best.Score: see the fail-low note in the
+                // iteration loop. These two feed the falling-eval term and must
+                // keep seeing the drop the returned result no longer carries.
+                int carried = carryScore == ScoreNone ? best.Score : carryScore;
+                _bestPreviousScore = carried;
+                _bestPreviousAverageScore = averageScore == ScoreNone ? carried : averageScore;
             }
         }
 
