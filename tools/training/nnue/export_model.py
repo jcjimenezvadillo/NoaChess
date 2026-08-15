@@ -36,6 +36,7 @@ import torch
 
 from model import (NoaNnue, INPUT_SIZE, MAX_ACTIVE, FT_OUT, L1_OUT, OUT_BUCKETS,
                    QA, QB, OUTPUT_SCALE)
+from threats import THREAT_INPUT_SIZE, MAX_ACTIVE_THREATS as THREAT_MAX_ACTIVE
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
@@ -44,10 +45,16 @@ FEATURE_SCHEMA_ID = 2
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
 ARCH_INT8_L1_BUCKETS = 3
+# Arch 4: everything arch 3 has plus a second feature transformer for threats,
+# appended to the payload. The header does not describe it - its row count is a
+# constant of the feature schema, and the engine asserts the file size against
+# that constant rather than reading a number it could disagree with.
+ARCH_THREATS = 4
 
 # Activation scale per architecture. The int8 architectures are capped by the
 # saturation bound proved above; the C# loader enforces the same number.
-QA_FOR_ARCH = {ARCH_INT16_L1: QA, ARCH_INT8_L1: 127, ARCH_INT8_L1_BUCKETS: 127}
+QA_FOR_ARCH = {ARCH_INT16_L1: QA, ARCH_INT8_L1: 127, ARCH_INT8_L1_BUCKETS: 127,
+               ARCH_THREATS: 127}
 
 
 def quantize(tensor, scale, dtype, limit, name):
@@ -66,7 +73,8 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--arch", type=int, default=None,
-                        choices=[ARCH_INT16_L1, ARCH_INT8_L1, ARCH_INT8_L1_BUCKETS],
+                        choices=[ARCH_INT16_L1, ARCH_INT8_L1, ARCH_INT8_L1_BUCKETS,
+                                 ARCH_THREATS],
                         help="1 = legacy int16 L1 (QA=255), 2 = int8 L1 (QA=127), "
                              "3 = int8 L1 + output buckets. Default: 3 when the "
                              "checkpoint has buckets, else 2.")
@@ -84,20 +92,39 @@ def main():
     # Same reasoning: a checkpoint predating factorization has no virtual rows,
     # and building the wrong shape would fail to load the saved weights.
     factorized = bool(ckpt_args.get("factorized", False))
+    # A checkpoint trained with threats carries a second transformer, and a
+    # model built without one cannot load its state dict at all - which is the
+    # good failure. The bad one would be exporting a threat net as arch 3 and
+    # silently dropping half its input, so the mismatch is refused below.
+    trained_threats = bool(ckpt_args.get("threats", False))
 
     # The architecture follows the checkpoint unless overridden: exporting a
     # bucketed net as arch 1/2 would silently drop every bucket but the first.
     arch = args.arch if args.arch is not None else (
+        ARCH_THREATS if trained_threats else
         ARCH_INT8_L1_BUCKETS if buckets > 1 else ARCH_INT8_L1)
-    if buckets > 1 and arch != ARCH_INT8_L1_BUCKETS:
+
+    bucket_capable = arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS)
+    if buckets > 1 and not bucket_capable:
         raise SystemExit(
             f"checkpoint has {buckets} output buckets but --arch {arch} cannot represent them. "
             f"Use --arch {ARCH_INT8_L1_BUCKETS}, or retrain with --out-buckets 1.")
-    if arch != ARCH_INT8_L1_BUCKETS:
+    # Refused rather than warned about: an arch 3 export of a threat net loads
+    # cleanly in the engine and evaluates with half its input missing, which is
+    # the worst possible failure - silent and plausible.
+    if trained_threats and arch != ARCH_THREATS:
+        raise SystemExit(
+            f"checkpoint was trained WITH threat features but --arch {arch} cannot carry them. "
+            f"Exporting it that way would produce a net that loads and evaluates wrongly. "
+            f"Use --arch {ARCH_THREATS}.")
+    if arch == ARCH_THREATS and not trained_threats:
+        raise SystemExit(
+            f"--arch {ARCH_THREATS} asks for a threat transformer but the checkpoint has none.")
+    if not bucket_capable:
         buckets = 1
     qa = QA_FOR_ARCH[arch]
 
-    model = NoaNnue(ft_out, l1_out, buckets, factorized)
+    model = NoaNnue(ft_out, l1_out, buckets, factorized, threats=trained_threats)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
@@ -160,11 +187,45 @@ def main():
           f"{dead_rows:,} of {INPUT_SIZE:,} features dead, max |q| = "
           f"{int(np.abs(ft_w.astype(np.int32)).max())}")
 
-    payload = b"".join([
-        ft_w.tobytes(), ft_b.tobytes(),
-        l1_w.tobytes(), l1_b.tobytes(),
-        out_w.tobytes(), out_b.tobytes(),
-    ])
+    blocks = [ft_w.tobytes(), ft_b.tobytes(),
+              l1_w.tobytes(), l1_b.tobytes(),
+              out_w.tobytes(), out_b.tobytes()]
+
+    if arch == ARCH_THREATS:
+        # Same quantisation scale as the HalfKA transformer, because both sum
+        # into ONE int16 accumulator in the engine: a different scale would put
+        # their sum off the grid that accumulator holds.
+        th_w = quantize(model.fold_threats(), qa, np.int16, 32767, "threatWeights")
+
+        # The accumulator bound has to be recomputed with BOTH transformers in
+        # it, and this is the check most likely to fire on a real threat net: a
+        # position activates up to MAX_ACTIVE HalfKA features AND up to 128
+        # threat features, so the worst case is the sum of both tails, not
+        # either alone. Bounded from the exported values rather than trusted
+        # from the clipping, exactly as the HalfKA bound above is.
+        th_top = np.partition(np.abs(th_w.astype(np.int32)),
+                              -THREAT_MAX_ACTIVE, axis=0)[-THREAT_MAX_ACTIVE:]
+        both = int((np.abs(ft_b.astype(np.int32)) + biggest.sum(axis=0)
+                    + th_top.sum(axis=0)).max())
+        if both > 32767:
+            raise SystemExit(
+                f"accumulator headroom check FAILED with threats: worst int16 lane = "
+                f"{both:,} > 32,767. Both transformers sum into one accumulator, so "
+                f"the bound is HalfKA's tail plus the threat tail. Tighten clipping "
+                f"and re-export.")
+        print(f"  accumulator headroom WITH threats OK: worst lane = {both:,} / 32,767 "
+              f"({100.0 * both / 32767:.1f}% used, bound over {MAX_ACTIVE} HalfKA + "
+              f"{THREAT_MAX_ACTIVE} threat features)")
+
+        zero_t = 100.0 * float((th_w == 0).mean())
+        dead_t = int((np.abs(th_w.astype(np.int32)).sum(axis=1) == 0).sum())
+        print(f"  threat transformer: {zero_t:.1f}% of weights quantize to zero, "
+              f"{dead_t:,} of {THREAT_INPUT_SIZE:,} features dead, max |q| = "
+              f"{int(np.abs(th_w.astype(np.int32)).max())}")
+
+        blocks.append(th_w.tobytes())
+
+    payload = b"".join(blocks)
     sha = hashlib.sha256(payload).digest()
 
     # Offset 38 was padding before v4.2.0; arch 1/2 keep writing 0 there, which
@@ -173,7 +234,7 @@ def main():
         "<8s I I I i i i H H H H Q 32s",
         MAGIC, FORMAT_VERSION, FEATURE_SCHEMA_ID, arch,
         INPUT_SIZE, ft_out, l1_out,
-        qa, QB, int(OUTPUT_SCALE), buckets if arch == ARCH_INT8_L1_BUCKETS else 0,
+        qa, QB, int(OUTPUT_SCALE), buckets if bucket_capable else 0,
         len(payload), sha)
     assert len(header) == 80
 
