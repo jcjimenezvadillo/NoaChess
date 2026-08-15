@@ -292,6 +292,13 @@ public sealed class NnueAccumulatorStack
         ref Pending pd = ref _pending[_top];
         int slot = _top * 2;
 
+        // Hoisted out of the perspective loop, and not for tidiness: a
+        // stackalloc inside a loop does not free per iteration, it grows the
+        // frame each time round. Two iterations of 128 ints is only a kilobyte,
+        // but this runs at every node of the search and the frame is already
+        // deep. Caught by CA2014 on publish, which build did not surface.
+        Span<int> after = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
+
         for (int p = 0; p < 2; p++)
         {
             var perspective = (Color)p;
@@ -326,7 +333,6 @@ public sealed class NnueAccumulatorStack
             if (pd.IsNull)
                 continue;
 
-            Span<int> after = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
             ulong affectedAfter = ThreatDelta.AffectedAttackers(
                 board, _changed.AsSpan(_top * ThreatDelta.MaxChangedSquares, _changedCount[_top]));
             int afterCount = ThreatDelta.CollectFrom(board, perspective, affectedAfter, after);
