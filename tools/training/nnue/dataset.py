@@ -11,6 +11,8 @@ import time
 
 import numpy as np
 
+import threats  # threat feature encoder, for the arch 4 shard cache
+
 HEADER_SIZE = 64
 RECORD_SIZE = 40
 MAGIC = b"NOADATA1"
@@ -364,6 +366,107 @@ def build_feature_shards(path, log_every=250_000, force=False):
                    "max_active": MAX_ACTIVE}, f, indent=2)
 
     print(f"feature shards written: {directory}")
+    return directory
+
+
+# ---- threat feature shards (arch 4) ----------------------------------------
+#
+# A SEPARATE cache, deliberately, and not extra columns in the HalfKA shards.
+# The 324M-position corpus already has its .features directories built; adding
+# threat columns to them would invalidate every one and force a full re-decode
+# for runs that do not want threats at all. This way a threat run pays for the
+# threat cache once and a HalfKA run never pays for it.
+#
+# Same staleness rule as the HalfKA shards, and for the same reason: keying a
+# feature cache on mere existence is what silently trained gen7 on stale
+# features after its dataset was regenerated under the same name. The run looked
+# healthy and measured the wrong net.
+
+THREAT_SHARD_SUFFIX = ".threats"
+_THREAT_ARRAYS = ("stm", "opp")
+
+# Real features plus the three virtual rows each one fires. Sized from the
+# encoder rather than guessed, so a change there cannot silently truncate here.
+THREAT_COLUMNS = threats.MAX_ACTIVE_THREATS * 4
+
+
+def threat_dir_for(path):
+    return path + THREAT_SHARD_SUFFIX
+
+
+def build_threat_shards(path, force=False):
+    """Decodes a .noadata into memory-mappable threat feature shards.
+
+    About 0.19 ms per position, so roughly 5.4 hours for the full corpus - down
+    from 17.4 before the index lookups were flattened. Paid once per corpus and
+    only by runs that ask for threats.
+    """
+    directory = threat_dir_for(path)
+    paths = {n: os.path.join(directory, n + ".npy") for n in _THREAT_ARRAYS}
+    meta_path = os.path.join(directory, "meta.json")
+
+    if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
+        if min(os.path.getmtime(p) for p in paths.values()) >= os.path.getmtime(path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            # The column count is part of the contract: a cache built when the
+            # encoder emitted a different number of virtuals would load without
+            # complaint and feed the net truncated rows.
+            if meta.get("columns") == THREAT_COLUMNS:
+                print(f"threat shards reused: {directory} ({meta['count']:,} records)")
+                return directory
+            print(f"threat shards have {meta.get('columns')} columns, encoder now emits "
+                  f"{THREAT_COLUMNS}; rebuilding: {directory}")
+        else:
+            print(f"threat shards STALE (source .noadata is newer), rebuilding: {directory}")
+
+    records = load_records(path)
+    n = len(records)
+    os.makedirs(directory, exist_ok=True)
+
+    stm_t = np.lib.format.open_memmap(paths["stm"], mode="w+", dtype=np.int32,
+                                      shape=(n, THREAT_COLUMNS))
+    opp_t = np.lib.format.open_memmap(paths["opp"], mode="w+", dtype=np.int32,
+                                      shape=(n, THREAT_COLUMNS))
+    stm_t[:] = -1
+    opp_t[:] = -1
+
+    print(f"encoding threats for {n:,} records -> {directory}", flush=True)
+    start_time = time.time()
+    overflow = 0
+    for i in range(n):
+        rec = records[i]
+        white, black = threats.active_threats(int(rec["occupancy"]), rec["pieces"])
+        a, b = (white, black) if int(rec["stm"]) == 0 else (black, white)
+        a, b = threats.factorize(a), threats.factorize(b)
+        if len(a) > THREAT_COLUMNS or len(b) > THREAT_COLUMNS:
+            overflow += 1
+        stm_t[i, :min(len(a), THREAT_COLUMNS)] = a[:THREAT_COLUMNS]
+        opp_t[i, :min(len(b), THREAT_COLUMNS)] = b[:THREAT_COLUMNS]
+
+        if (i + 1) % 200_000 == 0:
+            elapsed = time.time() - start_time
+            rate = (i + 1) / elapsed
+            print(f"  {i + 1:,}/{n:,} ({rate:,.0f} rec/s, "
+                  f"ETA {(n - i - 1) / rate / 60:.1f} min)", flush=True)
+
+    for array in (stm_t, opp_t):
+        array.flush()
+
+    if overflow:
+        print(f"  WARNING: {overflow:,} positions exceeded {THREAT_COLUMNS} columns "
+              f"and were TRUNCATED - features were dropped")
+
+    # Written last, so an interrupted encode leaves no meta and the next run
+    # rebuilds instead of training on a half-written mapping.
+    with open(meta_path, "w") as f:
+        json.dump({"count": int(n), "source": os.path.basename(path),
+                   "source_mtime": os.path.getmtime(path),
+                   "columns": THREAT_COLUMNS,
+                   "threat_input_size": threats.THREAT_INPUT_SIZE,
+                   "factored_input_size": threats.FACTORED_INPUT_SIZE}, f, indent=2)
+
+    print(f"threat shards written: {directory}")
     return directory
 
 
