@@ -269,7 +269,6 @@ public sealed class AlphaBetaSearch
     // The reference's per-distance write weights, out of 1024. A move one ply
     // back explains a reply far better than one six plies back, so the bonuses
     // are not credited equally. Read side stays flat; only the write is weighted.
-    private static readonly int[] ContHistWeights = [1040, 780, 290, 502, 132, 418];
 
     // Victim values for the capture half of statScore, indexed by the same slot
     // CaptureHistory.VictimIndex produces (6 = no victim). These are VALUE terms,
@@ -1924,8 +1923,6 @@ public sealed class AlphaBetaSearch
         // slightly larger and the double/triple tiers fire slightly LESS often.
         // Conservative in the right direction, and recorded rather than hidden.
         int singularExtension = 0;
-        bool multiCut = false;
-        int multiCutScore = 0;
 
         // The depth the CHILD is searched at is fixed here, before the singular
         // block can touch `depth`.
@@ -1939,52 +1936,47 @@ public sealed class AlphaBetaSearch
         // one ply MORE than intended. Found by reading the source line numbers
         // rather than the logic, and before the SPRT rather than after it.
         int depthBeforeSingular = depth;
-        if (depth >= 6 + (ttPv ? 1 : 0) && excluded == Move.None && ttMove != Move.None
+        // 5E REVERTED TO THE v5.0.1 BLOCK, and this is a measurement result
+        // rather than a change of mind.
+        //
+        // The rebuilt version added the reference's margin, its lowered gate,
+        // double and triple tiers, multi-cut and negative extensions. Measured
+        // against v5.0.1 at 10+0.1, every configuration lost:
+        //
+        //     full                    -13.1 [-28.5, +2.2]  H0 in 743 games
+        //     + whole-node deepening  -28.6 [-54.5, -3.0]
+        //     without multi-cut       -20.4 [-43.1, +2.1]
+        //
+        // Auditing the port against the source found two real divergences and
+        // neither explains it: newDepth's base (fixed, measured WORSE) and ttPv
+        // preservation under exclusion (fixed, inert at 10 nodes in 371,000).
+        // Root guard, verification depth, the TT-write guard, null move under
+        // exclusion, both margins and the gate all match.
+        //
+        // What the instrument says instead: multi-cut prunes 44% of eligible
+        // nodes and does NOT respond to the margin or to the gate (43.4% at gate
+        // 6, 44.1% at 8, 48.2% at 9). At 44% of nodes where the TT expects a
+        // fail-high, a half-depth search WITHOUT that move fails high anyway.
+        // That is a statement about move ordering, not about extensions, so this
+        // block gets re-measured after the killers and counter reform and not
+        // before. The knobs to do it with are on branch bisect-5x.
+        if (depth >= 8 && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
             && CanReuseTtScore(entry.Score, board.HalfmoveClock))
         {
             int ttScore = FromTT(entry.Score, ply);
             if (Math.Abs(ttScore) < MateBound)
             {
-                int singularBeta = ttScore - (59 + 66 * ((ttPv && nonPv) ? 1 : 0)) * depth / 63;
+                int singularBeta = ttScore - 2 * depth;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
                                     ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
                     return 0;
 
                 if (score < singularBeta)
-                {
-                    // Singular, and by how much: the further the rest of the
-                    // moves fall below the window, the more this one is the only
-                    // move holding the position.
-                    int pv = nonPv ? 0 : 1;
-                    int notTtCapture = ttMove.IsCapture ? 0 : 1;
-                    int doubleMargin = -2 + 204 * pv - 152 * notTtCapture;
-                    int tripleMargin = 70 + 279 * pv - 188 * notTtCapture + 81 * (ttPv ? 1 : 0);
-
-                    singularExtension = 1
-                        + (score < singularBeta - doubleMargin ? 1 : 0)
-                        + (score < singularBeta - tripleMargin ? 1 : 0);
-                    depth++;
-                }
-                else if (score >= beta && Math.Abs(score) < MateBound)
-                {
-                    // Multi-cut. The TT move was expected to fail high, and
-                    // WITHOUT it the rest of the moves still fail high over the
-                    // real beta: several moves are good enough, so this node is
-                    // not singular and the whole subtree can be cut.
-                    multiCut = true;
-                    multiCutScore = score;
-                }
-                else if (ttScore >= beta)
-                    singularExtension = -3;
-                else if (cutNode)
-                    singularExtension = -2;
+                    singularExtension = 1;
             }
         }
-
-        if (multiCut)
-            return multiCutScore;
 
         // ---- Staged move picking ----
         // Legality is checked lazily at make time (like quiescence does), and
@@ -2248,7 +2240,6 @@ public sealed class AlphaBetaSearch
                         : (2252 * _history.Get(stm, move)
                            + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
                            + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
-                    r -= statScore * 1568 / 4096;
 
                     // Killer/counter shallowing, kept: measured net positive.
                     if (move == counterMove || _killers.Rank(ply, move) > 0)
@@ -2366,21 +2357,32 @@ public sealed class AlphaBetaSearch
                             if (prevPiece >= 0)
                                 _counterMoves[(prevPiece * 64) + prevTo] = move;
 
-                            // All six distances are credited, each with its own
-                            // weight. In check only the two nearest are touched:
-                            // a forced sequence says little about what was
-                            // happening five plies ago, and the reference stops
-                            // there for the same reason.
-                            int levels = inCheck ? 2 : ContHistWeights.Length;
-                            for (int d = 0; d < levels; d++)
-                            {
-                                int back = ply - 1 - d;
-                                if (back < 0 || _stackPiece[back] < 0)
-                                    continue;
-                                _contHist[d].AddWeighted(_stackPiece[back], _stackTo[back],
-                                                         movePieceIdx, move.To, depth,
-                                                         ContHistWeights[d]);
-                            }
+                            // 5G REVERTED: one level, unweighted, as in v5.0.1.
+                            //
+                            // Six weighted distances measured -40.9 [-63.6,
+                            // -18.5], H0 in 350 games - the worst arm of the
+                            // whole bisection - and NOT because it is slow: the
+                            // multi-level table costs -3.2% NPS on two paired
+                            // runs on an idle machine, about 2 Elo of the 40.9.
+                            //
+                            // The version measured was also the FIXED one. The
+                            // first port wrote integer ZERO into all six
+                            // distances at depth 1, because this engine credits
+                            // history with depth*depth (1, 4, 9) while the
+                            // reference uses min(133*depth - 81, 1487), and a
+                            // far distance's weight takes 1 to nothing. Fixing
+                            // the shape made every distance live - their p99
+                            // comes out in the exact order of their weights -
+                            // and it still lost.
+                            //
+                            // Splitting that fix from the levels is what makes
+                            // this a revert of ONE thing: the bonus shape alone,
+                            // with a single level, measured -5.8 [-26.8, +15.1],
+                            // indistinguishable from zero. The levels are what
+                            // cost. See ContinuationHistory for the shape.
+                            if (prevPiece >= 0)
+                                _contHist[0].AddBonus(prevPiece, prevTo,
+                                                      movePieceIdx, move.To, depth);
 
                             for (int q = 0; q < triedQuietCount; q++)
                             {
@@ -2390,15 +2392,9 @@ public sealed class AlphaBetaSearch
                                 _history.AddMalus(stm, tried, depth);
                                 int triedPiece =
                                     ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From));
-                                for (int d = 0; d < levels; d++)
-                                {
-                                    int back = ply - 1 - d;
-                                    if (back < 0 || _stackPiece[back] < 0)
-                                        continue;
-                                    _contHist[d].AddWeightedMalus(_stackPiece[back], _stackTo[back],
-                                                                  triedPiece, tried.To, depth,
-                                                                  ContHistWeights[d]);
-                                }
+                                if (prevPiece >= 0)
+                                    _contHist[0].AddMalus(prevPiece, prevTo,
+                                                          triedPiece, tried.To, depth);
                             }
                         }
                         else if (move.IsCapture)
