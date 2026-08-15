@@ -99,6 +99,7 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
 
     public void Reset(Board board) => _accumulators.Reset(board);
     public void PushMove(Board board, Move move) => _accumulators.PushMove(board, move);
+    public void CompleteThreatDelta(Board board) => _accumulators.CompleteThreatDelta(board);
     public void PushNull() => _accumulators.PushNull();
     public void Pop() => _accumulators.Pop();
 

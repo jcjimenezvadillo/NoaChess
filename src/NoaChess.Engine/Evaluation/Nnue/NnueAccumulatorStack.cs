@@ -89,6 +89,14 @@ public sealed class NnueAccumulatorStack
     // a diff against the last accumulator built for that king square instead of
     // a full rebuild from the bias. See NnueAccumulatorCache.
     private readonly NnueAccumulatorCache _cache;
+
+    // Threat delta state, allocated once and only used by threat nets. Indexed
+    // [level * 2 + perspective] for the feature lists and [level] for the
+    // changed squares, because the squares do not depend on the perspective.
+    private readonly int[] _beforeThreats;
+    private readonly int[] _beforeCount;
+    private readonly int[] _changed;
+    private readonly int[] _changedCount;
     private int _top;
 
     public NnueAccumulatorStack(NnueNetwork network)
@@ -99,6 +107,14 @@ public sealed class NnueAccumulatorStack
             _stack[i] = new NnueAccumulator(network.FtOutputs);
         _pending = new Pending[MaxPly];
         _cache = new NnueAccumulatorCache(network);
+
+        // Allocated only for a net that uses them: 64 KB is nothing next to the
+        // network, but a HalfKA search should not carry an array it never reads.
+        int levels = network.UsesThreats ? MaxPly : 0;
+        _beforeThreats = new int[levels * 2 * ThreatFeatureIndex.MaxActiveFeatures];
+        _beforeCount = new int[levels * 2];
+        _changed = new int[levels * ThreatDelta.MaxChangedSquares];
+        _changedCount = new int[levels];
     }
 
     // Re-anchors the stack at a new root position (start of every search).
@@ -169,6 +185,28 @@ public sealed class NnueAccumulatorStack
             }
         }
 
+        // The threat "before" side, taken HERE because this is the last moment
+        // the pre-move position exists. CompleteThreatDelta takes the other side
+        // once the move is made and differences the two.
+        if (_network.UsesThreats)
+        {
+            int level = _top + 1;
+            Span<int> squares = _changed.AsSpan(level * ThreatDelta.MaxChangedSquares,
+                                                ThreatDelta.MaxChangedSquares);
+            int changedCount = ThreatDelta.ChangedSquares(board, move, squares);
+            _changedCount[level] = changedCount;
+
+            ulong affected = ThreatDelta.AffectedAttackers(board, squares[..changedCount]);
+            for (int p = 0; p < 2; p++)
+            {
+                int idx = level * 2 + p;
+                Span<int> dst = _beforeThreats.AsSpan(
+                    idx * ThreatFeatureIndex.MaxActiveFeatures,
+                    ThreatFeatureIndex.MaxActiveFeatures);
+                _beforeCount[idx] = ThreatDelta.CollectFrom(board, (Color)p, affected, dst);
+            }
+        }
+
         NnueAccumulator parent = _stack[_top];
         NnueAccumulator child = _stack[++_top];
 
@@ -198,6 +236,104 @@ public sealed class NnueAccumulatorStack
         child.Valid[1] = parent.Valid[1];
         child.Computed[0] = false;
         child.Computed[1] = false;
+    }
+
+    // Finishes the threat half of the level PushMove opened, with the board now
+    // in its POST-move position. Does nothing for a net without threat features.
+    //
+    // WHY IT IS A SECOND CALL. The rest of this class is lazy: PushMove only
+    // records a Pending, and ApplyPending replays the chain later WITHOUT the
+    // board, which it can afford because a HalfKA index is a pure function of
+    // (king, piece, square). A threat feature is not: it depends on the whole
+    // position, including every DISCOVERED relation where a slider's ray opened
+    // or closed. And by the time the chain is replayed the board sits at the
+    // deepest position, not at this level's. So the delta has to be taken while
+    // both positions exist, which is two moments, which is two calls.
+    //
+    // THE TRADE. A threat net therefore materialises EAGERLY on both halves:
+    // applying threat rows onto an array that has not had its HalfKA delta
+    // replayed yet would corrupt it. HalfKA nets keep the lazy path untouched.
+    // Laziness was worth +3.1% NPS, so this gives some of that back and takes
+    // an incremental update in exchange - about six row operations instead of
+    // thirty-seven plus a full board scan. Which way that nets out is a
+    // measurement, not an assumption.
+    public void CompleteThreatDelta(Board board)
+    {
+        if (!_network.UsesThreats || _top == 0)
+            return;
+
+        NnueAccumulator parent = _stack[_top - 1];
+        NnueAccumulator child = _stack[_top];
+        ref Pending pd = ref _pending[_top];
+        int slot = _top * 2;
+
+        for (int p = 0; p < 2; p++)
+        {
+            var perspective = (Color)p;
+
+            // This perspective's king moved: every feature it has is
+            // king-relative and the whole thing is renumbered, so there is no
+            // delta to take. Same rule HalfKA already follows.
+            //
+            // LEFT UNCOMPUTED ON PURPOSE, and it took a sabotage to be sure.
+            // Refreshing here as well would be correct and was the first
+            // version, but Valid is MONOTONE down the chain - PushMove writes
+            // `child.Valid = parent.Valid && mover != King` and PushNull just
+            // copies it - so once a perspective is invalidated every level
+            // below it lands here too, and none of them can chain from an
+            // uncomputed ancestor. The fallback in GetPerspective then rebuilds
+            // exactly the levels somebody actually evaluates, which is the
+            // laziness this class exists for. Removing the refresh changed no
+            // test, and that is explained rather than lucky.
+            if (!child.Valid[p])
+                continue;
+
+            // HalfKA half, replayed from the parent rather than deferred.
+            child.CopyPerspectiveFrom(parent, perspective);
+            if (!pd.IsNull)
+                ApplyPending(child, perspective, board.KingSquare(perspective), in pd);
+            child.Computed[p] = true;
+
+            // Threat half. The parent's values already carry ITS threat rows,
+            // so subtracting what the affected attackers generated before and
+            // adding what they generate now turns the parent's contribution
+            // into the child's.
+            if (pd.IsNull)
+                continue;
+
+            Span<int> after = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
+            ulong affectedAfter = ThreatDelta.AffectedAttackers(
+                board, _changed.AsSpan(_top * ThreatDelta.MaxChangedSquares, _changedCount[_top]));
+            int afterCount = ThreatDelta.CollectFrom(board, perspective, affectedAfter, after);
+
+            int idx = slot + p;
+            ReadOnlySpan<int> before = _beforeThreats.AsSpan(
+                idx * ThreatFeatureIndex.MaxActiveFeatures, _beforeCount[idx]);
+
+            // Only the DIFFERENCE is applied. Subtracting every "before" row and
+            // adding every "after" row would be correct and would also cost more
+            // than the full refresh this replaces, which is the entire point.
+            // Both lists hold a handful of entries, so a linear scan beats any
+            // structure that would have to be allocated.
+            for (int i = 0; i < before.Length; i++)
+            {
+                if (!Contains(after[..afterCount], before[i]))
+                    child.SubtractThreat(_network, perspective, before[i]);
+            }
+            for (int i = 0; i < afterCount; i++)
+            {
+                if (!Contains(before, after[i]))
+                    child.AddThreat(_network, perspective, after[i]);
+            }
+        }
+    }
+
+    private static bool Contains(ReadOnlySpan<int> haystack, int needle)
+    {
+        for (int i = 0; i < haystack.Length; i++)
+            if (haystack[i] == needle)
+                return true;
+        return false;
     }
 
     public void Pop() => _top--;
@@ -230,12 +366,18 @@ public sealed class NnueAccumulatorStack
         // comparison entirely.
         if (_network.UsesThreats)
         {
-            // acc.Refresh and NOT _cache.Refresh. The cache rebuilds a
-            // perspective from per-king-square state it maintains for HalfKA
-            // only; it knows nothing about threat features and would return an
+            // Maintained eagerly by CompleteThreatDelta, so the common case is
+            // already done and this is a read.
+            //
+            // The refresh below is the fallback for the levels that call never
+            // reaches: the root, and anything materialised after a Pop. It stays
+            // acc.Refresh and NOT _cache.Refresh - the cache rebuilds a
+            // perspective from per-king-square state it keeps for HalfKA only,
+            // knows nothing about threat features, and would hand back an
             // accumulator missing half its input. The accumulator's own refresh
             // is the one that sums both transformers.
-            acc.Refresh(_network, board, perspective);
+            if (!acc.Computed[p])
+                acc.Refresh(_network, board, perspective);
             return acc.Values[p];
         }
 
