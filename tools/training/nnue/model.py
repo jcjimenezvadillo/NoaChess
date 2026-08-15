@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from dataset import INPUT_SIZE, PS_NB, KING_BUCKET_COUNT, MAX_ACTIVE  # schema, single source.
+import threats as threats_mod  # threat feature schema, single source for arch 4.
 
 FT_OUT = 128
 L1_OUT = 32
@@ -114,7 +115,7 @@ class NoaNnue(nn.Module):
     # the model header, so a wider or more bucketed net needs no engine change
     # - only a retrain and an export.
     def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS,
-                 factorized=FACTORIZED, qat=False, qa=QA):
+                 factorized=FACTORIZED, qat=False, qa=QA, threats=False):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
@@ -134,6 +135,30 @@ class NoaNnue(nn.Module):
         self.ft = nn.EmbeddingBag(self.pad_index + 1, ft_out, mode="sum",
                                   padding_idx=self.pad_index)
         self.ft_bias = nn.Parameter(torch.zeros(ft_out))
+
+        # THREATS: a second transformer summed into the SAME accumulator, which
+        # is why it has no bias of its own - a second constant added to one sum
+        # is just a different first constant, and ft_bias already carries it.
+        # The engine's arch 4 payload has no threat bias block for the same
+        # reason.
+        #
+        # Factorized like HalfKA is, and for a stronger reason: threats are
+        # 60,720 rows against HalfKA's 22,528 with roughly half the gradient
+        # updates per weight, so they are the sparser of the two and the ones
+        # that suffer most without shared rows. The probe measured that
+        # directly - unfactorized it reported threats LOSING 5.43%, factorized
+        # and converged it reported them gaining 3.96%.
+        self.threats = bool(threats)
+        if self.threats:
+            self.threat_virtual_base = threats_mod.THREAT_INPUT_SIZE
+            self.threat_pad = (threats_mod.FACTORED_INPUT_SIZE if self.factorized
+                               else threats_mod.THREAT_INPUT_SIZE)
+            self.threat_ft = nn.EmbeddingBag(self.threat_pad + 1, ft_out, mode="sum",
+                                             padding_idx=self.threat_pad)
+            nn.init.uniform_(self.threat_ft.weight, -0.05, 0.05)
+            with torch.no_grad():
+                self.threat_ft.weight[self.threat_pad].zero_()
+
         # The head is bucket-major, matching the C# payload layout exactly:
         # l1 holds buckets * l1_out rows, out holds one row per bucket.
         self.l1 = nn.Linear(2 * ft_out, self.out_buckets * l1_out)
@@ -144,7 +169,7 @@ class NoaNnue(nn.Module):
         with torch.no_grad():
             self.ft.weight[self.pad_index].zero_()
 
-    def forward(self, stm_feats, opp_feats):
+    def forward(self, stm_feats, opp_feats, stm_threats=None, opp_threats=None):
         # The piece count is read off the FEATURES, not carried as a separate
         # column: in HalfKA every piece is exactly one feature, so the number of
         # non-padding entries IS the piece count. That keeps the dataset format
@@ -163,16 +188,30 @@ class NoaNnue(nn.Module):
             out_weight = fake_quantize_weights(out_weight, QB)
             out_bias = fake_quantize_weights(out_bias, self.qa * QB)
 
-        def transform(feats):
+        threat_weight = self.threat_ft.weight if self.threats else None
+        if self.threats and self.qat:
+            # Same grid as the HalfKA transformer: both sum into one int16
+            # accumulator, so both have to be quantised to the same scale or the
+            # sum lands off the grid the engine holds.
+            threat_weight = fake_quantize_weights(threat_weight, self.qa)
+
+        def transform(feats, threat_feats):
             # The accumulator needs no activation quantization of its own: with
             # the weights and the bias on the 1/qa grid, an integer number of
             # them sums to a grid point exactly, which is what the engine's
             # int16 accumulator holds.
             acc = F.embedding_bag(self._indices(feats), ft_weight, mode="sum",
                                   padding_idx=self.pad_index) + ft_bias
+            if self.threats:
+                # Summed BEFORE the clamp, into the same accumulator, exactly as
+                # NnueAccumulator.Refresh does it. Clamping the two separately
+                # and adding afterwards would be a different function.
+                acc = acc + F.embedding_bag(threat_feats, threat_weight, mode="sum",
+                                            padding_idx=self.threat_pad)
             return torch.clamp(acc, 0.0, 1.0)
 
-        stm, opp = transform(stm_feats), transform(opp_feats)
+        stm = transform(stm_feats, stm_threats)
+        opp = transform(opp_feats, opp_threats)
 
         hidden_pre = F.linear(torch.cat([stm, opp], dim=1), l1_weight, l1_bias)
         if self.qat:
@@ -232,6 +271,36 @@ class NoaNnue(nn.Module):
         # repeat tiles the whole block, so row i of the result is virtual[i % PS_NB]
         # - which is the base feature of real row i, by the identity above.
         return (real + virtual.repeat(KING_BUCKET_COUNT, 1)).detach()
+
+    def fold_threats(self):
+        """Threat transformer as the ENGINE must see it: [60720, ft_out].
+
+        Same exactness argument as fold_features, with one difference that makes
+        it harder to get right: a HalfKA feature fires exactly ONE virtual row,
+        so folding is `real + virtual[i % PS_NB]` and tiles cleanly. A threat
+        feature fires THREE - the (attacker, attacked) pair, the (attacker,
+        from) square and the (attacked, to) square - and which three depends on
+        the feature, so there is no tiling identity to exploit. The mapping is
+        read from the same VIRTUALS table the encoder emits from, which is what
+        keeps training and folding using one definition instead of two.
+
+        Rows the deduplication makes unreachable have no virtuals assigned; they
+        fold to their real row, which is zero and stays zero.
+        """
+        real = self.threat_ft.weight[:threats_mod.THREAT_INPUT_SIZE]
+        if not self.factorized:
+            return real.detach().clone()
+
+        virtual = self.threat_ft.weight[self.threat_virtual_base:self.threat_pad]
+        table = torch.from_numpy(threats_mod.VIRTUALS.astype("int64")).to(real.device)
+
+        folded = real.detach().clone()
+        for slot in range(table.shape[1]):
+            column = table[:, slot]
+            live = column >= 0
+            # Virtual indices are absolute; the block starts at the base.
+            folded[live] += virtual[column[live] - self.threat_virtual_base].detach()
+        return folded
 
     def clip_weights(self):
         """
