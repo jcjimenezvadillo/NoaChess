@@ -1090,6 +1090,7 @@ public sealed class AlphaBetaSearch
                 {
                     _incremental?.PushMove(board, legal[i]);
                     board.MakeMove(legal[i]);
+                    _incremental?.CompleteThreatDelta(board);
                     int val = -_evaluator.Evaluate(board); // child is opponent-relative
                     board.UnmakeMove();
                     _incremental?.Pop();
@@ -1162,6 +1163,7 @@ public sealed class AlphaBetaSearch
                 : 2 * _history.Get(board.SideToMove, move)) - StatScoreOffset;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
+            _incremental?.CompleteThreatDelta(board);
 
             // PVS at the root: first move with the full window, the rest with
             // a null window plus re-search when they surprise.
@@ -1846,6 +1848,7 @@ public sealed class AlphaBetaSearch
                     _incremental?.Pop();
                     continue;
                 }
+            _incremental?.CompleteThreatDelta(board);
                 _stackPiece[ply] = movedPiece;
                 _stackTo[ply] = move.To;
                 _stackStatScore[ply] = 0;
@@ -2182,6 +2185,7 @@ public sealed class AlphaBetaSearch
                 _incremental?.Pop();
                 continue;
             }
+            _incremental?.CompleteThreatDelta(board);
 
             int score;
 
@@ -2727,6 +2731,7 @@ public sealed class AlphaBetaSearch
                 _incremental?.Pop();
                 continue;
             }
+            _incremental?.CompleteThreatDelta(board);
 
             moveCount++;
             int score = -Quiescence(board, -beta, -alpha, ply + 1);

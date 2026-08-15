@@ -66,10 +66,26 @@ public class ThreatDeltaTests
                     int fullBefore = ThreatFeatureIndex.ActiveFeatures(board, perspective, full);
                     var truthBefore = full[..fullBefore].ToArray().ToHashSet();
 
+                    // ASYMMETRIC, and this is the shape the engine can actually
+                    // run rather than the tidiest one.
+                    //
+                    // The accumulator computes its "before" side while the board
+                    // is still in the pre-move position and its "after" side
+                    // once the move is made; the pre-move board is gone by then,
+                    // so it can never collect "before" over a set unioned across
+                    // the move. Each side therefore uses its OWN affected set.
+                    //
+                    // That is sound by the same argument: an attacker present
+                    // only in the after-set stands on a square that was empty
+                    // before, so it generated nothing before; an attacker only
+                    // in the before-set is gone after, so it generates nothing
+                    // after; and one in both is differenced normally. The test
+                    // exists to prove that rather than to trust it.
                     int changedCount = ThreatDelta.ChangedSquares(board, move, changed);
                     var changedSquares = changed[..changedCount].ToArray();
-                    ulong affected = ThreatDelta.AffectedAttackers(board, changedSquares);
-                    int partialBefore = ThreatDelta.CollectFrom(board, perspective, affected, partial);
+
+                    ulong affectedBefore = ThreatDelta.AffectedAttackers(board, changedSquares);
+                    int partialBefore = ThreatDelta.CollectFrom(board, perspective, affectedBefore, partial);
                     var mineBefore = partial[..partialBefore].ToArray().ToHashSet();
 
                     board.MakeMove(move);
@@ -77,19 +93,9 @@ public class ThreatDeltaTests
                     int fullAfter = ThreatFeatureIndex.ActiveFeatures(board, perspective, full);
                     var truthAfter = full[..fullAfter].ToArray().ToHashSet();
 
-                    // The affected set is unioned across the move: a piece that
-                    // only exists afterwards cannot be found before it.
-                    affected |= ThreatDelta.AffectedAttackers(board, changedSquares);
-                    int partialAfter = ThreatDelta.CollectFrom(board, perspective, affected, partial);
+                    ulong affectedAfter = ThreatDelta.AffectedAttackers(board, changedSquares);
+                    int partialAfter = ThreatDelta.CollectFrom(board, perspective, affectedAfter, partial);
                     var mineAfter = partial[..partialAfter].ToArray().ToHashSet();
-
-                    // Recollect "before" with the unioned set so the two sides
-                    // are drawn from the same attackers - otherwise the diff
-                    // would report squares that merely entered the set.
-                    board.UnmakeMove();
-                    int recount = ThreatDelta.CollectFrom(board, perspective, affected, partial);
-                    mineBefore = partial[..recount].ToArray().ToHashSet();
-                    board.MakeMove(move);
 
                     var truthRemoved = truthBefore.Except(truthAfter).ToHashSet();
                     var truthAdded = truthAfter.Except(truthBefore).ToHashSet();

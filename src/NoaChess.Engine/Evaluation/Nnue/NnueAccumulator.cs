@@ -118,6 +118,47 @@ public sealed class NnueAccumulator
     // The portable Vector<T> path is kept for non-AVX2 hardware; both produce
     // identical results, which the incremental-vs-refresh tests assert.
 
+    // Threat rows, added and removed one at a time.
+    //
+    // The threat transformer sums into the SAME accumulator as HalfKA, just from
+    // a different weight table, so an incremental threat update is the identical
+    // operation over ThreatWeights instead of FtWeights. Kept as its own pair
+    // rather than a weight-array parameter on AddFeature because that method is
+    // the hottest in the engine and a parameter it does not need is a parameter
+    // the JIT has to carry.
+    public void AddThreat(NnueNetwork network, Color perspective, int featureIndex)
+        => ApplyThreat(network, perspective, featureIndex, add: true);
+
+    public void SubtractThreat(NnueNetwork network, Color perspective, int featureIndex)
+        => ApplyThreat(network, perspective, featureIndex, add: false);
+
+    private void ApplyThreat(NnueNetwork network, Color perspective, int featureIndex, bool add)
+    {
+        NnueProfiling.CountAccumulatorUpdate();
+        short[] values = Values[(int)perspective];
+        short[] weights = network.ThreatWeights!;
+        int ftOut = network.FtOutputs;
+
+        if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
+        {
+            ref short v = ref MemoryMarshal.GetArrayDataReference(values);
+            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            nuint row = (nuint)featureIndex * (nuint)ftOut;
+            for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+            {
+                Vector256<short> cur = Vector256.LoadUnsafe(ref v, i);
+                Vector256<short> delta = Vector256.LoadUnsafe(ref w, row + i);
+                (add ? cur + delta : cur - delta).StoreUnsafe(ref v, i);
+            }
+            return;
+        }
+
+        int offset = featureIndex * ftOut;
+        for (int j = 0; j < ftOut; j++)
+            values[j] = (short)(add ? values[j] + weights[offset + j]
+                                    : values[j] - weights[offset + j]);
+    }
+
     public void AddFeature(NnueNetwork network, Color perspective, int featureIndex)
     {
         NnueProfiling.CountAccumulatorUpdate();
