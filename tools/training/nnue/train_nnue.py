@@ -11,6 +11,7 @@
 #       --out checkpoints/run1.pt [--lambda 0.7] [--batch 8192] [--lr 1e-3]
 
 import argparse
+import subprocess
 import queue
 import threading
 import time
@@ -112,6 +113,31 @@ def make_loss(args):
     return reference_loss
 
 
+def refuse_to_share_the_machine(args):
+    """Stops BEFORE any work when another python job owns the machine.
+
+    Placed at the very top of main on purpose. The first version of this check
+    sat next to the device selection, which runs after the feature shards are
+    built - so a run that was going to be refused first spent however long the
+    decode takes, which for the full corpus is hours. A guard that fires late is
+    most of a guard that does not fire.
+    """
+    if args.force or args.cpu:
+        return
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq python.exe"],
+                             capture_output=True, text=True, timeout=30).stdout
+        others = out.lower().count("python.exe") - 1
+    except Exception:
+        return                      # no tasklist, no opinion
+    if others > 0:
+        raise SystemExit(
+            f"ABORTADO: hay {others} proceso(s) python mas en la maquina. Un "
+            f"entrenamiento que comparte GPU puede morir con out-of-memory horas "
+            f"despues de empezar - le paso a un ensayo lanzado mientras fqc120 iba "
+            f"por la epoca 89 de 120. Espera, o pasa --force, o --cpu para un ensayo.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     # One or more datasets. Multiple files are concatenated - used to MIX
@@ -188,6 +214,20 @@ def main():
     # net's evaluation by 16.6%, essentially all of it in the feature
     # transformer. --qa must match the export arch: 255 for arch 1 (every net
     # that has ever shipped), 127 for arch 2/3.
+    # Arch 4: adds the threat feature transformer. Needs its own shard cache,
+    # built on first use and reused after (about 5.4 h for the full corpus), and
+    # exports as --arch 4. A run without this flag never touches that cache.
+    parser.add_argument("--threats", action="store_true",
+                        help="train the threat feature transformer as well (arch 4)")
+    # Two jobs on one GPU end an eighteen-hour run with an out-of-memory hours
+    # in, and the cost of finding out is the whole run. This already happened
+    # to a smoke test launched while fqc120 was 89 epochs into 120: cuBLAS
+    # refused to initialise and the test died. The probe has carried this guard
+    # since; the trainer, which has far more to lose, did not.
+    parser.add_argument("--force", action="store_true",
+                        help="train even if another python process is on the machine")
+    parser.add_argument("--cpu", action="store_true",
+                        help="force CPU; for smoke tests while a GPU job runs")
     parser.add_argument("--qat", action="store_true")
     parser.add_argument("--qa", type=int, default=QA, choices=[QA, 127])
     # Legacy salvage flag: drops exactly-0 labels. Was needed only for the old
@@ -215,6 +255,7 @@ def main():
                         help="batches built ahead on a background thread (0 disables); "
                              "batches are identical either way, only faster")
     args = parser.parse_args()
+    refuse_to_share_the_machine(args)
 
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -282,7 +323,8 @@ def train_streaming(args, rng):
     existing - which is what makes BLOCK 12's 300-500M position target possible
     at all.
     """
-    store = dataset.FeatureStore(args.data, val_fraction=args.val_fraction)
+    store = dataset.FeatureStore(args.data, val_fraction=args.val_fraction,
+                                threats=args.threats)
     print(f"train: {store.train_total:,}  val: {store.val_total:,} "
           f"from {len(args.data)} files (streaming, "
           f"chunk={args.chunk} buffer={args.buffer_chunks})")
@@ -303,6 +345,21 @@ def train_streaming(args, rng):
         store.train_total, store.val_total)
 
 
+def split_batch(batch):
+    """(stm, opp, scores, results, stm_t, opp_t) from a 4- or 6-array batch.
+
+    One function for both the training and the validation loop on purpose: two
+    copies of this unpacking is how one of them ends up feeding threats and the
+    other not, which would make the validation number measure a different model
+    than the one being trained.
+    """
+    if len(batch) == 6:
+        stm, opp, scores, results, stm_t, opp_t = batch
+        return stm, opp, scores, results, stm_t, opp_t
+    stm, opp, scores, results = batch
+    return stm, opp, scores, results, None, None
+
+
 def run_training(args, make_train_batches, make_val_batches, train_total, val_total):
     """Shared training loop. Both data paths feed it the same batch tuples."""
     steps_per_epoch = max(1, -(-train_total // args.batch))  # ceiling division
@@ -318,12 +375,13 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         print(f"loss: {args.loss_style} (pow {args.pow_exp}, "
               f"in {args.in_offset}/{args.in_scaling}, out {args.out_offset}/{args.out_scaling})")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu" if args.cpu
+                          else ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"device: {device}"
           + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else " (no CUDA GPU)"))
 
     model = NoaNnue(args.ft_out, args.l1_out, args.out_buckets, args.factorized,
-                    args.qat, args.qa).to(device)
+                    args.qat, args.qa, threats=args.threats).to(device)
     print(f"net: ft_out={args.ft_out} l1_out={args.l1_out} out_buckets={args.out_buckets} "
           f"factorized={args.factorized} qat={args.qat}"
           + (f" (QA={args.qa}, export as arch {'1' if args.qa == QA else '2/3'})"
@@ -365,13 +423,17 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         model.eval()
         losses = []
         with torch.no_grad():
-            for stm, opp, scores, results in prefetch(make_val_batches(), args.prefetch):
+            for batch in prefetch(make_val_batches(), args.prefetch):
+                stm, opp, scores, results, stm_t, opp_t = split_batch(batch)
                 # Validation uses a FIXED lambda even when training schedules it.
                 # A moving objective would make each epoch's number measure a
                 # different thing, and "best epoch" would be picking the epoch
                 # whose objective happened to be easiest.
-                losses.append(loss_fn(model(to_dev(stm), to_dev(opp)),
-                                      to_dev(scores), to_dev(results), val_lambda).item())
+                out = model(to_dev(stm), to_dev(opp),
+                            to_dev(stm_t) if stm_t is not None else None,
+                            to_dev(opp_t) if opp_t is not None else None)
+                losses.append(loss_fn(out, to_dev(scores), to_dev(results),
+                                      val_lambda).item())
         model.train()
         return float(np.mean(losses)) if losses else float("nan")
 
@@ -393,12 +455,15 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
 
     for epoch in range(1, args.epochs + 1):
         epoch_losses = []
-        for step, (stm, opp, scores, results) in enumerate(
+        for step, batch in enumerate(
                 prefetch(make_train_batches(), args.prefetch)):
+            stm, opp, scores, results, stm_t, opp_t = split_batch(batch)
             ratio = min(1.0, ((epoch - 1) * steps_per_epoch + step) / max(1, total_steps))
             lam = start_lambda + (end_lambda - start_lambda) * ratio
-            loss = loss_fn(model(to_dev(stm), to_dev(opp)),
-                           to_dev(scores), to_dev(results), lam)
+            out = model(to_dev(stm), to_dev(opp),
+                        to_dev(stm_t) if stm_t is not None else None,
+                        to_dev(opp_t) if opp_t is not None else None)
+            loss = loss_fn(out, to_dev(scores), to_dev(results), lam)
 
             optimizer.zero_grad()
             loss.backward()
