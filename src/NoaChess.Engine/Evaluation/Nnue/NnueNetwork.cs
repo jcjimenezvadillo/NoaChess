@@ -49,10 +49,24 @@ public sealed class NnueNetwork
     public required short[] OutWeights { get; init; }  // [Buckets * L1Outputs]
     public required int[] OutBias { get; init; }       // [Buckets]
 
+    // The threat transformer, arch 4 only, null everywhere else.
+    // [ThreatFeatureIndex.InputSize * FtOutputs], same quantisation as FtWeights
+    // because both sum into the same accumulator: a row is round(w_float * QA).
+    //
+    // There is no threat bias. Two transformers feeding one accumulator would
+    // have two constants added to the same sum, so the trainer folds the threat
+    // one into FtBias at export and the engine never sees it.
+    public short[]? ThreatWeights { get; init; }
+
     public bool UsesInt8L1 => ArchitectureId == NnueModelHeader.ArchitectureInt8L1
                            || ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets;
 
     public bool UsesOutputBuckets => OutputBuckets > 1;
+
+    // True when this net evaluates threat features as well as HalfKA. Read off
+    // the weights rather than the architecture id, so a net that claims arch 4
+    // without carrying them can never be silently treated as if it did.
+    public bool UsesThreats => ThreatWeights is not null;
 
     // Identifies the loaded model (payload hash) for logging/reproducibility.
     public required string Sha256 { get; init; }
