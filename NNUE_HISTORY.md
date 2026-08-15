@@ -87,6 +87,42 @@ fueran malas: es que **el listón para decir "no" estaba mucho más bajo que el 
 para decir "sí"**, y eso sesga una campaña entera hacia abandonar cosas que
 funcionaban.
 
+### El eje de épocas, MEDIDO: +6,4 y sin concluir
+
+`fqc120` (mismo corpus, misma receta, 120 épocas en vez de 60) contra `fq60`:
+
+    2.920 partidas a 10+0.1   score 0.5092
+    +6,4 Elo  95% [-2,1, +14,9]   LLR +0,756 de +-2,94, 26% del camino a H1
+
+**No concluye.** La lectura honesta es "positivo pequeño, por debajo de lo que
+3.000 partidas resuelven". No basta para publicar - el intervalo toca el cero -
+pero tampoco cierra el eje: doblar las épocas vale **algo**, del orden de +6.
+
+**Coste: 19 h de entrenamiento más 14 h de SPRT para un número que no concluye.**
+Ese es el dato que importa para planificar: 33 horas de máquina por un efecto que
+no se puede resolver con el presupuesto que tenemos.
+
+#### Mi predicción falló, y por confiar en la validación
+
+Predije **plano**, por escrito y antes del resultado, apoyado en que `fqc120`
+terminó con validación **0,10% PEOR** que `fqc60` (0,005860 contra 0,005854), y en
+que a igual fracción de recocido iba +0,42% peor en los dos puntos comparables.
+
+Las dos redes entrenaron el mismo corpus con la misma partición de validación, así
+que era la comparación más limpia posible entre validaciones. **Y aun así apuntó
+al signo contrario.**
+
+Es la tercera vez en la misma semana que un proxy barato da el signo equivocado:
+
+| proxy | dijo | midió |
+|---|---|---|
+| profesor a 20M | +21,2 | +10,7 a 324M |
+| sonda de amenazas v1 | −5,43% | +3,96% con sus defectos arreglados |
+| validación de fqc120 | −0,10% (peor) | **+6,4 Elo (mejor)** |
+
+**La pérdida de validación orienta; no decide.** Estaba escrito como advertencia
+en este mismo fichero antes de que yo la ignorara en una predicción propia.
+
 ### La red está infra-entrenada, no saturada
 
 La curva de validación de `fqc60` seguía bajando **5,59% en sus últimas diez
