@@ -206,7 +206,16 @@ class NoaNnue(nn.Module):
                 # Summed BEFORE the clamp, into the same accumulator, exactly as
                 # NnueAccumulator.Refresh does it. Clamping the two separately
                 # and adding afterwards would be a different function.
-                acc = acc + F.embedding_bag(threat_feats, threat_weight, mode="sum",
+                #
+                # The padding conversion is not optional: the shard cache stores
+                # -1 for unused columns, and embedding_bag rejects a negative
+                # index outright. HalfKA goes through _indices for the same
+                # reason; threats need their own because their pad row is at a
+                # different offset.
+                idx = torch.where(threat_feats < 0,
+                                  torch.full_like(threat_feats, self.threat_pad),
+                                  threat_feats).long()
+                acc = acc + F.embedding_bag(idx, threat_weight, mode="sum",
                                             padding_idx=self.threat_pad)
             return torch.clamp(acc, 0.0, 1.0)
 
