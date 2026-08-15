@@ -106,8 +106,21 @@ public sealed class NnueAccumulatorStack
     {
         _top = 0;
         NnueAccumulator root = _stack[0];
-        _cache.Refresh(root, board, Color.White);
-        _cache.Refresh(root, board, Color.Black);
+
+        // Same split as in the materialise path: the cache only knows HalfKA, so
+        // a threat-carrying net has to be anchored from the board. Getting this
+        // one wrong would be worse than the other, because it seeds the root that
+        // every chain terminates on.
+        if (_network.UsesThreats)
+        {
+            root.Refresh(_network, board, Color.White);
+            root.Refresh(_network, board, Color.Black);
+        }
+        else
+        {
+            _cache.Refresh(root, board, Color.White);
+            _cache.Refresh(root, board, Color.Black);
+        }
         // Level 0 is the anchor every chain walk terminates on; it must always
         // be computed, or GetPerspective would copy uninitialised values.
         root.Computed[0] = true;
@@ -196,6 +209,35 @@ public sealed class NnueAccumulatorStack
     {
         int p = (int)perspective;
         NnueAccumulator acc = _stack[_top];
+
+        // A net carrying threat features cannot use the incremental path AT ALL,
+        // and this is a correctness stop rather than a performance choice.
+        //
+        // The incremental machinery below replays HalfKA feature deltas: a piece
+        // left a square, a piece arrived at one. Threat features do not move
+        // like that. Playing a move changes what the moved piece attacks, what
+        // now attacks it, AND every DISCOVERED relation where a slider's ray
+        // opened or closed through the square it vacated or occupied - none of
+        // which appears in a HalfKA delta. Replaying those deltas over a
+        // threat-carrying accumulator would leave the threat half frozen at
+        // whatever the root position had, and the engine would evaluate a
+        // position that does not exist while every test still passed.
+        //
+        // So threats refresh from the board every time. That is measured at
+        // roughly three times the cost of the evaluation it feeds, which is why
+        // a threat net cannot ship until the incremental update is written; it
+        // is fine for measuring STRENGTH at fixed nodes, where speed leaves the
+        // comparison entirely.
+        if (_network.UsesThreats)
+        {
+            // acc.Refresh and NOT _cache.Refresh. The cache rebuilds a
+            // perspective from per-king-square state it maintains for HalfKA
+            // only; it knows nothing about threat features and would return an
+            // accumulator missing half its input. The accumulator's own refresh
+            // is the one that sums both transformers.
+            acc.Refresh(_network, board, perspective);
+            return acc.Values[p];
+        }
 
         // A king move of this perspective invalidated it: rebuild from the
         // finny table. Everything pending below is subsumed by the rebuild.
