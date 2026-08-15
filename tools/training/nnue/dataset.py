@@ -481,7 +481,10 @@ class FeatureStore:
     because the record format is ordered by game.
     """
 
-    def __init__(self, paths, val_fraction=0.05):
+    def __init__(self, paths, val_fraction=0.05, threats=False):
+        # Threat shards are OPTIONAL and live in their own directory, so a run
+        # without them never touches - or builds - that cache.
+        self.threats = bool(threats)
         self.files = []
         for path in paths:
             directory = build_feature_shards(path)
@@ -501,11 +504,24 @@ class FeatureStore:
                       f"with --resume, or drop the file.")
                 continue
             train_count = count - int(count * val_fraction)
-            self.files.append({
+            entry = {
                 "path": path, "stm": stm, "opp": opp,
                 "scores": scores, "results": results,
                 "count": count, "train_count": train_count,
-            })
+            }
+            if self.threats:
+                tdir = build_threat_shards(path)
+                entry["stm_t"] = np.load(os.path.join(tdir, "stm.npy"), mmap_mode="r")
+                entry["opp_t"] = np.load(os.path.join(tdir, "opp.npy"), mmap_mode="r")
+                # A threat cache built from a different slice of the same corpus
+                # would line up row for row with the wrong positions and train
+                # on labels that belong to other boards. Cheap to check, and
+                # impossible to notice afterwards.
+                if len(entry["stm_t"]) != count:
+                    raise SystemExit(
+                        f"{path}: threat shards hold {len(entry['stm_t']):,} rows but the "
+                        f"HalfKA shards hold {count:,}. They describe different data.")
+            self.files.append(entry)
             print(f"dataset: {count:,} records from {path} "
                   f"(train {train_count:,} / val {count - train_count:,})")
 
@@ -528,7 +544,8 @@ class FeatureStore:
     def stream_batches(self, batch_size, rng, split="train",
                        chunk=8192, buffer_chunks=64):
         """
-        Yields (stm, opp, scores, results) batches. Chunk order is shuffled
+        Yields (stm, opp, scores, results) batches, plus (stm_t, opp_t) when
+        the store was opened with threats. Chunk order is shuffled
         globally across every file, then each buffer of chunks is shuffled
         internally before being cut into batches.
         """
@@ -541,7 +558,15 @@ class FeatureStore:
 
         order = rng.permutation(len(chunks))
 
-        pending = ([], [], [], [])
+        # Six streams with threats, four without. Built from a key list rather
+        # than hard-coded tuples so the two paths cannot drift: adding a stream
+        # in one place and forgetting the other is how a buffer ends up shuffled
+        # with a permutation of the wrong length.
+        keys = ["stm", "opp", "scores", "results"]
+        if self.threats:
+            keys += ["stm_t", "opp_t"]
+
+        pending = tuple([] for _ in keys)
         pending_rows = 0
         # Rows left over when a buffer does not divide evenly into batches. They
         # are CARRIED into the next buffer rather than dropped: discarding a
@@ -556,10 +581,8 @@ class FeatureStore:
             f = self.files[file_index]
             # np.asarray forces the mapped slice into real memory once, so the
             # later fancy-indexing does not fault page by page.
-            pending[0].append(np.asarray(f["stm"][begin:end]))
-            pending[1].append(np.asarray(f["opp"][begin:end]))
-            pending[2].append(np.asarray(f["scores"][begin:end]))
-            pending[3].append(np.asarray(f["results"][begin:end]))
+            for slot, key in enumerate(keys):
+                pending[slot].append(np.asarray(f[key][begin:end]))
             pending_rows += end - begin
 
             is_last = position == len(order) - 1
@@ -586,7 +609,7 @@ class FeatureStore:
             if start < rows and not is_last:
                 carry = [a[start:] for a in arrays]
 
-            pending = ([], [], [], [])
+            pending = tuple([] for _ in keys)
             pending_rows = 0
 
 
