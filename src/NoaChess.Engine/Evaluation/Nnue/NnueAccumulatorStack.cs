@@ -236,6 +236,31 @@ public sealed class NnueAccumulatorStack
         child.Valid[1] = parent.Valid[1];
         child.Computed[0] = false;
         child.Computed[1] = false;
+
+        // A threat net copies the parent here instead of leaving the level for
+        // the fallback to REBUILD FROM THE BOARD.
+        //
+        // A null move changes the side to move and nothing else: the pieces do
+        // not move, so every threat feature is identical and the right answer is
+        // the parent's accumulator unchanged. Without this the level stayed
+        // uncomputed, CompleteThreatDelta never runs for a null (the search only
+        // calls it after a real move), and the first evaluation below it paid a
+        // full refresh - the exact cost this whole path exists to avoid, on one
+        // of the most frequent pushes in the search, since null-move pruning is
+        // attempted at most interior nodes.
+        //
+        // Correct either way, which is why the parity test passed before this
+        // and passes after: the fallback rebuilds the same numbers, just slowly.
+        if (_network.UsesThreats)
+        {
+            for (int p = 0; p < 2; p++)
+            {
+                if (!parent.Computed[p])
+                    continue;   // nothing to copy yet; the fallback still covers it
+                child.CopyPerspectiveFrom(parent, (Color)p);
+                child.Computed[p] = true;
+            }
+        }
     }
 
     // Finishes the threat half of the level PushMove opened, with the board now
