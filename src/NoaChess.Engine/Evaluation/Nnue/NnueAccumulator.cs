@@ -47,6 +47,33 @@ public sealed class NnueAccumulator
         for (int i = 0; i < count; i++)
             AddFeature(network, perspective, features[i]);
 
+        // Threat features sum into the SAME accumulator, which is why there is
+        // one bias and not two: the reference does exactly this, its
+        // InputDimensions being the HalfKA size plus the threat size over one
+        // transformer output.
+        //
+        // FULL REFRESH ONLY, and knowingly so. This costs about 1600-1900 ns per
+        // perspective against roughly 1000 ns for an entire evaluation, measured
+        // in ThreatFeatureCostTests, so a net using it cannot ship. It CAN be
+        // measured at fixed nodes, where speed leaves the comparison, and that
+        // is the whole plan: prove the features are worth it on a slow build,
+        // then write the incremental update - which has to track discovered
+        // threats through opening and closing slider rays - only if they are.
+        if (network.UsesThreats)
+        {
+            Span<int> threats = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
+            int threatCount = ThreatFeatureIndex.ActiveFeatures(board, perspective, threats);
+
+            short[] weights = network.ThreatWeights!;
+            int width = network.FtOutputs;
+            for (int i = 0; i < threatCount; i++)
+            {
+                int off = threats[i] * width;
+                for (int j = 0; j < width; j++)
+                    values[j] += weights[off + j];
+            }
+        }
+
         Valid[(int)perspective] = true;
         Computed[(int)perspective] = true;
     }
