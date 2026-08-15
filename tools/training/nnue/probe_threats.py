@@ -267,7 +267,14 @@ def main():
     refuse_to_share_the_gpu(args.force)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    fraction = args.gpu_fraction if args.gpu_fraction is not None else (0.25 if args.force else None)
+    # 0.55 under --force, not 0.25. The first setting was chosen to be obviously
+    # safe and turned out to be obviously too tight: the 1024-wide arm asked for
+    # 3.44 GiB with 9.42 GiB free on the card and was refused, because the cap
+    # allowed 5.60 GiB and PyTorch had already reserved most of it. The guard did
+    # its job - the training beside it finished the hour without a hiccup - but a
+    # cap that kills the measurement it was protecting has the balance wrong.
+    # Just over half the card still leaves a training run more than it uses.
+    fraction = args.gpu_fraction if args.gpu_fraction is not None else (0.55 if args.force else None)
     cap_gpu_memory(fraction)
     print(threats.describe())
     print(f"device: {device}")
