@@ -58,8 +58,15 @@ public sealed class NnueNetwork
     // one into FtBias at export and the engine never sees it.
     public short[]? ThreatWeights { get; init; }
 
+    // Arch 4 belongs here, and leaving it out cost a NullReferenceException in
+    // the first end-to-end run: the file stores int8 L1 weights, so L1Weights is
+    // null and L1WeightsI8 holds them, and a predicate that said "not int8" sent
+    // the inference straight into the null array. The loader had already been
+    // taught that arch 4 is an int8 architecture; this predicate had not, and
+    // the two disagreed silently until something dereferenced the difference.
     public bool UsesInt8L1 => ArchitectureId == NnueModelHeader.ArchitectureInt8L1
-                           || ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets;
+                           || ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets
+                           || ArchitectureId == NnueModelHeader.ArchitectureThreats;
 
     public bool UsesOutputBuckets => OutputBuckets > 1;
 
