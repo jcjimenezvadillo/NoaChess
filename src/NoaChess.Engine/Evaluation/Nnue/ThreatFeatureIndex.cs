@@ -238,16 +238,18 @@ public static class ThreatFeatureIndex
         ulong occupied = board.AllOccupancy;
         int count = 0;
 
-        ulong pawns = board.Pieces(Color.White, PieceType.Pawn)
-                    | board.Pieces(Color.Black, PieceType.Pawn);
-
         // The target filters mirror the recorded pairs in Map, so a relation
-        // generated here is never one the index would then reject.
-        ulong pawnTargets = Of(board, PieceType.Pawn, PieceType.Knight, PieceType.Rook);
-        ulong minorTargets = Of(board, PieceType.Pawn, PieceType.Knight,
-                                PieceType.Bishop, PieceType.Rook);
-        ulong queenTargets = Of(board, PieceType.Pawn, PieceType.Knight,
-                                PieceType.Bishop, PieceType.Rook, PieceType.Queen);
+        // generated here is never one the index would then reject. Built once
+        // from four reads and shared by the three filters, instead of nine reads
+        // across three calls.
+        ulong pawns = Both(board, PieceType.Pawn);
+        ulong allKnights = Both(board, PieceType.Knight);
+        ulong allBishops = Both(board, PieceType.Bishop);
+        ulong allRooks = Both(board, PieceType.Rook);
+
+        ulong pawnTargets = pawns | allKnights | allRooks;
+        ulong minorTargets = pawnTargets | allBishops;
+        ulong queenTargets = minorTargets | Both(board, PieceType.Queen);
 
         for (int c = 0; c < 2; c++)
         {
@@ -325,11 +327,10 @@ public static class ThreatFeatureIndex
         }
     }
 
-    private static ulong Of(Board board, params PieceType[] types)
-    {
-        ulong bb = 0;
-        foreach (PieceType t in types)
-            bb |= board.Pieces(Color.White, t) | board.Pieces(Color.Black, t);
-        return bb;
-    }
+    // Both colours of one piece type. Replaced a `params PieceType[]` helper
+    // that allocated a fresh array on EVERY call - three per refresh, two
+    // refreshes per node - which is the kind of cost that never shows up in a
+    // correctness test and shows up in every game.
+    private static ulong Both(Board board, PieceType type)
+        => board.Pieces(Color.White, type) | board.Pieces(Color.Black, type);
 }
