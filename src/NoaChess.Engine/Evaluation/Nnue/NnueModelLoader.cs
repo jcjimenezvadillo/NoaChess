@@ -203,6 +203,13 @@ public static class NnueModelLoader
         var outWeights = ReadInt16Array(payload, buckets * l1Outputs);
         var outBias = ReadInt32Array(payload, buckets);
 
+        // The threat transformer, arch 4 only. Read last because it is appended
+        // last, so the offsets of everything before it are the ones arch 1-3
+        // already used and no existing net moves by a byte.
+        short[]? threatWeights = null;
+        if (arch == NnueModelHeader.ArchitectureThreats)
+            threatWeights = ReadInt16Array(payload, ThreatFeatureIndex.InputSize * ftOutputs);
+
         network = new NnueNetwork
         {
             ArchitectureId = arch,
@@ -220,6 +227,7 @@ public static class NnueModelLoader
             L1Bias = l1Bias,
             OutWeights = outWeights,
             OutBias = outBias,
+            ThreatWeights = threatWeights,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };
         error = "";
