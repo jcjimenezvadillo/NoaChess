@@ -83,6 +83,34 @@ public sealed class NnueModelHeader
     // v4.2.0 int8 L1 + output buckets selected by piece count.
     public const uint ArchitectureInt8L1Buckets = 3;
 
+    // ARCH 4: everything arch 3 has, plus a SECOND feature transformer fed by
+    // threat features, summed into the same accumulator.
+    //
+    // THE HEADER DOES NOT GROW, and that is a deliberate choice rather than a
+    // shortcut. It is 80 fixed bytes with the payload SHA covering everything
+    // after them, so adding a "threat inputs" field would change the offset of
+    // every field behind it and strand every net currently playing. It is also
+    // unnecessary: the feature schema id already pins what a feature MEANS, and
+    // arch 4 means "HalfKAv2_hm plus the threat set", whose dimension is a
+    // constant of that schema. A number that can only ever hold one value does
+    // not belong in a file.
+    //
+    // Payload gains one block, appended after the existing ones so an arch 1-3
+    // reader that stops early still sees a coherent file:
+    //     threatFtWeights int16[60720 * ftOutputs]
+    //
+    // It is large - 31 MB at ftOutputs 256 against a 5.5 MB net today - because
+    // 60,720 rows is what the feature set costs. There is no bias block: both
+    // transformers sum into one accumulator, so a second bias would only be
+    // added to the first and the trainer folds it there at export.
+    public const uint ArchitectureThreats = 4;
+
+    // Size of the threat weight block, which the loader checks the file against
+    // before reading a byte of it. Kept here so the trainer's expectation and
+    // the engine's are one expression.
+    public static long ThreatWeightBytes(int threatInputs, int ftOutputs)
+        => (long)threatInputs * ftOutputs * sizeof(short);
+
     // Activations must fit an unsigned byte AND keep VPMADDUBSW exact.
     public const int MaxQaForInt8L1 = 127;
 

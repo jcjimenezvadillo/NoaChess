@@ -73,7 +73,8 @@ public static class NnueModelLoader
             return false;
         }
         bool int8 = arch is NnueModelHeader.ArchitectureInt8L1
-                         or NnueModelHeader.ArchitectureInt8L1Buckets;
+                         or NnueModelHeader.ArchitectureInt8L1Buckets
+                         or NnueModelHeader.ArchitectureThreats;
         if (arch != NnueModelHeader.ArchitectureInt16L1 && !int8)
         {
             error = $"unsupported architecture id {arch}";
@@ -91,12 +92,12 @@ public static class NnueModelLoader
             return false;
         }
 
-        // Only arch 3 is allowed to declare buckets; anything else must be
+        // Arch 3 and arch 4 may declare buckets; anything else must be
         // unbucketed, or the payload size and the head indexing disagree.
-        int buckets = arch == NnueModelHeader.ArchitectureInt8L1Buckets
-            ? (headerBuckets == 0 ? 1 : headerBuckets)
-            : 1;
-        if (arch != NnueModelHeader.ArchitectureInt8L1Buckets && headerBuckets > 1)
+        bool bucketed = arch is NnueModelHeader.ArchitectureInt8L1Buckets
+                             or NnueModelHeader.ArchitectureThreats;
+        int buckets = bucketed ? (headerBuckets == 0 ? 1 : headerBuckets) : 1;
+        if (!bucketed && headerBuckets > 1)
         {
             error = $"architecture {arch} does not support output buckets (header declares {headerBuckets})";
             return false;
@@ -132,6 +133,14 @@ public static class NnueModelLoader
             + (long)buckets * l1Outputs * 4                           // l1Bias int32
             + (long)buckets * l1Outputs * 2                           // outWeights int16
             + (long)buckets * 4;                                      // outBias int32
+
+        // Arch 4 appends the threat transformer. Its row count is NOT read from
+        // the file: it is a constant of the feature schema, so a file whose size
+        // implies a different one is rejected here rather than being read into a
+        // net that would then evaluate nonsense.
+        if (arch == NnueModelHeader.ArchitectureThreats)
+            expectedPayload += NnueModelHeader.ThreatWeightBytes(
+                ThreatFeatureIndex.InputSize, ftOutputs);
 
         if ((long)payloadLength != expectedPayload)
         {
