@@ -20,12 +20,18 @@ import struct
 
 import numpy as np
 
+import threats
+
 from dataset import _make_index, PS_NB
 
 HEADER_SIZE = 80
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
 ARCH_INT8_L1_BUCKETS = 3
+# Arch 4: arch 3 plus a threat feature transformer appended to the payload. Its
+# row count is not in the header - it is a constant of the feature schema - so
+# this reader asserts the payload length against it exactly as the engine does.
+ARCH_THREATS = 4
 
 _PIECE_CHARS = {"p": 0, "n": 1, "b": 2, "r": 3, "q": 4, "k": 5}
 
@@ -62,7 +68,7 @@ def load_model(path):
         "<8s I I I i i i H H H H Q 32s", raw[:HEADER_SIZE])
     if magic != b"NOANNUE1":
         raise SystemExit(f"{path}: not a NOANNUE1 file")
-    buckets = max(1, buckets) if arch == ARCH_INT8_L1_BUCKETS else 1
+    buckets = max(1, buckets) if arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS) else 1
 
     body = raw[HEADER_SIZE:]
     offset = 0
@@ -82,12 +88,20 @@ def load_model(path):
     out_w = take(buckets * l1_out, np.int16).reshape(buckets, l1_out)
     out_b = take(buckets, np.int32)
 
+    # Read LAST because it is appended last, so every offset above is the one
+    # arch 1-3 files already use.
+    th_w = None
+    if arch == ARCH_THREATS:
+        th_w = take(threats.THREAT_INPUT_SIZE * ft_out, np.int16).reshape(
+            threats.THREAT_INPUT_SIZE, ft_out)
+
     if offset != payload_len:
         raise SystemExit(f"{path}: payload length mismatch ({offset} read, {payload_len} declared)")
 
     return dict(arch=arch, ft_in=ft_in, ft_out=ft_out, l1_out=l1_out, buckets=buckets,
                 qa=qa, qb=qb, out_scale=out_scale,
-                ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b, out_w=out_w, out_b=out_b)
+                ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b, out_w=out_w, out_b=out_b,
+                th_w=th_w)
 
 
 def evaluate(model, fen):
@@ -100,6 +114,24 @@ def evaluate(model, fen):
         for square, ptype, colour in pieces:
             index = _make_index(perspective, kings[perspective], ptype, colour, square)
             acc += model["ft_w"][index].astype(np.int32)
+
+        # Threats sum into the SAME accumulator, before the clamp, which is what
+        # NnueAccumulator.Refresh does and what the trainer's forward pass does.
+        # Reproducing them separately and adding afterwards would verify a
+        # different function than the one the engine runs.
+        if model["th_w"] is not None:
+            occupancy = 0
+            codes = []
+            for square, ptype, colour in sorted(pieces):
+                occupancy |= 1 << square
+                codes.append(colour * 6 + ptype)
+            nibbles = bytearray(16)
+            for i, code in enumerate(codes):
+                nibbles[i >> 1] |= code << (4 * (i & 1))
+            white, black = threats.active_threats(occupancy, nibbles)
+            for index in (white if perspective == 0 else black):
+                acc += model["th_w"][index].astype(np.int32)
+
         accumulators.append(acc)
 
     stm_acc, opp_acc = accumulators[stm], accumulators[1 - stm]
