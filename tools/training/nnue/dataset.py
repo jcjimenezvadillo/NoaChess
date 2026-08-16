@@ -475,6 +475,44 @@ def build_threat_shards_csr(path, chunk=200_000, limit=None):
     return directory
 
 
+def expand_csr(values, offsets, begin, end, columns=None):
+    """Rebuilds rows [begin, end) as a fixed-width block padded with -1.
+
+    THE SAVING IS ON DISK, NOT IN RAM, and that is what makes this safe to drop
+    in. The cache shrinks 7x because rows are stored at their real length, but
+    the block handed to the training loop is the same fixed-width int32 array
+    the fixed-width cache produced, so everything downstream - the shuffling,
+    the concatenation, the fancy indexing, the model - sees byte-identical
+    input. A batch of 16384 at 512 columns is 67 MB; the disk was the problem,
+    never the batch.
+    """
+    columns = THREAT_COLUMNS if columns is None else columns
+    rows = end - begin
+    out = np.full((rows, columns), -1, dtype=np.int32)
+    base = int(offsets[begin])
+    # One read of the whole span rather than one per row: the span is
+    # contiguous by construction, and paging it in row by row is what made the
+    # HalfKA path slow enough to need np.asarray in the first place.
+    span = np.asarray(values[base:int(offsets[end])])
+    starts = np.asarray(offsets[begin:end + 1], dtype=np.int64) - base
+
+    # Checked, not assumed. Forgetting to subtract the base reads past the span
+    # and numpy happens to raise a broadcast error - but only when the span runs
+    # short. With a longer span the same bug fills rows with the WRONG values
+    # and says nothing, which is the failure this whole cache must not have. One
+    # comparison turns luck into a guarantee.
+    if starts[0] != 0 or starts[-1] != len(span) or np.any(np.diff(starts) < 0):
+        raise ValueError(
+            f"expand_csr: offsets incoherentes para [{begin},{end}) - "
+            f"empiezan en {starts[0]}, acaban en {starts[-1]}, tramo de {len(span)}")
+    for i in range(rows):
+        a, b = int(starts[i]), int(starts[i + 1])
+        n = min(b - a, columns)
+        if n > 0:
+            out[i, :n] = span[a:a + n]
+    return out
+
+
 def load_threat_csr(directory):
     """Memory-maps a CSR threat shard. Returns (values, offsets) per perspective."""
     out = {}
