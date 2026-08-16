@@ -315,13 +315,6 @@ def build_feature_shards(path, log_every=250_000, force=False):
     paths = _shard_paths(directory)
     meta_path = os.path.join(directory, "meta.json")
 
-    # DESVIADO AL FORMATO DE LONGITUD VARIABLE. El de ancho fijo de abajo se
-    # conserva porque es el que define la verdad contra la que se compara el
-    # CSR en audit/threat_csr_gate.py, pero NO se puede construir: pide 1,33 TB
-    # contra 0,64 libres. Ver build_threat_shards_csr.
-    if not fixed_width:
-        return build_threat_shards_csr(path, force=force)
-
     if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
         source_mtime = os.path.getmtime(path)
         if min(os.path.getmtime(p) for p in paths.values()) >= source_mtime:
@@ -587,6 +580,17 @@ def build_threat_shards(path, force=False, fixed_width=False):
     and an idle box will do better - but not four times better. Paid once per
     corpus and only by runs that ask for threats.
     """
+    # DESVIADO AL FORMATO DE LONGITUD VARIABLE, y este es el sitio.
+    #
+    # La primera version de este desvio acabo dentro de build_feature_shards
+    # -la de HalfKA- porque el patron que se busco para insertarlo existe en
+    # LAS DOS funciones y la sustitucion cogio la primera. Rompio TODO el
+    # entrenamiento con un NameError, no solo el de amenazas, y ni los tres
+    # gates del CSR lo vieron: llamaban a build_threat_shards_csr directamente
+    # y nunca pasaban por este punto de entrada. Probar el camino nuevo no es
+    # probar que el camino viejo lleva a el.
+    if not fixed_width:
+        return build_threat_shards_csr(path, force=force)
     directory = threat_dir_for(path)
     paths = {n: os.path.join(directory, n + ".npy") for n in _THREAT_ARRAYS}
     meta_path = os.path.join(directory, "meta.json")
