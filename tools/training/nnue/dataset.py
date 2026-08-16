@@ -315,6 +315,13 @@ def build_feature_shards(path, log_every=250_000, force=False):
     paths = _shard_paths(directory)
     meta_path = os.path.join(directory, "meta.json")
 
+    # DESVIADO AL FORMATO DE LONGITUD VARIABLE. El de ancho fijo de abajo se
+    # conserva porque es el que define la verdad contra la que se compara el
+    # CSR en audit/threat_csr_gate.py, pero NO se puede construir: pide 1,33 TB
+    # contra 0,64 libres. Ver build_threat_shards_csr.
+    if not fixed_width:
+        return build_threat_shards_csr(path, force=force)
+
     if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
         source_mtime = os.path.getmtime(path)
         if min(os.path.getmtime(p) for p in paths.values()) >= source_mtime:
@@ -418,7 +425,7 @@ def threat_dir_for(path):
 _CSR_ARRAYS = ("stm_values", "stm_offsets", "opp_values", "opp_offsets")
 
 
-def build_threat_shards_csr(path, chunk=200_000, limit=None):
+def build_threat_shards_csr(path, chunk=200_000, limit=None, force=False):
     """Encodes a .noadata into variable-length threat shards. Returns the dir.
 
     'limit' caps the record count, for the comparison harness only: a full shard
@@ -429,6 +436,23 @@ def build_threat_shards_csr(path, chunk=200_000, limit=None):
     os.makedirs(directory, exist_ok=True)
     paths = {n: os.path.join(directory, n + ".bin") for n in _CSR_ARRAYS}
     meta_path = os.path.join(directory, "meta.json")
+
+    # Same validity rule as the fixed-width cache, and for the same reason:
+    # keying a feature cache on mere existence is what silently trained gen7 on
+    # stale features. Existence, then mtime against the source, then the column
+    # contract - and 'format', so a leftover fixed-width cache can never be read
+    # as this one.
+    if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
+        if min(os.path.getmtime(p) for p in paths.values()) >= os.path.getmtime(path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            if meta.get("format") == "csr" and meta.get("columns") == THREAT_COLUMNS:
+                print(f"threat shards (csr) reused: {directory} ({meta['count']:,} records)")
+                return directory
+            print(f"threat shards (csr) mismatch: format {meta.get('format')}, "
+                  f"columns {meta.get('columns')}; rebuilding: {directory}")
+        else:
+            print(f"threat shards (csr) STALE (source is newer), rebuilding: {directory}")
 
     records = load_records(path)
     n = len(records) if limit is None else min(limit, len(records))
@@ -513,6 +537,35 @@ def expand_csr(values, offsets, begin, end, columns=None):
     return out
 
 
+class _CsrView:
+    """Makes a CSR pair behave like the 2D array the consumer already expects.
+
+    The streaming loop slices these caches by row range and hands the result
+    straight on. Rather than teach that loop about two storage formats - the
+    exact drift that puts a stream in one place and forgets it in another - the
+    format is hidden behind the one operation the loop performs. len() and
+    [begin:end] are all it ever asks for, and both mean here what they meant
+    before, so nothing downstream changes or needs to know.
+    """
+
+    __slots__ = ("_values", "_offsets")
+
+    def __init__(self, values, offsets):
+        self._values = values
+        self._offsets = offsets
+
+    def __len__(self):
+        return len(self._offsets) - 1
+
+    def __getitem__(self, key):
+        if not isinstance(key, slice):
+            raise TypeError("los caches de amenazas solo se cortan por rangos")
+        begin, end, step = key.indices(len(self))
+        if step != 1:
+            raise ValueError("los caches de amenazas no admiten paso distinto de 1")
+        return expand_csr(self._values, self._offsets, begin, end)
+
+
 def load_threat_csr(directory):
     """Memory-maps a CSR threat shard. Returns (values, offsets) per perspective."""
     out = {}
@@ -525,7 +578,7 @@ def load_threat_csr(directory):
     return out
 
 
-def build_threat_shards(path, force=False):
+def build_threat_shards(path, force=False, fixed_width=False):
     """Decodes a .noadata into memory-mappable threat feature shards.
 
     MEASURED 2026-08-16 and the old figure here was wrong: 4,313 records per
@@ -644,8 +697,9 @@ class FeatureStore:
             }
             if self.threats:
                 tdir = build_threat_shards(path)
-                entry["stm_t"] = np.load(os.path.join(tdir, "stm.npy"), mmap_mode="r")
-                entry["opp_t"] = np.load(os.path.join(tdir, "opp.npy"), mmap_mode="r")
+                csr = load_threat_csr(tdir)
+                entry["stm_t"] = _CsrView(*csr["stm"])
+                entry["opp_t"] = _CsrView(*csr["opp"])
                 # A threat cache built from a different slice of the same corpus
                 # would line up row for row with the wrong positions and train
                 # on labels that belong to other boards. Cheap to check, and
