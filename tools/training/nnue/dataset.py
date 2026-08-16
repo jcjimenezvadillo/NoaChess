@@ -394,12 +394,107 @@ def threat_dir_for(path):
     return path + THREAT_SHARD_SUFFIX
 
 
+# Variable-length threat storage, written alongside the fixed-width one so the
+# two can be compared before either is trusted.
+#
+# WHY IT HAS TO EXIST. The fixed-width cache reserves MAX_ACTIVE_THREATS = 128
+# active threats per position because that is the schema's bound. Measured over
+# 30,032 perspectives of the real corpus, the mean is 18.3 and the largest seen
+# is 61: it reserves 512 int32 columns to store about 73. Over the 65 shards
+# that is 1.33 TB against 0.64 TB of free SSD, so the encode dies of a full disk
+# after hours. The same data in CSR form is 0.19 TB.
+#
+# WHY ONE PASS AND NOT TWO. Measuring the lengths first and allocating after
+# would be simpler and costs a second encode of the whole corpus - and the
+# encode is the expensive half, 5.4 hours becoming 10.8. So rows are appended to
+# an open file in chunks while the offsets accumulate in memory (n+1 int64 is
+# 40 MB per shard) and the file is memory-mapped for reading afterwards.
+# `tofile` writes no .npy header, so the reader uses np.memmap, not np.load.
+#
+# AND IT REMOVES A FAILURE MODE. The fixed-width writer TRUNCATES any row past
+# 512 columns and only reports a counter, so the positions with the most threats
+# - the ones that matter most - would silently train on partial features. A
+# variable-length row cannot be truncated.
+_CSR_ARRAYS = ("stm_values", "stm_offsets", "opp_values", "opp_offsets")
+
+
+def build_threat_shards_csr(path, chunk=200_000, limit=None):
+    """Encodes a .noadata into variable-length threat shards. Returns the dir.
+
+    'limit' caps the record count, for the comparison harness only: a full shard
+    is 5M positions and the gate does not need them to prove the two encodings
+    agree.
+    """
+    directory = threat_dir_for(path) + ".csr"
+    os.makedirs(directory, exist_ok=True)
+    paths = {n: os.path.join(directory, n + ".bin") for n in _CSR_ARRAYS}
+    meta_path = os.path.join(directory, "meta.json")
+
+    records = load_records(path)
+    n = len(records) if limit is None else min(limit, len(records))
+
+    offsets = {"stm": np.zeros(n + 1, dtype=np.int64),
+               "opp": np.zeros(n + 1, dtype=np.int64)}
+    start_time = time.time()
+
+    with open(paths["stm_values"], "wb") as fs, open(paths["opp_values"], "wb") as fo:
+        buffers = {"stm": [], "opp": []}
+        for i in range(n):
+            rec = records[i]
+            white, black = threats.active_threats(int(rec["occupancy"]), rec["pieces"])
+            a, b = (white, black) if int(rec["stm"]) == 0 else (black, white)
+            a, b = threats.factorize(a), threats.factorize(b)
+
+            buffers["stm"].append(np.asarray(a, dtype=np.int32))
+            buffers["opp"].append(np.asarray(b, dtype=np.int32))
+            offsets["stm"][i + 1] = offsets["stm"][i] + len(a)
+            offsets["opp"][i + 1] = offsets["opp"][i] + len(b)
+
+            if (i + 1) % chunk == 0 or i + 1 == n:
+                np.concatenate(buffers["stm"]).tofile(fs)
+                np.concatenate(buffers["opp"]).tofile(fo)
+                buffers = {"stm": [], "opp": []}
+                elapsed = max(time.time() - start_time, 1e-9)
+                rate = (i + 1) / elapsed
+                print(f"  csr {i + 1:,}/{n:,} ({rate:,.0f} rec/s, "
+                      f"ETA {(n - i - 1) / rate / 60:.1f} min)", flush=True)
+
+    offsets["stm"].tofile(paths["stm_offsets"])
+    offsets["opp"].tofile(paths["opp_offsets"])
+
+    # Written last, exactly as the fixed-width path does, so an interrupted
+    # encode leaves no meta and the next run rebuilds instead of reading a
+    # half-written mapping.
+    with open(meta_path, "w") as f:
+        json.dump({"count": int(n), "format": "csr",
+                   "source": os.path.basename(path),
+                   "source_mtime": os.path.getmtime(path),
+                   "columns": THREAT_COLUMNS,
+                   "threat_input_size": threats.THREAT_INPUT_SIZE,
+                   "factored_input_size": threats.FACTORED_INPUT_SIZE}, f, indent=2)
+    return directory
+
+
+def load_threat_csr(directory):
+    """Memory-maps a CSR threat shard. Returns (values, offsets) per perspective."""
+    out = {}
+    for side in ("stm", "opp"):
+        values = np.memmap(os.path.join(directory, f"{side}_values.bin"),
+                           dtype=np.int32, mode="r")
+        offsets = np.memmap(os.path.join(directory, f"{side}_offsets.bin"),
+                            dtype=np.int64, mode="r")
+        out[side] = (values, offsets)
+    return out
+
+
 def build_threat_shards(path, force=False):
     """Decodes a .noadata into memory-mappable threat feature shards.
 
-    About 0.19 ms per position, so roughly 5.4 hours for the full corpus - down
-    from 17.4 before the index lookups were flattened. Paid once per corpus and
-    only by runs that ask for threats.
+    MEASURED 2026-08-16 and the old figure here was wrong: 4,313 records per
+    second, which is 20.9 hours for the 325M corpus, not the 5.4 this used to
+    claim. Taken while a training run had the machine, so it is an upper bound
+    and an idle box will do better - but not four times better. Paid once per
+    corpus and only by runs that ask for threats.
     """
     directory = threat_dir_for(path)
     paths = {n: os.path.join(directory, n + ".npy") for n in _THREAT_ARRAYS}
