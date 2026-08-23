@@ -21,7 +21,8 @@ import numpy as np
 import torch
 
 import dataset
-from model import NoaNnue, OUTPUT_SCALE, FT_OUT, L1_OUT, OUT_BUCKETS, FACTORIZED, QA
+from model import (NoaNnue, OUTPUT_SCALE, FT_OUT, L1_OUT, L2_OUT, OUT_BUCKETS,
+                   FACTORIZED, QA)
 
 
 def prefetch(iterable, depth):
@@ -217,6 +218,14 @@ def main():
     # Arch 4: adds the threat feature transformer. Needs its own shard cache,
     # built on first use and reused after (about 5.4 h for the full corpus), and
     # exports as --arch 4. A run without this flag never touches that cache.
+    parser.add_argument("--dual", action="store_true",
+                        help="architecture 5: pairwise transformer read, squared "
+                             "activations, a second hidden layer the output reads "
+                             "past, and a linear bypass. Changes the shape of l1 "
+                             "and out, so a checkpoint trained with it can only be "
+                             "exported as --arch 5.")
+    parser.add_argument("--l2-out", type=int, default=L2_OUT,
+                        help="second hidden layer width (--dual only)")
     parser.add_argument("--threats", action="store_true",
                         help="train the threat feature transformer as well (arch 4)")
     # Two jobs on one GPU end an eighteen-hour run with an out-of-memory hours
@@ -380,12 +389,37 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
     print(f"device: {device}"
           + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else " (no CUDA GPU)"))
 
+    # Architecture 5 is an int8 head, and int8 forces QA=127 for the VPMADDUBSW
+    # lane to stay exact. Training against QA=255 and exporting at 127 would
+    # optimise arithmetic the engine never runs, which has already contaminated
+    # one measurement in this project through the export default.
+    if args.dual and args.qa != 127:
+        raise SystemExit("--dual is an int8 architecture: pass --qa 127 "
+                         f"(got {args.qa}), or the export will quantize to a "
+                         "different grid from the one you trained on.")
+
     model = NoaNnue(args.ft_out, args.l1_out, args.out_buckets, args.factorized,
-                    args.qat, args.qa, threats=args.threats).to(device)
+                    args.qat, args.qa, threats=args.threats,
+                    dual=args.dual, l2_out=args.l2_out).to(device)
+    # The banner names the architecture this run will EXPORT as, and that is not
+    # decoration. It said "export as arch 2/3" while training an arch 5 net on
+    # the first --dual run: the shapes were right, the checkpoint was right, and
+    # the only thing that would have told anyone otherwise was reading the
+    # tensor shapes by hand. A run that misreports what it is training is how
+    # this project already lost a measurement to an export default.
+    if args.dual:
+        target_arch = "5"
+    elif args.qa == QA:
+        target_arch = "1"
+    elif args.threats:
+        target_arch = "4"
+    else:
+        target_arch = "2/3"
     print(f"net: ft_out={args.ft_out} l1_out={args.l1_out} out_buckets={args.out_buckets} "
-          f"factorized={args.factorized} qat={args.qat}"
-          + (f" (QA={args.qa}, export as arch {'1' if args.qa == QA else '2/3'})"
-             if args.qat else ""))
+          f"factorized={args.factorized} qat={args.qat} threats={args.threats} "
+          f"dual={args.dual}"
+          + (f" l2_out={args.l2_out}" if args.dual else "")
+          + (f" (QA={args.qa}, export as arch {target_arch})" if args.qat else ""))
     # Two parameter groups so the transformer can be decayed differently from
     # the head. With ft_weight_decay equal to weight_decay this is arithmetically
     # identical to one group, which is what keeps the default run unchanged.

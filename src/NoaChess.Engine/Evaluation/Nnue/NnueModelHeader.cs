@@ -76,6 +76,34 @@ public sealed class NnueModelHeader
     public const string Magic = "NOANNUE1";
     public const uint SupportedFormatVersion = 1;
 
+    // ---- FORMAT VERSION 2 (v5.2.0, architecture 5) ----
+    //
+    // Version 1's header is 80 fixed bytes with no spare room before the
+    // payload length at offset 40, so architecture 5 - which has a second
+    // hidden layer and a flag word - could not be described without moving a
+    // field. Moving one would strand every net currently playing, so version 2
+    // is a strict SUPERSET: bytes 0..39 keep their meaning and their offsets
+    // exactly, and the three new fields occupy 40..47, pushing the payload
+    // length and the SHA down by 8 bytes.
+    //
+    //   offset size  field                       (version 2 only)
+    //   40     4     l2 outputs           (u32)  second hidden layer width
+    //   44     2     psqt buckets         (u16)  0 = no psqt head
+    //   46     2     flags                (u16)  see ArchFlag* below
+    //   48     8     payload length       (u64)
+    //   56     32    payload SHA-256
+    //   88     ...   payload
+    //
+    // A version 1 file is still read by the version 1 path, byte for byte.
+    public const uint FormatVersionTwo = 2;
+    public const int HeaderSizeV2 = 88;
+
+    // Feature transformer outputs are read PAIRWISE: the two halves of the
+    // accumulator are multiplied element by element. Always set for arch 5.
+    public const ushort ArchFlagPairwiseFt = 1 << 0;
+    // The file carries a threat transformer block, as arch 4 does.
+    public const ushort ArchFlagThreats = 1 << 1;
+
     // Legacy int16 L1 (every net through gen7). Still loadable, still played.
     public const uint ArchitectureInt16L1 = 1;
     // v4.0.0 int8 L1. Requires QA <= 127 (see the saturation proof above).
@@ -105,6 +133,51 @@ public sealed class NnueModelHeader
     // added to the first and the trainer folds it there at export.
     public const uint ArchitectureThreats = 4;
 
+    // ARCH 5 (v5.2.0): the head rebuilt to match what a modern reference
+    // evaluation actually computes. Arch 1-4 run ONE linear layer with ONE
+    // clipped ReLU on top of the accumulator; that is the whole non-linearity
+    // of the evaluation. Arch 5 adds three things, none of which needs a wider
+    // feature transformer:
+    //
+    // 1. PAIRWISE FEATURE TRANSFORMER READ. Instead of clipping all ftOutputs
+    //    values and feeding them forward, the accumulator is split in half and
+    //    multiplied element by element:
+    //        act[j] = clamp(acc[j], 0, QA) * clamp(acc[j + H], 0, QA) / QA
+    //    with H = ftOutputs / 2. That introduces a QUADRATIC interaction
+    //    between features at the very first layer, which a stack of clipped
+    //    linear maps cannot express at all, and it HALVES the L1 input width -
+    //    so it makes the head cheaper while making it stronger.
+    //
+    // 2. DUAL ACTIVATION. Each hidden layer emits both its clipped activation
+    //    and the SQUARE of it, concatenated:
+    //        c = clamp(h / QB, 0, QA)      s = c * c / QA
+    //    The next layer therefore sees a second-order term for every unit at
+    //    the cost of one multiply each. Squaring is the cheapest useful
+    //    non-linearity there is and it is what the reference uses at both of
+    //    its hidden layers.
+    //
+    // 3. A SECOND HIDDEN LAYER WITH A SKIP CONNECTION. The output reads the
+    //    activations of BOTH hidden layers, not just the last one, so the
+    //    second layer only has to learn what the first one could not - the
+    //    first layer's contribution is never bottlenecked through it.
+    //
+    // Plus a plain linear bypass taken from the same place: the last two L1
+    // PRE-activations are added to the output as (h[n-2] - h[n-1]). Their units
+    // are already QA*QB, identical to the output accumulator's, so the term
+    // ports with no rescaling at all - two neurons that can carry an unbounded
+    // linear score past every clamp in the network.
+    //
+    // NET COST AT ft=128 / l1=32 / l2=32, in multiply-accumulates per
+    // evaluation, against arch 3:
+    //     arch 3   L1 32 x 256 = 8192   out    32            = 8224
+    //     arch 5   L1 32 x 128 = 4096   L2 32 x 64 = 2048
+    //              out 128              pairwise 128, squares 64
+    //                                                        = 6464
+    // The richer network is CHEAPER, because the pairwise read pays for the
+    // rest. The feature transformer, which the profiler puts at 73.8% of the
+    // cost, is untouched.
+    public const uint ArchitectureDualActivation = 5;
+
     // Size of the threat weight block, which the loader checks the file against
     // before reading a byte of it. Kept here so the trainer's expectation and
     // the engine's are one expression.
@@ -129,6 +202,19 @@ public sealed class NnueModelHeader
         int bucket = (pieceCount - 1) * buckets / 32;
         return Math.Clamp(bucket, 0, buckets - 1);
     }
+
+    // Size of one bucket's head, in bytes, for architecture 5. Kept next to the
+    // layout it describes so the loader's expectation and the exporter's are
+    // one expression rather than two that must agree.
+    public static long ArchFiveHeadBytes(int ftOutputs, int l1Outputs, int l2Outputs)
+        // The L1 input is 2 * H values (H per perspective), one byte each, so
+        // the "* 2" below counts PERSPECTIVES and not bytes.
+        => (long)l1Outputs * (ftOutputs / 2) * 2      // l1Weights int8
+         + (long)l1Outputs * 4                        // l1Bias int32
+         + (long)l2Outputs * (2 * l1Outputs)          // l2Weights int8
+         + (long)l2Outputs * 4                        // l2Bias int32
+         + (long)(2 * l1Outputs + 2 * l2Outputs) * 2  // outWeights int16
+         + 4;                                         // outBias int32
 
     public uint FormatVersion;
     public uint FeatureSchemaId;

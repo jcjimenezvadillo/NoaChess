@@ -96,6 +96,7 @@ public sealed class NnueAccumulatorStack
     private readonly int[] _beforeThreats;
     private readonly int[] _beforeCount;
     private readonly int[] _changed;
+    private readonly int[] _afterScratch;
     private readonly int[] _changedCount;
     private int _top;
 
@@ -114,6 +115,9 @@ public sealed class NnueAccumulatorStack
         _beforeThreats = new int[levels * 2 * ThreatFeatureIndex.MaxActiveFeatures];
         _beforeCount = new int[levels * 2];
         _changed = new int[levels * ThreatDelta.MaxChangedSquares];
+        // Scratch for CompleteThreatDelta, allocated once instead of being
+        // zeroed at every node. See the comment at its use.
+        _afterScratch = new int[ThreatFeatureIndex.MaxActiveFeatures];
         _changedCount = new int[levels];
     }
 
@@ -292,12 +296,27 @@ public sealed class NnueAccumulatorStack
         ref Pending pd = ref _pending[_top];
         int slot = _top * 2;
 
-        // Hoisted out of the perspective loop, and not for tidiness: a
-        // stackalloc inside a loop does not free per iteration, it grows the
-        // frame each time round. Two iterations of 128 ints is only a kilobyte,
-        // but this runs at every node of the search and the frame is already
-        // deep. Caught by CA2014 on publish, which build did not surface.
-        Span<int> after = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
+        // NOT a stackalloc, and this was 96.6% OF THE SEARCH.
+        //
+        // It used to be `stackalloc int[ThreatFeatureIndex.MaxActiveFeatures]`,
+        // hoisted out of the perspective loop so the frame would not grow twice
+        // per call. That reasoning was right and irrelevant next to the real
+        // cost: C# zeroes a stackalloc, this method runs at EVERY NODE, and the
+        // bound went from 128 to 512 when a dense position overflowed the buffer
+        // and crashed seven games. Quadrupling a per-node memset is how fixing
+        // one bug bought a worse one.
+        //
+        // The CPU profile of a search carrying a threat net put
+        // Buffer.ZeroMemoryInternal at 96.6% of self time with
+        // CompleteThreatDelta at 89.7% of total - the engine was spending its
+        // life clearing two kilobytes it was about to overwrite anyway.
+        //
+        // A field costs one allocation for the lifetime of the stack, and the
+        // stack is already per-thread: every search worker clones its own
+        // evaluator, so there is no sharing to guard. The buffer is written by
+        // CollectFrom up to afterCount and read only as after[..afterCount], so
+        // it never needs to start clean.
+        Span<int> after = _afterScratch;
 
         for (int p = 0; p < 2; p++)
         {
@@ -341,11 +360,25 @@ public sealed class NnueAccumulatorStack
             ReadOnlySpan<int> before = _beforeThreats.AsSpan(
                 idx * ThreatFeatureIndex.MaxActiveFeatures, _beforeCount[idx]);
 
-            // Only the DIFFERENCE is applied. Subtracting every "before" row and
-            // adding every "after" row would be correct and would also cost more
+            // Only the DIFFERENCE is applied. Subtracting every "before" row
+            // and adding every "after" row would be correct and would cost more
             // than the full refresh this replaces, which is the entire point.
-            // Both lists hold a handful of entries, so a linear scan beats any
-            // structure that would have to be allocated.
+            //
+            // A LINEAR SCAN, AND THAT IS MEASURED RATHER THAN ASSUMED. This was
+            // rewritten as a sorted merge on the reasoning that comparing every
+            // element of one list against all of the other is n*n, about 5,500
+            // comparisons per node at the ~37 features these lists hold. The
+            // profile refused it twice:
+            //
+            //     linear scan                 19.87% of search self time
+            //     sorted merge + IntroSort    21.61%  (5.47% of it sorting)
+            //     sorted merge + insertion    22.51%
+            //
+            // Two reasons the asymptotics lose here. n is small enough that a
+            // tight scan with no setup beats anything with a preamble, and 83%
+            // of features SURVIVE a move, so Contains almost always exits early
+            // on a hit rather than walking the whole list. The sort, by
+            // contrast, pays for every element every time.
             for (int i = 0; i < before.Length; i++)
             {
                 if (!Contains(after[..afterCount], before[i]))

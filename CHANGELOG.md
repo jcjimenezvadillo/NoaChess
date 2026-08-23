@@ -1,5 +1,90 @@
 # CHANGELOG
 
+## 2026-08-22 (v5.0.3) - the engine was giving away a queen to get into the tablebases sooner
+
+Reported from real bot games, not found by a test: a queen for a pawn in one game, a bishop for a
+pawn in another. Both moves won - the resulting endings evaluate around +14 and +9.5 pawns, and both
+games were won by checkmate - but no other engine plays them, and the cause is real.
+
+**A tablebase win is scored `TbWin - ply`, so entering the tables SOONER scores HIGHER, and the way
+to enter sooner is to take pieces off the board.** The position is not better for having fewer
+pieces; only the scoring says so. That ply term is borrowed from mate scoring, where reaching mate
+sooner genuinely is better; here it measures the wrong distance entirely - distance to entering the
+table rather than distance to winning. With 6-man tables loaded, one sacrifice from a 7-man position
+buys a *proven* win worth ~19,987 against a heuristic +1,500, so the trade always looks good.
+
+`SyzygyProbeLimit` now defaults to 5 instead of 7. Same binary, same positions, only this option
+changed:
+
+```
+limit 7    Qxa5+  (queen for a pawn)      g2g4, score 19981, Bxf5 in the PV
+limit 5    Qe3    (keeps the queen)       Kf2,  score 1836, keeps the bishop
+```
+
+**This is not a storage question and it would happen the same on the fastest disk**, but the change
+removes an enormous I/O cost as a side effect. The 6-man set is 160 GB against 0.98 GB for everything
+up to five men, and probing it costs **4.4x the speed** - 211k nps against 923k on the same position.
+Repeating one search shows it is I/O: 109k, 260k, 443k, 783k nps as the page cache warms.
+
+**A warning for anyone reading old measurements.** On the test machine those tables sit on a
+mechanical drive and eleven SPRT scripts point at them. With tablebases enabled the engine lost **37
+of 95 games ON TIME**, against zero without them, for an apparent -190 Elo that measures the disk and
+not the engine. Any past result run with `SyzygyPath` set is suspect; the tell is time forfeits in
+the PGN.
+
+**What is still open, stated so nobody reads more into this than it says.** Even the small tables
+measured **-20.2 Elo [-40.1, -0.5]** against no tablebases at all at 10+0.1 over 464 games. That
+suggests tablebases may not pay for their probe cost at fast time controls at all, but 10+0.1 is
+faster than anything the bots play, so dropping them entirely is left until it is measured at a
+representative time control.
+
+## 2026-08-22 (v5.0.2) - the evaluation was paying for thirty-two divisions and thirty-two horizontal sums it never needed
+
+**Byte-identical node counts, 7.7% less time.** No search behaviour changed, so there is nothing an
+SPRT could report that the identity check has not already settled: the engine walks exactly the same
+tree and reaches the same move, faster. 8,522,941 nodes over 60 bench positions before and after,
+same best move in every one.
+
+**This came out of the first CPU profile of the SEARCH this project has ever run.** Every earlier
+measurement profiled the evaluation in isolation; nothing had asked where the rest of the time goes.
+Two of the answers were surprising enough to be worth writing down.
+
+**The evaluation's inner kernel is bigger than the accumulator, not smaller.** The received number
+here was 73.8% feature transformer against 26.2% L1, measured with per-call microbenchmarks. In real
+search the ratio inverts: `EvaluateInt16` is 23.8% of all search time and the whole accumulator path
+- lazy resolution, finny-table refresh, incremental updates - is about 7.6%. The microbenchmark was
+not wrong about what it measured; it measured a refresh from cold, and the search almost never pays
+for one.
+
+**Two defects, both mechanical, both in the kernel the shipping net actually runs.** The net is
+architecture 1, so it evaluates through the int16 path:
+
+- `hidden[o] / net.QB` compiled to a real integer division, because QB is a field and the JIT cannot
+  fold it. Thirty-two per evaluation. QB is a power of two, and the shift is exact here: it differs
+  from the division only for negative values, where it floors instead of truncating, and the clamp
+  that follows maps both to zero. The same file was doing 128 of them in the new architecture-5 path,
+  which is how the problem was found at all.
+- One horizontal reduction per output row, thirty-two per evaluation, each a chain of shuffles and
+  adds whose cost does not depend on the length of the row. Four rows now share one fold, which also
+  reads the activation vector once instead of four times and lets four accumulator chains issue in
+  parallel where one had to serialise.
+
+**Measured twice, by instruments that could have disagreed.** Paired per-position timing over 168
+positions: **+7.70%, 95% [+5.56%, +8.71%], 131 of 164 positions faster, sign test p = 0.00000**. A
+second CPU profile puts `EvaluateInt16` at 19,035 ms against 23,477 before, an 18.9% cut in a method
+that was 23.8% of the total, which predicts 4.5% overall; the division fix accounted for 3.1% of the
+7.7%, leaving 4.6%. Sampling and stopwatch agree to a tenth of a point.
+
+**What was looked at and left alone.** A sweep for other non-constant divisions in the search found
+none - they are all `const` and the JIT folds them. `[SkipLocalsInit]` would remove the 1.4% spent
+zeroing stack buffers and every one of them is fully written before it is read, but that is under one
+Elo in exchange for uninitialised memory in the evaluation, and this engine has a history of silent
+net corruption. The 4.1% in the runtime's GC polls is not allocation pressure - the hot path's `new`
+expressions are all structs - and the only lever is turning off concurrent GC, which was enabled
+deliberately against multi-second stalls in bullet and whose risk an identity check cannot see. Move
+ordering is 12.5% but every way to speed it up risks changing the order, which would forfeit the
+property that makes these changes cheap to confirm.
+
 ## 2026-08-13 (v5.0.1) - the engine spent six seconds recapturing a queen it had to recapture
 
 Found in a real game rather than by a test: [lichess.org/E6wD3ggu](https://lichess.org/E6wD3ggu),

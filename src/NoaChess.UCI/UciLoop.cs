@@ -566,6 +566,13 @@ public sealed class UciLoop
         if (changed == "SyzygyPath")
         {
             NoaChess.Engine.Tablebases.Syzygy.Init(_options.SyzygyPath);
+            // Push the probe settings HERE too, not only when they change. A
+            // host that sets SyzygyPath and nothing else - which is what both
+            // bots do - would otherwise run on the search's own defaults and
+            // ignore the option entirely.
+            _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
+            _engine.SyzygyProbeDepth = _options.SyzygyProbeDepth;
+            _engine.Syzygy50MoveRule = _options.Syzygy50MoveRule;
             _engine.RefreshTablebaseLimit();
             _output.WriteLine(NoaChess.Engine.Tablebases.Syzygy.Available
                 ? $"info string Syzygy: {NoaChess.Engine.Tablebases.Syzygy.Cardinality}-man tablebases loaded"

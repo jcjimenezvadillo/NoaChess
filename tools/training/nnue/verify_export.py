@@ -25,6 +25,7 @@ import threats
 from dataset import _make_index, PS_NB
 
 HEADER_SIZE = 80
+HEADER_SIZE_V2 = 88
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
 ARCH_INT8_L1_BUCKETS = 3
@@ -32,6 +33,12 @@ ARCH_INT8_L1_BUCKETS = 3
 # row count is not in the header - it is a constant of the feature schema - so
 # this reader asserts the payload length against it exactly as the engine does.
 ARCH_THREATS = 4
+# Arch 5: pairwise transformer read, squared activations next to clipped ones,
+# a second hidden layer the output reads past, and a linear bypass. Written with
+# format version 2, whose header is eight bytes longer.
+ARCH_DUAL = 5
+ARCH_FLAG_THREATS = 1 << 1
+PAIR_SHIFT = 7
 
 _PIECE_CHARS = {"p": 0, "n": 1, "b": 2, "r": 3, "q": 4, "k": 5}
 
@@ -63,14 +70,25 @@ def parse_fen(fen):
 def load_model(path):
     with open(path, "rb") as f:
         raw = f.read()
-    (magic, version, schema, arch, ft_in, ft_out, l1_out,
-     qa, qb, out_scale, buckets, payload_len, _sha) = struct.unpack(
-        "<8s I I I i i i H H H H Q 32s", raw[:HEADER_SIZE])
+    version = struct.unpack("<I", raw[8:12])[0]
+    if version == 2:
+        (magic, _v, schema, arch, ft_in, ft_out, l1_out,
+         qa, qb, out_scale, buckets, l2_out, _psqt, flags,
+         payload_len, _sha) = struct.unpack(
+            "<8s I I I i i i H H H H i H H Q 32s", raw[:HEADER_SIZE_V2])
+        header_size = HEADER_SIZE_V2
+    else:
+        (magic, _v, schema, arch, ft_in, ft_out, l1_out,
+         qa, qb, out_scale, buckets, payload_len, _sha) = struct.unpack(
+            "<8s I I I i i i H H H H Q 32s", raw[:HEADER_SIZE])
+        header_size, l2_out, flags = HEADER_SIZE, 0, 0
     if magic != b"NOANNUE1":
         raise SystemExit(f"{path}: not a NOANNUE1 file")
-    buckets = max(1, buckets) if arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS) else 1
+    buckets = max(1, buckets) if arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS,
+                                          ARCH_DUAL) else 1
+    has_threats = arch == ARCH_THREATS or (arch == ARCH_DUAL and (flags & ARCH_FLAG_THREATS))
 
-    body = raw[HEADER_SIZE:]
+    body = raw[header_size:]
     offset = 0
 
     def take(count, dtype):
@@ -83,25 +101,71 @@ def load_model(path):
     ft_w = take(ft_in * ft_out, np.int16).reshape(ft_in, ft_out)
     ft_b = take(ft_out, np.int16)
     l1_dtype = np.int16 if arch == ARCH_INT16_L1 else np.int8
-    l1_w = take(buckets * l1_out * 2 * ft_out, l1_dtype).reshape(buckets, l1_out, 2 * ft_out)
+    # Arch 5 halves the L1 input (the pairwise read turns 2*ft_out clipped
+    # values into ft_out products) and widens the output row to span both
+    # layers' dual activations.
+    l1_in = ft_out if arch == ARCH_DUAL else 2 * ft_out
+    out_in = (2 * l1_out + 2 * l2_out) if arch == ARCH_DUAL else l1_out
+    l1_w = take(buckets * l1_out * l1_in, l1_dtype).reshape(buckets, l1_out, l1_in)
     l1_b = take(buckets * l1_out, np.int32).reshape(buckets, l1_out)
-    out_w = take(buckets * l1_out, np.int16).reshape(buckets, l1_out)
+    l2_w = l2_b = None
+    if arch == ARCH_DUAL:
+        l2_w = take(buckets * l2_out * 2 * l1_out, np.int8).reshape(
+            buckets, l2_out, 2 * l1_out)
+        l2_b = take(buckets * l2_out, np.int32).reshape(buckets, l2_out)
+    out_w = take(buckets * out_in, np.int16).reshape(buckets, out_in)
     out_b = take(buckets, np.int32)
 
     # Read LAST because it is appended last, so every offset above is the one
     # arch 1-3 files already use.
     th_w = None
-    if arch == ARCH_THREATS:
+    if has_threats:
         th_w = take(threats.THREAT_INPUT_SIZE * ft_out, np.int16).reshape(
             threats.THREAT_INPUT_SIZE, ft_out)
 
     if offset != payload_len:
         raise SystemExit(f"{path}: payload length mismatch ({offset} read, {payload_len} declared)")
 
-    return dict(arch=arch, ft_in=ft_in, ft_out=ft_out, l1_out=l1_out, buckets=buckets,
-                qa=qa, qb=qb, out_scale=out_scale,
-                ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b, out_w=out_w, out_b=out_b,
+    return dict(arch=arch, ft_in=ft_in, ft_out=ft_out, l1_out=l1_out, l2_out=l2_out,
+                buckets=buckets, qa=qa, qb=qb, out_scale=out_scale,
+                ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b,
+                l2_w=l2_w, l2_b=l2_b, out_w=out_w, out_b=out_b,
                 th_w=th_w)
+
+
+def _dual_activate(pre, qa, qb):
+    """Mirror of DualActivate in C#: squares first, clipped second."""
+    clipped = np.clip(pre // qb, 0, qa)
+    squared = clipped * clipped // qa
+    return np.concatenate([squared, clipped])
+
+
+def _head_arch_five(model, stm_acc, opp_acc, bucket):
+    """Mirror of EvaluateArchFive: pairwise read, two layers, linear bypass."""
+    qa, qb = model["qa"], model["qb"]
+    half = model["ft_out"] // 2
+
+    def pair(acc):
+        a0 = np.clip(acc[:half], 0, qa).astype(np.int64)
+        a1 = np.clip(acc[half:], 0, qa).astype(np.int64)
+        # The engine shifts by 7 rather than dividing by QA: there is no cheap
+        # exact SIMD division by 127. The shift is part of the contract.
+        return (a0 * a1) >> PAIR_SHIFT
+
+    act0 = np.concatenate([pair(stm_acc), pair(opp_acc)])
+
+    pre1 = model["l1_b"][bucket].astype(np.int64) +         model["l1_w"][bucket].astype(np.int64) @ act0
+    act1 = _dual_activate(pre1, qa, qb)
+
+    pre2 = model["l2_b"][bucket].astype(np.int64) +         model["l2_w"][bucket].astype(np.int64) @ act1
+    act2 = _dual_activate(pre2, qa, qb)
+
+    output = int(model["out_b"][bucket]) + int(
+        model["out_w"][bucket].astype(np.int64) @ np.concatenate([act1, act2]))
+
+    # The linear bypass, already in the output accumulator's units.
+    output += int(pre1[-2]) - int(pre1[-1])
+    return output
 
 
 def evaluate(model, fen):
@@ -119,7 +183,7 @@ def evaluate(model, fen):
         # NnueAccumulator.Refresh does and what the trainer's forward pass does.
         # Reproducing them separately and adding afterwards would verify a
         # different function than the one the engine runs.
-        if model["th_w"] is not None:
+        if model["th_w"] is not None:  # noqa
             occupancy = 0
             codes = []
             for square, ptype, colour in sorted(pieces):
@@ -141,15 +205,18 @@ def evaluate(model, fen):
     buckets = model["buckets"]
     bucket = 0 if buckets <= 1 else min(max((len(pieces) - 1) * buckets // 32, 0), buckets - 1)
 
-    activation = np.concatenate([np.clip(stm_acc, 0, qa), np.clip(opp_acc, 0, qa)])
-    hidden = model["l1_b"][bucket].astype(np.int64) + \
-        model["l1_w"][bucket].astype(np.int64) @ activation.astype(np.int64)
+    if model["arch"] == ARCH_DUAL:
+        output = _head_arch_five(model, stm_acc, opp_acc, bucket)
+    else:
+        activation = np.concatenate([np.clip(stm_acc, 0, qa), np.clip(opp_acc, 0, qa)])
+        hidden = model["l1_b"][bucket].astype(np.int64) + \
+            model["l1_w"][bucket].astype(np.int64) @ activation.astype(np.int64)
 
-    # Floor division is safe HERE only because of the clamp that follows: a
-    # negative quotient differs between floor and truncation, but both land
-    # below zero and the clamp maps them to the same 0.
-    a2 = np.clip(hidden // qb, 0, qa)
-    output = int(model["out_b"][bucket]) + int(model["out_w"][bucket].astype(np.int64) @ a2)
+        # Floor division is safe HERE only because of the clamp that follows: a
+        # negative quotient differs between floor and truncation, but both land
+        # below zero and the clamp maps them to the same 0.
+        a2 = np.clip(hidden // qb, 0, qa)
+        output = int(model["out_b"][bucket]) + int(model["out_w"][bucket].astype(np.int64) @ a2)
 
     # The final division has NO clamp after it, so the rounding direction is
     # visible in the answer. C# integer division TRUNCATES toward zero; Python's
@@ -172,7 +239,8 @@ def main():
 
     model = load_model(args.model)
     print(f"arch={model['arch']} ft={model['ft_out']} l1={model['l1_out']} "
-          f"buckets={model['buckets']} qa={model['qa']} qb={model['qb']}")
+          f"l2={model['l2_out']} buckets={model['buckets']} "
+          f"qa={model['qa']} qb={model['qb']}")
     for fen in args.fen:
         score, bucket, pieces = evaluate(model, fen)
         print(f"  {score:6d}  (bucket {bucket}, {pieces} pieces)  {fen}")

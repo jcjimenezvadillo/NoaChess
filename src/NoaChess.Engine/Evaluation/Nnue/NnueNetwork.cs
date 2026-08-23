@@ -26,6 +26,10 @@ public sealed class NnueNetwork
     public required int FtInputs { get; init; }
     public required int FtOutputs { get; init; }
     public required int L1Outputs { get; init; }
+    // Second hidden layer width. 0 for every architecture before 5, which is
+    // what makes "does this net have a second layer" a property of the file
+    // rather than a second thing to keep in sync with the architecture id.
+    public int L2Outputs { get; init; }
     // Head replicas selected by piece count (arch 3). 1 for arch 1/2, which
     // makes every bucket offset below collapse to zero and the older paths
     // byte-identical to what they were before buckets existed.
@@ -46,8 +50,16 @@ public sealed class NnueNetwork
     public short[]? L1Weights { get; init; }           // arch 1: [Buckets * L1Outputs * 2*FtOutputs]
     public sbyte[]? L1WeightsI8 { get; init; }          // arch 2/3: same shape, int8
     public required int[] L1Bias { get; init; }        // [Buckets * L1Outputs]
-    public required short[] OutWeights { get; init; }  // [Buckets * L1Outputs]
+    // ARCH 1-4: [Buckets * L1Outputs].
+    // ARCH 5:   [Buckets * (2*L1Outputs + 2*L2Outputs)], because the output
+    //           reads both hidden layers and both of their activations.
+    public required short[] OutWeights { get; init; }
     public required int[] OutBias { get; init; }       // [Buckets]
+
+    // ---- Architecture 5 only, null/zero elsewhere ----
+    // Second hidden layer, bucket-major like every other head array.
+    public sbyte[]? L2Weights { get; init; }           // [Buckets * L2Outputs * 2*L1Outputs]
+    public int[]? L2Bias { get; init; }                // [Buckets * L2Outputs]
 
     // The threat transformer, arch 4 only, null everywhere else.
     // [ThreatFeatureIndex.InputSize * FtOutputs], same quantisation as FtWeights
@@ -66,9 +78,45 @@ public sealed class NnueNetwork
     // the two disagreed silently until something dereferenced the difference.
     public bool UsesInt8L1 => ArchitectureId == NnueModelHeader.ArchitectureInt8L1
                            || ArchitectureId == NnueModelHeader.ArchitectureInt8L1Buckets
-                           || ArchitectureId == NnueModelHeader.ArchitectureThreats;
+                           || ArchitectureId == NnueModelHeader.ArchitectureThreats
+                           || ArchitectureId == NnueModelHeader.ArchitectureDualActivation;
 
     public bool UsesOutputBuckets => OutputBuckets > 1;
+
+    // Architecture 5: pairwise feature-transformer read, squared activations,
+    // two hidden layers and a linear bypass. Read off the second layer rather
+    // than the id for the same reason UsesThreats is read off the weights - a
+    // file that claims the architecture without carrying it can never be
+    // silently treated as if it did.
+    public bool UsesDualActivation => L2Weights is not null && L2Outputs > 0;
+
+    // Width of the pairwise feature-transformer output, per perspective.
+    public int PairOutputs => FtOutputs / 2;
+
+    // ---- DIVISION-FREE ACTIVATIONS ----
+    //
+    // Both of the activation's steps are integer DIVISIONS by a value the JIT
+    // only learns at runtime, so it emits a real divide instruction for each:
+    //     c = clamp(pre / QB, 0, QA)     s = c * c / QA
+    // Architecture 5 runs that twice per hidden unit over two layers, which at
+    // 32 and 32 wide is 128 divides per evaluation against architecture 3's 32.
+    // MEASURED, and it is not a micro-optimisation: the first arch 5 build ran
+    // at 0.74x the NPS of a matched arch 3 net despite doing FEWER
+    // multiply-accumulates, and this is where the difference went.
+    //
+    // Both divisions have an exact constant-time replacement:
+    //   QB is a power of two (64), so pre / QB is an arithmetic shift. The two
+    //   differ for negative values - truncation towards zero versus floor - but
+    //   every negative result is clamped to 0 immediately after, so the clamped
+    //   answers are identical for every input.
+    //   c is bounded by QA, so c * c / QA has at most QA + 1 possible answers
+    //   and fits in a 128-byte table that stays in L1 cache forever.
+    //
+    // Both are exact rather than approximate, which matters: an approximate
+    // reciprocal here would change the evaluation, and the C#-to-Python parity
+    // test would then be comparing two different networks.
+    public int QbShift { get; init; } = -1;      // -1 when QB is not a power of two
+    public byte[]? SquaredActivation { get; init; }  // [QA + 1], index by clipped value
 
     // True when this net evaluates threat features as well as HalfKA. Read off
     // the weights rather than the architecture id, so a net that claims arch 4

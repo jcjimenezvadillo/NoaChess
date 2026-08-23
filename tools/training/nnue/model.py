@@ -17,6 +17,48 @@ FT_OUT = 128
 L1_OUT = 32
 OUTPUT_SCALE = 400.0  # net output * 400 = centipawns
 
+# Second hidden layer width (architecture 5 only). Ignored when dual is off.
+L2_OUT = 32
+
+# ARCHITECTURE 5 (v5.2.0): the head rebuilt to compute what a modern reference
+# evaluation computes. Arch 1-4 are ONE linear layer with ONE clipped ReLU on
+# top of the accumulator - that single clamp is the entire non-linearity of the
+# evaluation, and no amount of extra data or width can make a shallow clipped
+# linear map express a term like "this knight is good BECAUSE that file is
+# open". Three changes, none of which needs a wider transformer:
+#
+#   1. PAIRWISE TRANSFORMER READ. The accumulator is split in half and
+#      multiplied element by element instead of being clipped and passed on:
+#          pair[j] = clamp(x[j], 0, 1) * clamp(x[j + H], 0, 1)
+#      That is a genuine second-order interaction between features at the very
+#      first layer, and it HALVES the L1 input width - so the head gets
+#      stronger and cheaper at the same time.
+#   2. DUAL ACTIVATION. Each hidden layer emits its clipped activation AND the
+#      square of it, so the next layer sees a second-order term per unit for
+#      one multiply.
+#   3. SECOND HIDDEN LAYER WITH A SKIP. The output reads BOTH layers'
+#      activations, so the second layer only has to learn what the first could
+#      not express, and the first layer's signal is never bottlenecked.
+#
+# Plus a linear bypass: the last two L1 PRE-activations enter the output
+# directly as (pre[-2] - pre[-1]), giving the network two units that carry an
+# unbounded linear score past every clamp.
+#
+# OFF by default, like buckets and factorization and for the same reason: it
+# changes the shape of l1 and out, so it must be an explicit opt-in rather than
+# something that silently invalidates every existing checkpoint.
+DUAL = False
+
+# The engine divides the pairwise product by 128 with a SHIFT, not by QA: there
+# is no cheap exact SIMD division by 127, and the obvious reciprocal-multiply
+# tricks are off by one for inputs of the form 127k-1. That shift is part of the
+# contract, so the float model carries the same constant and the two sides
+# describe ONE function:
+#     engine  pair_int = (a0 * a1) >> 7          with a = round(x * QA)
+#     trainer pair     = x0 * x1 * QA / 128
+# so that pair * QA == pair_int exactly (up to the floor the QAT path models).
+PAIR_DIVISOR = 128.0
+
 # Output buckets (architecture 3, v4.2.0). The head is replicated per bucket and
 # the bucket is chosen from the piece count, so the network gets a specialised
 # readout per phase instead of one linear map serving a 32-piece opening and a
@@ -115,10 +157,16 @@ class NoaNnue(nn.Module):
     # the model header, so a wider or more bucketed net needs no engine change
     # - only a retrain and an export.
     def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS,
-                 factorized=FACTORIZED, qat=False, qa=QA, threats=False):
+                 factorized=FACTORIZED, qat=False, qa=QA, threats=False,
+                 dual=DUAL, l2_out=L2_OUT):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
+        self.dual = bool(dual)
+        self.l2_out = l2_out if self.dual else 0
+        if self.dual and ft_out % 2 != 0:
+            raise ValueError("dual activation pairs the two halves of the "
+                             f"accumulator, so ft_out must be even (got {ft_out})")
         self.out_buckets = max(1, out_buckets)
         self.factorized = bool(factorized)
         # qa MUST match the architecture the net will be exported as: 255 for
@@ -161,8 +209,18 @@ class NoaNnue(nn.Module):
 
         # The head is bucket-major, matching the C# payload layout exactly:
         # l1 holds buckets * l1_out rows, out holds one row per bucket.
-        self.l1 = nn.Linear(2 * ft_out, self.out_buckets * l1_out)
-        self.out = nn.Linear(l1_out, self.out_buckets)
+        #
+        # ARCH 5 changes two shapes and adds one layer. The L1 input is HALVED
+        # because the pairwise read turns 2*ft_out clipped values into ft_out
+        # products, and the output row spans both layers' dual activations:
+        # 2*l1_out from the first and 2*l2_out from the second.
+        if self.dual:
+            self.l1 = nn.Linear(ft_out, self.out_buckets * l1_out)
+            self.l2 = nn.Linear(2 * l1_out, self.out_buckets * self.l2_out)
+            self.out = nn.Linear(2 * l1_out + 2 * self.l2_out, self.out_buckets)
+        else:
+            self.l1 = nn.Linear(2 * ft_out, self.out_buckets * l1_out)
+            self.out = nn.Linear(l1_out, self.out_buckets)
 
         # Small init keeps the quantized ranges healthy from the start.
         nn.init.uniform_(self.ft.weight, -0.05, 0.05)
@@ -222,6 +280,10 @@ class NoaNnue(nn.Module):
         stm = transform(stm_feats, stm_threats)
         opp = transform(opp_feats, opp_threats)
 
+        if self.dual:
+            return self._forward_dual(stm, opp, piece_count,
+                                      l1_weight, l1_bias, out_weight, out_bias)
+
         hidden_pre = F.linear(torch.cat([stm, opp], dim=1), l1_weight, l1_bias)
         if self.qat:
             # The engine computes clip((l1_b + l1_w @ x) // QB, 0, QA): integer
@@ -241,6 +303,88 @@ class NoaNnue(nn.Module):
         weight = out_weight[bucket]             # [batch, l1_out]
         bias = out_bias[bucket]                 # [batch]
         return (hidden * weight).sum(dim=1) + bias
+
+    def _pair(self, activation):
+        """Pairwise product of the two halves of one perspective's accumulator.
+
+        The QA/128 factor is not cosmetic and not a fudge: it is the engine's
+        shift, written on this side of the contract. Without it the trainer
+        would optimise a function 0.8% away from the one the engine runs, and
+        that error would be systematic rather than noise - the same direction
+        for every position, every feature and every game.
+        """
+        half = self.ft_out // 2
+        pair = activation[:, :half] * activation[:, half:] * (self.qa / PAIR_DIVISOR)
+        if self.qat:
+            # The engine's shift TRUNCATES, so floor here, not round - the same
+            # distinction the L1 activation makes, and for the same reason.
+            pair = fake_quantize_acts(pair, self.qa)
+        return pair
+
+    def _dual_activate(self, pre):
+        """clipped activation and its square, concatenated, squares FIRST.
+
+        Order matters and is not arbitrary: the engine writes the squares into
+        the low half of its activation buffer and the clipped values into the
+        high half, so a swap here would pair every value with the wrong output
+        weight and still train to a plausible-looking loss.
+        """
+        clipped = torch.clamp(pre, 0.0, 1.0)
+        squared = clipped * clipped
+        if self.qat:
+            # The engine computes c*c/QA with INTEGER division, so the square
+            # lands back on the QA grid by truncation.
+            squared = fake_quantize_acts(squared, self.qa)
+        return torch.cat([squared, clipped], dim=-1)
+
+    def _forward_dual(self, stm, opp, piece_count,
+                      l1_weight, l1_bias, out_weight, out_bias):
+        """Architecture 5 forward pass, mirroring EvaluateArchFive in C#.
+
+        Every bucket is computed and one is gathered at the very end. That is
+        wasteful - eight times the head arithmetic - and irrelevant: the head is
+        32 and 32 wide against a feature transformer of 22,528 rows. Gathering
+        earlier would need per-sample weight matrices and a batched matmul, i.e.
+        more memory and more code to express the same function.
+        """
+        batch = stm.shape[0]
+        buckets = self.out_buckets
+
+        l2_weight, l2_bias = self.l2.weight, self.l2.bias
+        if self.qat:
+            l2_weight = fake_quantize_weights(l2_weight, QB)
+            l2_bias = fake_quantize_weights(l2_bias, self.qa * QB)
+
+        x = torch.cat([self._pair(stm), self._pair(opp)], dim=1)
+
+        # ---- first hidden layer ----
+        # pre1_raw is kept UNQUANTIZED for the bypass: the engine adds the raw
+        # int32 pre-activation to the output, before the division by QB that the
+        # fake quantization models. Using the quantized copy there would mirror
+        # arithmetic the engine does not perform.
+        pre1_raw = F.linear(x, l1_weight, l1_bias).view(batch, buckets, self.l1_out)
+        pre1 = fake_quantize_acts(pre1_raw, self.qa) if self.qat else pre1_raw
+        act1 = self._dual_activate(pre1)                      # [B, K, 2*l1_out]
+
+        # ---- second hidden layer ----
+        w2 = l2_weight.view(buckets, self.l2_out, 2 * self.l1_out)
+        b2 = l2_bias.view(buckets, self.l2_out)
+        pre2 = torch.einsum("bki,koi->bko", act1, w2) + b2
+        if self.qat:
+            pre2 = fake_quantize_acts(pre2, self.qa)
+        act2 = self._dual_activate(pre2)                      # [B, K, 2*l2_out]
+
+        # ---- output reads BOTH layers ----
+        wo = out_weight.view(buckets, 2 * self.l1_out + 2 * self.l2_out)
+        scores = torch.einsum("bkn,kn->bk", torch.cat([act1, act2], dim=-1), wo) + out_bias
+
+        # The linear bypass, in the same units as the output by construction.
+        scores = scores + pre1_raw[:, :, -2] - pre1_raw[:, :, -1]
+
+        if buckets == 1:
+            return scores.squeeze(1)
+        bucket = bucket_for_piece_count(piece_count, buckets)
+        return scores[torch.arange(batch, device=scores.device), bucket]
 
     def _indices(self, feats):
         """Maps stored feature indices to EmbeddingBag rows.
@@ -326,3 +470,8 @@ class NoaNnue(nn.Module):
             # saturation check passes rather than merely usually passing.
             self.l1.weight.clamp_(-127.0 / QB, 127.0 / QB)
             self.out.weight.clamp_(-127.0 / QB, 127.0 / QB)
+            # The second layer is int8 too, and its activations reach QA
+            # (a squared clipped activation of 1.0 is still 1.0), so it needs
+            # exactly the same bound for the VPMADDUBSW lane to stay exact.
+            if self.dual:
+                self.l2.weight.clamp_(-127.0 / QB, 127.0 / QB)

@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.0.1";
+    public const string Version = "5.0.3";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -121,6 +121,37 @@ public sealed class ChessEngine
             ? SearchLimits.Unlimited()
             : SearchLimits.Depth(limits.MaxDepth);
         _workerToken = linked.Token;
+
+        // THE HELPERS' CHANGE COUNTERS ARE DELIBERATELY *NOT* ZEROED HERE.
+        //
+        // Each helper zeroes its own inside FindBestMove, i.e. AFTER the
+        // semaphore release below, so the main worker's first iteration can read
+        // a helper still carrying the PREVIOUS search's total. The peer delta
+        // then comes back inflated on iteration 1 and NEGATIVE on iteration 2,
+        // when the helper finally resets and the sum collapses. A negative delta
+        // drove the instability factor below zero and the whole time budget with
+        // it, and a negative budget is already expired at elapsed 0, so the
+        // search returned its depth-2 move: the bot handing a rook to an
+        // adjacent king with 34 s on the clock. Reproduced by replaying a real
+        // game against one warm process, traced to total=-246 ms, and the
+        // arithmetic reproduces that trace to three decimals.
+        //
+        // Zeroing them here closes the race properly, and it MEASURED WORSE:
+        // -7.9 Elo over 836 games at 30+0.3, SPRT concluding H0.
+        //
+        // Because the race had TWO effects and only one was a disaster. The
+        // stale total inflated the instability factor on the FIRST iteration
+        // (inst=3.306 in the captured trace) and only collapsed the budget on
+        // the second. On every move where it never collapsed, the engine simply
+        // thought about three times longer - and this engine is measured
+        // spending 43% of its clock, so that accidental extension was
+        // compensating a time manager that is too conservative.
+        //
+        // So the negative clamp in the search keeps the disaster impossible
+        // while the extension stays. That is knowingly keeping a wrong number
+        // for a right effect, defensible only because both halves are measured.
+        // The honest repair is the time manager itself, and it is a separate
+        // change with its own measurement.
 
         // Wake the parked workers. Everything they read was written above, and
         // the semaphore release is the barrier that publishes it. _done counts

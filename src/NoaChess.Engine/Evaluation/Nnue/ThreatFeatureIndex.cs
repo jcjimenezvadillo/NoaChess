@@ -35,10 +35,21 @@ public static class ThreatFeatureIndex
 {
     public const int InputSize = 60720;
 
-    // The reference's own bound. Measured maximum on real positions is about 52,
-    // so this is head-room and not a target, but a caller that writes past it
-    // would corrupt whatever follows.
-    public const int MaxActiveFeatures = 128;
+    // Storage bound for one position's active threat features, and it must match
+    // the TRAINER's, not a guess about typical positions.
+    //
+    // THIS WAS 128, JUSTIFIED BY A COMMENT SAYING "measured maximum on real
+    // positions is about 52". The corpus says otherwise: over 400,000 rows of
+    // the CSR cache the mean is 73.2, the 99th percentile 176 and the MAXIMUM
+    // 240. ActiveFeatures writes `destination[count++]` with no bound check, so
+    // on a dense position the Span throws and the engine dies - which is what
+    // the seven `Termination "unterminated"` games in the threats SPRT were.
+    //
+    // 512 is the trainer's own width (THREAT_COLUMNS = MAX_ACTIVE_THREATS * 4),
+    // so both sides now truncate at the same place instead of one of them
+    // crashing. The cost is memory that is never touched: the stack's threat
+    // buffers grow to about 1.3 MB per search thread.
+    public const int MaxActiveFeatures = 512;
 
     private const int PieceCount = 12;          // 6 types x 2 colours.
 

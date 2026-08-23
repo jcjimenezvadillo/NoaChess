@@ -21,7 +21,14 @@ public class ThreatFeatureIndexTests
     public void SchemaDimensionsMatchTheReference()
     {
         Assert.Equal(60720, ThreatFeatureIndex.InputSize);
-        Assert.Equal(128, ThreatFeatureIndex.MaxActiveFeatures);
+
+        // The BUFFER bound deliberately does NOT match the reference's 128, and
+        // this assertion exists to stop it drifting back. 128 was justified by a
+        // comment claiming real positions peak near 52; the corpus disagreed -
+        // over 400,000 rows of the CSR cache the maximum is 240 - and the
+        // overflow killed seven games of a real SPRT. 512 is the trainer's own
+        // width (THREAT_COLUMNS), so both sides truncate at the same place.
+        Assert.Equal(512, ThreatFeatureIndex.MaxActiveFeatures);
     }
 
     [Fact]

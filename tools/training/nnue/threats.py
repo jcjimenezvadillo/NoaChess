@@ -176,6 +176,20 @@ BLOCK_START, PIECE_OFFSET, OFFSETS, THREAT_INPUT_SIZE = _build_offsets()
 # drifted and every trained net on the old numbering is invalid.
 assert THREAT_INPUT_SIZE == 60720, f"packing gives {THREAT_INPUT_SIZE}, reference says 60720"
 
+# NO ES UN MAXIMO, Y EL NOMBRE MIENTE. Medido sobre 400.000 filas del cache CSR
+# del corpus fq60: media 73,2, percentil 99 176 y MAXIMO 240. Una posicion densa
+# genera muy por encima de 128 y este numero no la acota: lo que salva al
+# entrenador es que almacena a THREAT_COLUMNS = esto * 4 = 512.
+#
+# Al motor no lo salvaba nadie. Llevaba el mismo 128 como tamano de buffer y
+# ActiveFeatures escribe sin comprobar el limite, asi que moria en el elemento
+# 129 - las siete partidas Termination "unterminated" del SPRT de amenazas del
+# 2026-08-17. Ya esta subido a 512 en ThreatFeatureIndex.
+#
+# NO CAMBIAR ESTE VALOR A LA LIGERA: dataset.THREAT_COLUMNS se deriva de el, asi
+# que tocarlo cambia la anchura del cache CSR e INVALIDA los 235 GB que hay en
+# C:/NoaData/corpus-fq60, que costaron 13 horas. Para subirlo hay que desacoplar
+# THREAT_COLUMNS primero.
 MAX_ACTIVE_THREATS = 128
 
 

@@ -5,6 +5,98 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## Estado a 2026-08-23: las amenazas GANAN a la red que juega, y no se pueden publicar
+
+**+47.8 Elo [+21.6, +74.5] a nodos fijos, 345 partidas, LLR +4.29, H1 aceptada.**
+Es lo primero que supera a `fq60` desde el 10 de agosto. El primer bloque de 100
+partidas ya daba +45.4, o sea que no es deriva del final.
+
+    entrenamiento   60/60 epocas, 125.5 h, la epoca 60 fue la MEJOR (val 0.005856)
+    exportada       --arch 4 explicito, verificada: arch 4, 21.3 MB
+    linea base      noa-fq60 (hash 7f18eade), que es la red EMBEBIDA en el
+                    ejecutable que juegan los bots
+
+**Cuidado con la linea base**, porque el bat que existia comparaba contra
+`noa-fqc60`, que es otra red. Comprobado cargando las tres candidatas y leyendo
+el hash que reporta el motor. Contra la red equivocada el resultado no habria
+significado nada.
+
+### Por que no se publica: cuesta dos tercios de la velocidad
+
+    NPS con fq60        ~746.000
+    NPS con amthreat    ~245.000     -> 0.33x
+    profundidad a 3+2   19.1 contra 17.5   -> 1.6 plies de handicap
+
+A reloj sale con +48 de evaluacion y del orden de -55 de velocidad. Eso no es un
+empate del que se pueda sacar una version: es una red mejor que no cabe en el
+tiempo que tiene.
+
+**Donde se va el tiempo, medido con el perfilador de la busqueda:**
+
+    ThreatDelta.CollectFrom        16.4%
+    CompleteThreatDelta            19.9%
+    NnueAccumulator.Refresh        10.5%
+    ThreatDelta.AddPawn             3.8%
+                                   -----
+    maquinaria de amenazas          ~50% del tiempo de busqueda
+
+Es el coste inherente de rastrear ~37 features por posicion con un delta, no algo
+que quite una micro-optimizacion. **La via para publicarla es rediseñar el
+refresco, no ajustar lo que hay.**
+
+### Dos intentos de acelerarlo, los dos medidos, uno revertido
+
+**Buffers preasignados en vez de `stackalloc`.** El perfil ponia
+`Buffer.ZeroMemoryInternal` en el **96.6%** del tiempo: `MaxActiveFeatures` paso
+de 128 a 512 al arreglar un desbordamiento que mataba partidas, y ese numero
+dimensiona tres `stackalloc` que C# ZEREA, en un metodo que corre por nodo.
+Quitado, el zerado bajo a 1.62%.
+
+**Y el A/B cronometrado dice que valia ~3%, no 96%.** Mismo binario antes y
+despues, misma red, pasadas alternas: 241.788 contra 249.692 nps, con 10% de
+dispersion dentro de cada brazo. La aritmetica lo confirma: 2 KB de memset son
+~50 ns, por 805.073 nodos son 40 ms de 3.200, el 1.25%. **Un perfil de muestreo
+dice DONDE mirar; solo un cronometro dice CUANTO vale.** El cambio se queda por
+ser identico en nodos y mas limpio, no por su Elo.
+
+**Fusion ordenada en vez del barrido O(n*n): REVERTIDA por medirse peor.**
+
+    barrido lineal original      19.87% de self
+    fusion + IntroSort           21.61%  (5.47% solo ordenando)
+    fusion + insercion           22.51%
+
+Las listas tienen ~37 entradas y **el 83% de las features sobreviven al
+movimiento**, asi que `Contains` sale antes casi siempre mientras el orden paga
+por todos los elementos. El comentario original decia que un barrido lineal gana
+a cualquier estructura, y tenia razon.
+
+## Estado a 2026-08-23: la arquitectura 5 se midio y PIERDE
+
+Cabeza reconstruida al estilo de la referencia - lectura pareada del
+transformer, activacion al cuadrado junto a la recortada, segunda capa oculta que
+la salida lee de largo, y puente lineal. Dos brazos de 3 epocas, identicos salvo
+`--dual`, a nodos fijos:
+
+    575 partidas   -32.8 Elo [-56.5, -9.3]   LLR -6.01   H0 aceptada
+
+Las dos redes verificadas: `noa-a5dual` es arch 5 y `noa-a5ctrl` arch 2.
+
+**La causa mas probable es de diseño y no de implementacion: la lectura pareada
+HALVA la entrada de L1**, de 256 a 128, dejando 64 valores por perspectiva. La
+referencia se lo permite porque su transformer es de 1024 y al parear le quedan
+512. Copiamos la tecnica sin la anchura que la sostiene.
+
+**Lo que las pruebas de paridad no podian ver.** Salieron exactas - motor contra
+numpy, y float con QAT contra entero por debajo de 1 cp - y la arquitectura sigue
+siendo mala. **Verifican que las dos partes calculan LO MISMO, no que lo que
+calculan sea BUENO.**
+
+El experimento que separaria las causas, si se retoma: arch 5 SIN el pareado. Si
+eso gana, el culpable es parear a esta anchura y lo correcto es ensanchar
+primero.
+
+---
+
 ## Estado a 2026-08-11: la red que juega es `fq60`, y mide 3271 ±40 CCRL
 
 **+128 sobre los 3143 de v4.5.0**, y el primer salto del proyecto que sale
