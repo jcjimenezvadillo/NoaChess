@@ -13,6 +13,11 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // subtracting a couple of weight rows instead of recomputing the sum of ~30.
 public sealed class NnueAccumulator
 {
+
+    // Scratch for the threat half of a full refresh. See its use below.
+    [ThreadStatic]
+    private static int[]? ThreatScratch;
+
     // [perspective, ftOutputs] - White = 0, Black = 1.
     public readonly short[][] Values;
 
@@ -61,7 +66,19 @@ public sealed class NnueAccumulator
         // threats through opening and closing slider rays - only if they are.
         if (network.UsesThreats)
         {
-            Span<int> threats = stackalloc int[ThreatFeatureIndex.MaxActiveFeatures];
+            // Per-thread scratch, NOT a stackalloc. The bound is 512 since a
+            // dense position overflowed 128 and crashed seven games, and C#
+            // zeroes a stackalloc, so this was memsetting two kilobytes every
+            // time a king move forced a rebuild. The sibling buffer in
+            // CompleteThreatDelta cost 96.6% of the search for the same reason;
+            // this is the same mistake in the path that call falls back to.
+            //
+            // ThreadStatic rather than a field on the accumulator: there are
+            // MaxPly accumulators per stack and only one is refreshing at a
+            // time, so one buffer per worker beats 256 of them. It is written
+            // by ActiveFeatures up to threatCount and read only that far, so it
+            // never needs to start clean.
+            Span<int> threats = ThreatScratch ??= new int[ThreatFeatureIndex.MaxActiveFeatures];
             int threatCount = ThreatFeatureIndex.ActiveFeatures(board, perspective, threats);
 
             short[] weights = network.ThreatWeights!;

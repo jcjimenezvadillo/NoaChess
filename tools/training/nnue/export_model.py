@@ -34,13 +34,25 @@ import struct
 import numpy as np
 import torch
 
-from model import (NoaNnue, INPUT_SIZE, MAX_ACTIVE, FT_OUT, L1_OUT, OUT_BUCKETS,
-                   QA, QB, OUTPUT_SCALE)
+from model import (NoaNnue, INPUT_SIZE, MAX_ACTIVE, FT_OUT, L1_OUT, L2_OUT,
+                   OUT_BUCKETS, QA, QB, OUTPUT_SCALE)
 from threats import THREAT_INPUT_SIZE, MAX_ACTIVE_THREATS as THREAT_MAX_ACTIVE
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
 FEATURE_SCHEMA_ID = 2
+
+# Version 1's header is 80 fixed bytes with no spare room before the payload
+# length, so architecture 5 - which needs a second layer width and a flag word -
+# gets version 2: bytes 0..39 keep their meaning and their offsets exactly, and
+# the new fields go at 40..47, pushing the length and the SHA down by eight.
+# A version 1 file is still written and read byte for byte as before.
+FORMAT_VERSION_2 = 2
+HEADER_BYTES_V1 = 80
+HEADER_BYTES_V2 = 88
+
+ARCH_FLAG_PAIRWISE_FT = 1 << 0
+ARCH_FLAG_THREATS = 1 << 1
 
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
@@ -50,11 +62,16 @@ ARCH_INT8_L1_BUCKETS = 3
 # constant of the feature schema, and the engine asserts the file size against
 # that constant rather than reading a number it could disagree with.
 ARCH_THREATS = 4
+# Arch 5: pairwise transformer read, squared activations alongside clipped ones,
+# a second hidden layer the output reads past, and a linear bypass. It carries
+# threats through a flag rather than a sixth architecture id, so the two
+# improvements compose instead of forking the format.
+ARCH_DUAL = 5
 
 # Activation scale per architecture. The int8 architectures are capped by the
 # saturation bound proved above; the C# loader enforces the same number.
 QA_FOR_ARCH = {ARCH_INT16_L1: QA, ARCH_INT8_L1: 127, ARCH_INT8_L1_BUCKETS: 127,
-               ARCH_THREATS: 127}
+               ARCH_THREATS: 127, ARCH_DUAL: 127}
 
 
 def quantize(tensor, scale, dtype, limit, name):
@@ -74,7 +91,7 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--arch", type=int, default=None,
                         choices=[ARCH_INT16_L1, ARCH_INT8_L1, ARCH_INT8_L1_BUCKETS,
-                                 ARCH_THREATS],
+                                 ARCH_THREATS, ARCH_DUAL],
                         help="1 = legacy int16 L1 (QA=255), 2 = int8 L1 (QA=127), "
                              "3 = int8 L1 + output buckets. Default: 3 when the "
                              "checkpoint has buckets, else 2.")
@@ -97,14 +114,29 @@ def main():
     # good failure. The bad one would be exporting a threat net as arch 3 and
     # silently dropping half its input, so the mismatch is refused below.
     trained_threats = bool(ckpt_args.get("threats", False))
+    # A checkpoint trained with the rebuilt head has an l1 of half the input
+    # width and an l2 that no other architecture has a place for, so exporting
+    # it as anything else cannot even load the state dict - the good failure.
+    trained_dual = bool(ckpt_args.get("dual", False))
+    l2_out = ckpt_args.get("l2_out", L2_OUT) if trained_dual else 0
 
     # The architecture follows the checkpoint unless overridden: exporting a
     # bucketed net as arch 1/2 would silently drop every bucket but the first.
     arch = args.arch if args.arch is not None else (
+        ARCH_DUAL if trained_dual else
         ARCH_THREATS if trained_threats else
         ARCH_INT8_L1_BUCKETS if buckets > 1 else ARCH_INT8_L1)
 
-    bucket_capable = arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS)
+    if trained_dual and arch != ARCH_DUAL:
+        raise SystemExit(
+            f"checkpoint was trained with the arch 5 head but --arch {arch} has no shape "
+            f"for it. Use --arch {ARCH_DUAL}.")
+    if arch == ARCH_DUAL and not trained_dual:
+        raise SystemExit(
+            f"--arch {ARCH_DUAL} asks for the dual-activation head but the checkpoint "
+            f"was trained without it (retrain with --dual).")
+
+    bucket_capable = arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS, ARCH_DUAL)
     if buckets > 1 and not bucket_capable:
         raise SystemExit(
             f"checkpoint has {buckets} output buckets but --arch {arch} cannot represent them. "
@@ -112,19 +144,20 @@ def main():
     # Refused rather than warned about: an arch 3 export of a threat net loads
     # cleanly in the engine and evaluates with half its input missing, which is
     # the worst possible failure - silent and plausible.
-    if trained_threats and arch != ARCH_THREATS:
+    if trained_threats and arch not in (ARCH_THREATS, ARCH_DUAL):
         raise SystemExit(
             f"checkpoint was trained WITH threat features but --arch {arch} cannot carry them. "
             f"Exporting it that way would produce a net that loads and evaluates wrongly. "
             f"Use --arch {ARCH_THREATS}.")
-    if arch == ARCH_THREATS and not trained_threats:
+    if arch == ARCH_THREATS and not trained_threats:  # noqa: E501
         raise SystemExit(
             f"--arch {ARCH_THREATS} asks for a threat transformer but the checkpoint has none.")
     if not bucket_capable:
         buckets = 1
     qa = QA_FOR_ARCH[arch]
 
-    model = NoaNnue(ft_out, l1_out, buckets, factorized, threats=trained_threats)
+    model = NoaNnue(ft_out, l1_out, buckets, factorized, qa=QA_FOR_ARCH[arch],
+                    threats=trained_threats, dual=trained_dual, l2_out=l2_out)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
@@ -148,12 +181,22 @@ def main():
     l1_b = quantize(model.l1.bias, qa * QB, np.int32, 2**31 - 1, "l1Bias")
     out_w = quantize(model.out.weight.flatten(), QB, np.int16, 127, "outWeights")
     out_b = quantize(model.out.bias, qa * QB, np.int32, 2**31 - 1, "outBias")
+    l2_w = l2_b = None
+    if arch == ARCH_DUAL:
+        l2_w = quantize(model.l2.weight, QB, np.int8, 127, "l2Weights")
+        l2_b = quantize(model.l2.bias, qa * QB, np.int32, 2**31 - 1, "l2Bias")
 
     # Guard the saturation bound with the ACTUAL exported values, not just the
     # nominal limits - a future change to clip_weights must not be able to make
     # the kernel wrong without this failing first.
     if arch != ARCH_INT16_L1:
-        worst = 2 * qa * int(np.abs(l1_w.astype(np.int32)).max())
+        # The L1 activations of arch 5 are pairwise products, bounded by
+        # 127*127 >> 7 = 126 rather than by QA, but the SECOND layer's
+        # activations do reach QA, so QA remains the bound that has to hold.
+        max_l1 = int(np.abs(l1_w.astype(np.int32)).max())
+        if l2_w is not None:
+            max_l1 = max(max_l1, int(np.abs(l2_w.astype(np.int32)).max()))
+        worst = 2 * qa * max_l1
         if worst > 32767:
             raise SystemExit(
                 f"arch {arch} saturation check FAILED: 2*QA*max|l1_w| = {worst:,} > 32,767. "
@@ -188,10 +231,12 @@ def main():
           f"{int(np.abs(ft_w.astype(np.int32)).max())}")
 
     blocks = [ft_w.tobytes(), ft_b.tobytes(),
-              l1_w.tobytes(), l1_b.tobytes(),
-              out_w.tobytes(), out_b.tobytes()]
+              l1_w.tobytes(), l1_b.tobytes()]
+    if arch == ARCH_DUAL:
+        blocks += [l2_w.tobytes(), l2_b.tobytes()]
+    blocks += [out_w.tobytes(), out_b.tobytes()]
 
-    if arch == ARCH_THREATS:
+    if trained_threats:
         # Same quantisation scale as the HalfKA transformer, because both sum
         # into ONE int16 accumulator in the engine: a different scale would put
         # their sum off the grid that accumulator holds.
@@ -228,15 +273,26 @@ def main():
     payload = b"".join(blocks)
     sha = hashlib.sha256(payload).digest()
 
-    # Offset 38 was padding before v4.2.0; arch 1/2 keep writing 0 there, which
-    # is what makes every legacy file load unchanged.
-    header = struct.pack(
-        "<8s I I I i i i H H H H Q 32s",
-        MAGIC, FORMAT_VERSION, FEATURE_SCHEMA_ID, arch,
-        INPUT_SIZE, ft_out, l1_out,
-        qa, QB, int(OUTPUT_SCALE), buckets if bucket_capable else 0,
-        len(payload), sha)
-    assert len(header) == 80
+    if arch == ARCH_DUAL:
+        flags = ARCH_FLAG_PAIRWISE_FT | (ARCH_FLAG_THREATS if trained_threats else 0)
+        header = struct.pack(
+            "<8s I I I i i i H H H H i H H Q 32s",
+            MAGIC, FORMAT_VERSION_2, FEATURE_SCHEMA_ID, arch,
+            INPUT_SIZE, ft_out, l1_out,
+            qa, QB, int(OUTPUT_SCALE), buckets,
+            l2_out, 0, flags,
+            len(payload), sha)
+        assert len(header) == HEADER_BYTES_V2
+    else:
+        # Offset 38 was padding before v4.2.0; arch 1/2 keep writing 0 there,
+        # which is what makes every legacy file load unchanged.
+        header = struct.pack(
+            "<8s I I I i i i H H H H Q 32s",
+            MAGIC, FORMAT_VERSION, FEATURE_SCHEMA_ID, arch,
+            INPUT_SIZE, ft_out, l1_out,
+            qa, QB, int(OUTPUT_SCALE), buckets if bucket_capable else 0,
+            len(payload), sha)
+        assert len(header) == HEADER_BYTES_V1
 
     with open(args.out, "wb") as f:
         f.write(header)

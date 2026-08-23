@@ -1,3 +1,4 @@
+using System.Linq;
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
@@ -20,6 +21,10 @@ public sealed class UciOptions
     public bool UseNnueExplicitlySet { get; private set; }
     public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
+
+    // Must match EngineProfile.ByName and the combo declaration in Print().
+    private static readonly string[] KnownProfiles =
+        ["Default", "Bullet", "WideWindow", "EarlyLmr"];
     public string DebugLogFile { get; private set; } = "";
 
     // ---- Syzygy endgame tablebases ----
@@ -33,7 +38,41 @@ public sealed class UciOptions
     // as plain wins and losses (used for analysis where the rule is ignored).
     public string SyzygyPath { get; private set; } = "";
     public int SyzygyProbeDepth { get; private set; } = 1;
-    public int SyzygyProbeLimit { get; private set; } = 7;
+    // ---- DEFAULT LOWERED 7 -> 5 (2026-08-22), and the reason is not storage ----
+    //
+    // THE COMPLAINT THAT STARTED IT. Two bot games where the engine gave away a
+    // QUEEN for a pawn and, in another, a BISHOP for a pawn. Both moves won, but
+    // no other engine plays them, and the cause is this option.
+    //
+    // WHY IT HAPPENS. A tablebase win is scored TbWin - ply, so entering the
+    // tables SOONER scores HIGHER - and the way to enter sooner is to take
+    // pieces off the board. The position is not better for having fewer pieces;
+    // only the scoring says so. The ply term is borrowed from mate scoring,
+    // where reaching mate sooner genuinely is better, and here it measures the
+    // wrong distance entirely: distance to entering the table, not distance to
+    // winning. With 6-man tables loaded, a single sacrifice from a 7-man
+    // position buys a "proven win" worth ~19,987 against a heuristic +1,500, so
+    // the trade always looks good.
+    //
+    // MEASURED, both positions, same binary, only this option changed:
+    //     limit 7   Qxa5+ (queen for a pawn)      /  score 19981, keeps Bxf5
+    //     limit 5   Qe3   (keeps the queen)       /  Kf2, score 1836, keeps the bishop
+    // Lowering the limit removes both moves. It is not a storage question: it
+    // would happen the same on the fastest disk.
+    //
+    // IT ALSO REMOVES AN ENORMOUS I/O COST, which is a separate finding. The
+    // 6-man set is 160 GB against 0.98 GB for everything up to 5 men, and
+    // probing it costs 4.4x the speed (211k nps against 923k on the same
+    // position). On a mechanical drive that is fatal - a fixed-node-free SPRT
+    // lost 37 of 95 games ON TIME with tables against ZERO without them.
+    //
+    // WHAT IS STILL OPEN, stated so nobody reads more into this than it says:
+    // even the small tables measured -20.2 Elo [-40.1, -0.5] against no tables
+    // at all at 10+0.1, over 464 games. That says tablebases may not be worth
+    // their probe cost at fast time controls AT ALL, but 10+0.1 is faster than
+    // anything the bots play, so dropping them entirely needs a measurement at a
+    // representative time control before it is done.
+    public int SyzygyProbeLimit { get; private set; } = 5;
     public bool Syzygy50MoveRule { get; private set; } = true;
 
     // Prints the option declarations the GUI expects right after "id".
@@ -45,10 +84,10 @@ public sealed class UciOptions
         output.WriteLine("option name Ponder type check default false");
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name EvalFile type string default <empty>");
-        output.WriteLine("option name Profile type combo default Default var Default var Bullet");
+        output.WriteLine("option name Profile type combo default Default var Default var Bullet var WideWindow var EarlyLmr");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
-        output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
+        output.WriteLine("option name SyzygyProbeLimit type spin default 5 min 0 max 7");
         output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
     }
@@ -86,7 +125,15 @@ public sealed class UciOptions
                 return "EvalFile";
 
             case "profile":
-                Profile = value.Equals("Bullet", StringComparison.OrdinalIgnoreCase) ? "Bullet" : "Default";
+                // The known names are listed ONCE. The previous version tested
+                // for "Bullet" and mapped everything else to "Default", so a
+                // profile added to EngineProfile but not here was accepted by
+                // the parser and then silently ignored - two arms of an SPRT
+                // selecting different profiles would have played identical
+                // chess and reported a perfect draw as if it were a result.
+                // Caught by a positive control, not by a test.
+                Profile = KnownProfiles.FirstOrDefault(
+                    p => p.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? "Default";
                 return "Profile";
 
             case "syzygypath":

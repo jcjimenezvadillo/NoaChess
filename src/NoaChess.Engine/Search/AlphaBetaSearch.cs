@@ -62,7 +62,14 @@ public sealed class AlphaBetaSearch
         get => _syzygyProbeLimit;
         set { _syzygyProbeLimit = value; RefreshTbLimit(); }
     }
-    private int _syzygyProbeLimit = 7;
+    // MUST MATCH UciOptions.SyzygyProbeLimit's default, and the two being
+    // separate is how the first attempt at lowering it did nothing: UciLoop only
+    // pushes the option when it CHANGES, so an engine whose host never touches
+    // it runs on THIS number and the UCI declaration is decoration. The loop now
+    // also pushes it when SyzygyPath is set, which is the moment the limit
+    // starts to matter, so the option wins from then on - but a bare engine that
+    // is never configured still runs on this line.
+    private int _syzygyProbeLimit = 5;
 
     // Largest piece count worth probing: the smaller of the option and what is
     // actually loaded, or 0 when there are no tablebases at all.
@@ -486,8 +493,19 @@ public sealed class AlphaBetaSearch
     internal int SearchThreadCount = 1;
     internal Func<int>? PeerBestMoveChanges;
     // Racy read of this worker's monotonic counter for the coordinator's peer
-    // delta (benign: a stale int read only nudges a heuristic; int reads atomic).
+    // delta. The read itself is atomic and a slightly stale count only nudges a
+    // heuristic - but this was once commented as simply "benign", and it was
+    // not: reading it before the worker had reset it for the new search handed
+    // the coordinator a whole previous search's total, and the correction on
+    // the next iteration turned the time budget negative. The coordinator now
+    // zeroes these before waking anyone, which is what makes the read benign.
     internal int BestMoveChangesTotal => _bestMoveChangesTotal;
+
+    // Lets the coordinator zero the counter BEFORE the worker is woken, so the
+    // peer baseline is taken from a real zero rather than from whatever the
+    // previous search left behind. The worker's own reset then finds it already
+    // clear.
+    internal void ResetBestMoveChangesTotal() => _bestMoveChangesTotal = 0;
 
     // Sentinel for "no previous score yet" (first search of the game).
     private const int ScoreNone = int.MaxValue / 2;
@@ -862,6 +880,16 @@ public sealed class AlphaBetaSearch
             // get the per-thread average, matching the reference. Single-thread:
             // PeerBestMoveChanges is null and SearchThreadCount is 1 -> unchanged.
             totBestMoveChanges += _bestMoveChanges + (PeerBestMoveChanges?.Invoke() ?? 0);
+
+            // A decayed COUNT of best-move changes cannot be negative, and the
+            // budget below multiplies by it. Restoring the invariant here means
+            // no ordering mistake in the peer delta can ever again produce a
+            // negative instability factor and hence a negative time budget - a
+            // deadline already expired at elapsed 0, which ends the search after
+            // one iteration. Inert on the single-thread path, where the sum is
+            // of non-negative per-iteration counts.
+            if (totBestMoveChanges < 0)
+                totBestMoveChanges = 0;
             averageScore = averageScore == ScoreNone ? score : (2 * score + averageScore) / 3;
 
             if (clockMode)
