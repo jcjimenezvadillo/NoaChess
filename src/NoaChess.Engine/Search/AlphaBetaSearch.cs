@@ -69,7 +69,7 @@ public sealed class AlphaBetaSearch
     // also pushes it when SyzygyPath is set, which is the moment the limit
     // starts to matter, so the option wins from then on - but a bare engine that
     // is never configured still runs on this line.
-    private int _syzygyProbeLimit = 5;
+    private int _syzygyProbeLimit = 7;
 
     // Largest piece count worth probing: the smaller of the option and what is
     // actually loaded, or 0 when there are no tablebases at all.
@@ -508,7 +508,68 @@ public sealed class AlphaBetaSearch
     internal void ResetBestMoveChangesTotal() => _bestMoveChangesTotal = 0;
 
     // Sentinel for "no previous score yet" (first search of the game).
+
+    // The signed optimism contribution for one node. The sign follows the
+    // root side automatically under negamax negation because the opponent's
+    // optimism is the exact negation of ours. The material weight uses the
+    // reference's own piece values so the ratio (7191+material)/77871 keeps
+    // its meaning as a dimensionless blend weight; converting them to this
+    // engine's values would silently rescale the term.
+    //
+    // Applied AFTER the transposition-table static-eval merge, never before:
+    // this table stores raw evaluations and reuses them across searches, so a
+    // baked-in optimism would leak a stale root average from an earlier search
+    // into this one. The reference bakes it in and tolerates the staleness;
+    // layering it like the correction history costs nothing here and removes
+    // that failure mode entirely.
+    private int OptimismTerm(Board board)
+    {
+        if (_optimism == 0)
+            return 0;
+
+        int material =
+              534 * Bitboard.PopCount(board.Pieces(Color.White, PieceType.Pawn)
+                                      | board.Pieces(Color.Black, PieceType.Pawn))
+            + 781 * Bitboard.PopCount(board.Pieces(Color.White, PieceType.Knight)
+                                      | board.Pieces(Color.Black, PieceType.Knight))
+            + 825 * Bitboard.PopCount(board.Pieces(Color.White, PieceType.Bishop)
+                                      | board.Pieces(Color.Black, PieceType.Bishop))
+            + 1276 * Bitboard.PopCount(board.Pieces(Color.White, PieceType.Rook)
+                                       | board.Pieces(Color.Black, PieceType.Rook))
+            + 2538 * Bitboard.PopCount(board.Pieces(Color.White, PieceType.Queen)
+                                       | board.Pieces(Color.Black, PieceType.Queen));
+
+        int signed_ = board.SideToMove == _rootSide ? _optimism : -_optimism;
+        return (int)((long)signed_ * (7191 + material) / 77871);
+    }
+
     private const int ScoreNone = int.MaxValue / 2;
+
+    // Root-score optimism, ported from the reference and OFF by default until
+    // the SPRT speaks. The root move's average score across iterations feeds
+    // a small bias toward the side the search already believes is better:
+    // optimism = 114*avg/(|avg|+85), sign-flipped for the opponent, weighted
+    // by material so it fades in bare endings. The complexity half of the
+    // reference formula is NOT ported: it needs the psqt/positional split of
+    // a two-headed net, and this engine's net has one output. The material
+    // scaling of the NNUE value itself is also not ported: measured alone on
+    // 2026-08-21 it lost 34.3 Elo (sprt_material.pgn).
+    public bool UseOptimism { get; set; }
+
+    // Entry gate for null move pruning (off by default, measured before it
+    // ships). The current entry has NO eval precondition: that shape was
+    // validated when the static eval was the CLASSICAL one, whose noise made
+    // below-beta probes keep finding real cutoffs, and the comment at the site
+    // has said "revisit with NNUE" ever since. With the NNUE eval plus its
+    // correction history the premise is gone, and the reference's gate -
+    // staticEval >= beta - 13*depth - 47*improving + 365 - skips probes at
+    // nodes where the eval says a cutoff is unlikely. Margins ported raw, per
+    // the value-scale rule: margins are compared against our own eval at the
+    // consumption site and the SPRT is the judge of the units.
+    public bool UseNmpEvalGate { get; set; }
+    private int _optimism;                       // for the root side to move
+    private Color _rootSide;
+    private int _rootAverageScore = ScoreNone;   // EWMA across iterations
 
     // Cross-move state (persists between searches, cleared on new game):
     // the previous move's score/average score, the previous move's stability
@@ -745,6 +806,9 @@ public sealed class AlphaBetaSearch
         // MaxPly the stack cannot go deeper anyway, so this only removes the
         // degenerate spin; no real search ever reaches it.
         int maxIterationDepth = Math.Min(limits.MaxDepth, MaxPly);
+        _rootSide = board.SideToMove;
+        _rootAverageScore = ScoreNone;
+        _optimism = 0;
         for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
             CheckStop();
@@ -767,6 +831,17 @@ public sealed class AlphaBetaSearch
             int window = Profile.AspirationWindow;
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
+
+            // Optimism follows the same guard as the aspiration window: it
+            // exists only once there is a stable average to derive it from.
+            // The reference updates its average with an adaptive weight built
+            // on the mean squared score; a fixed half-half average is used
+            // here (the midpoint of the reference's clamp range) because the
+            // adaptive machinery is a refinement of a signal this engine has
+            // never measured at all - measure the signal first.
+            _optimism = UseOptimism && depth >= 3 && _rootAverageScore != ScoreNone
+                ? 114 * _rootAverageScore / (Math.Abs(_rootAverageScore) + 85)
+                : 0;
 
             int score;
             Move bestMove;
@@ -855,6 +930,9 @@ public sealed class AlphaBetaSearch
             best = new SearchResult(bestMove, score, _nodes, depth);
             carryScore = score;
             previousScore = score;
+            _rootAverageScore = _rootAverageScore == ScoreNone
+                ? score
+                : (score + _rootAverageScore) / 2;
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
             lastReportedMove = bestMove;
@@ -1305,6 +1383,44 @@ public sealed class AlphaBetaSearch
         if (n <= 1)
             return;
 
+        // A ROOT THAT IS SIMPLY LOST GETS NO FILTER AT ALL. Everything below
+        // was designed to protect a WIN, and applied to a loss it does the
+        // opposite of chess.
+        //
+        // DTZ is the distance to the next IRREVERSIBLE move, so maximising it
+        // in a lost position means REFUSING TO CAPTURE - a capture zeroes the
+        // counter. The slack band further down is zero for any non-winning
+        // root, so the filter then keeps exactly ONE move and the search is
+        // left with no choice; the budget cut that follows a resolved root
+        // finishes the job.
+        //
+        // Reproduced from a real bot game on 2026-08-23,
+        // 4r3/1P1K4/8/8/6p1/q6k/8/8 w: the white king on d7 stands next to an
+        // undefended rook on e8, and Kxe8 also clears b8 for the pawn. Same
+        // binary, only the option changed:
+        //
+        //     no tablebases          b8=Q
+        //     SyzygyProbeLimit 5     b8=Q     (six men, so never probed)
+        //     SyzygyProbeLimit 7     Kc7      nodes 0, decided before the search
+        //
+        // BlessedLoss is what makes this safe to separate. There the fifty-move
+        // rule genuinely can still save the game, so stretching DTZ is the
+        // correct play and the filter must keep applying. A plain Loss cannot
+        // be saved by anything, so there is nothing left to protect and the
+        // search should be free to pick the most resilient practical try.
+        //
+        // _rootInTb is set on the way out and that is not optional: it is what
+        // switches off the flat in-search tablebase scores. Without it every
+        // losing continuation would come back as the same number and the search
+        // would be just as blind as the filter was.
+        if (Tablebases.Syzygy.ProbeWdl(board, out var lostRoot)
+            && lostRoot == Tablebases.WdlScore.Loss)
+        {
+            TbHits++;
+            _rootInTb = true;
+            return;
+        }
+
         Span<int> ranks = stackalloc int[n];
 
         // WDL by default, DTZ only when the fifty-move rule is close enough to
@@ -1538,7 +1654,7 @@ public sealed class AlphaBetaSearch
 
         // Ply overflow guard for recursive and singular-extension searches.
         if (ply >= MaxPly)
-            return _evaluator.Evaluate(board);
+            return _evaluator.Evaluate(board) + OptimismTerm(board);
 
         // NOTE: the check test is NOT computed here. It is two magic-bitboard
         // lookups into multi-megabyte tables, and everything between this point
@@ -1718,7 +1834,8 @@ public sealed class AlphaBetaSearch
                               BoundType.None, Move.None, ttPv);
             }
 
-            staticEval = _corrections.Correct(board, rawStaticEval, ContinuationCorrectionKey(ply));
+            staticEval = _corrections.Correct(board, rawStaticEval + OptimismTerm(board),
+                                              ContinuationCorrectionKey(ply));
         }
 
         // ---- Improvement / improving ----
@@ -1771,9 +1888,20 @@ public sealed class AlphaBetaSearch
         // margin and a statScore filter; measured here, that gating grows the
         // tree ~30% at equal tactics because our classical eval is noisy
         // relative to the search - probes at eval-below-beta nodes keep
-        // finding real cutoffs the gate would forbid. Revisit with NNUE.
+        // finding real cutoffs the gate would forbid.
+        // REVISITED WITH NNUE (2026-08-25): the answer did not change. With
+        // the NNUE eval and its correction history, UseNmpEvalGate still
+        // grows the tree 32.7% at depth 9 over 50 positions (2,656,282 vs
+        // 2,000,995 nodes). The below-beta probes are still earning their
+        // keep. The reference affords its gate as part of a package - cutNode
+        // entry, a far deeper reduction, checks in quiescence - and gating
+        // alone here just forbids profitable probes. The option stays for a
+        // future package test; do not measure it alone.
         if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
             && board.HasNonPawnMaterial(board.SideToMove)
+            && (!UseNmpEvalGate
+                || (staticEval != NoEval
+                    && staticEval >= beta - 13 * depth - 47 * (improving ? 1 : 0) + 365))
             && (ply >= _nmpMinPly || board.SideToMove != _nmpColor))
         {
             // Reduction: the previously validated shape (child depth
@@ -2549,7 +2677,7 @@ public sealed class AlphaBetaSearch
 
         // Ply ceiling, checked before the per-ply move list is indexed.
         if (ply >= MaxPly)
-            return board.IsInCheck() ? 0 : _evaluator.Evaluate(board);
+            return board.IsInCheck() ? 0 : _evaluator.Evaluate(board) + OptimismTerm(board);
 
         // Quiet check evasions can reach clock 100 or complete a repetition,
         // so every qsearch node must enforce the rules, not only checked ones.
@@ -2652,7 +2780,8 @@ public sealed class AlphaBetaSearch
                           BoundType.None, Move.None, ttPv);
             }
 
-            bestScore = _corrections.Correct(board, rawEval, ContinuationCorrectionKey(ply));
+            bestScore = _corrections.Correct(board, rawEval + OptimismTerm(board),
+                                             ContinuationCorrectionKey(ply));
 
             // A stored SCORE beats the static evaluation as a stand-pat floor
             // when its bound points the right way: it came from a real search

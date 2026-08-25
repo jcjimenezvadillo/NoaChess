@@ -197,6 +197,35 @@ public static class ThreatFeatureIndex
         return (BlockStart[p], PieceSpan[p]);
     }
 
+    // Where one (attacker, attacked) relation type lives in the feature space,
+    // as [start, start + length). Returns length 0 for a pair the schema does
+    // not record.
+    //
+    // WHY IT IS EXPOSED. The remaining cost of threat features is generating
+    // and differencing the relation lists, and that scales with HOW MANY
+    // relations a position produces - not with how many dimensions the space
+    // has. So the question worth asking of a trained net is which relation
+    // TYPES carry signal: one that carries none can be masked out at collection
+    // the same way the target masks already drop what the schema rejects, and
+    // every list gets shorter for free.
+    //
+    // Colours are absolute here, as everywhere else in this file; the
+    // perspective flip happens inside the indexing.
+    public static (int Start, int Length) BandRange(Color attackerColour, PieceType attackerType,
+                                                    Color attackedColour, PieceType attackedType)
+    {
+        int attacker = Piece(attackerColour, attackerType);
+        int aType = (int)attackerType;
+        int dType = (int)attackedType;
+
+        int slot = Map[aType * 6 + dType];
+        if (slot < 0)
+            return (0, 0);
+
+        int band = (int)attackedColour * (ValidTargets[aType] / 2) + slot;
+        return (BlockStart[attacker] + band * PieceSpan[attacker], PieceSpan[attacker]);
+    }
+
     // Horizontal mirror when the perspective's king stands on files a-d, the
     // same rule HalfKAv2_hm uses, so the two feature sets agree about which way
     // the board faces.
@@ -208,14 +237,55 @@ public static class ThreatFeatureIndex
     public static int Index(Color perspective, int kingSquare,
                             Color attackerColour, PieceType attackerType, int from,
                             Color attackedColour, PieceType attackedType, int to)
+        => IndexOfPieces(perspective, kingSquare,
+                         Piece(attackerColour, attackerType),
+                         Piece(attackedColour, attackedType), from, to);
+
+    // A threat relation with NO perspective attached: two squares and two piece
+    // codes in one int.
+    //
+    // WHY THIS EXISTS. Which piece attacks which is a fact about the board.
+    // The perspective does not change that fact, it only decides what NUMBER
+    // the fact is given - the orientation flip and the colour swap both happen
+    // inside the indexing. Collecting relations in this form lets the geometry
+    // and the set difference of an incremental update run ONCE per node instead
+    // of once per perspective, which is what the delta used to do.
+    //
+    // WHAT MAKES THE SUBSTITUTION LEGAL, because differencing in one space and
+    // applying in another is only equivalent if the map between them is
+    // injective. It is: the index is
+    //
+    //     BlockStart[attacker] + band * PieceSpan[attacker]
+    //                          + Offsets[attacker][from] + Slot[attacker][from][to]
+    //
+    // where 'band' is a bijection with (attacked colour, attacked type) through
+    // Map, and Offsets + Slot is a bijection with 'to' inside the attacker's
+    // span. So (attacker, attacked, from, to) - exactly the four things packed
+    // here - determines the index, and no two distinct pairs can collide.
+    //
+    // 20 bits used of 32. The two rejected cases (a pair the schema does not
+    // record, and the discarded direction of a symmetric one) still pack fine;
+    // they simply index to -1 and are skipped when applied.
+    public static int Pack(Color attackerColour, PieceType attackerType, int from,
+                           Color attackedColour, PieceType attackedType, int to)
+        => from | (to << 6)
+                | (Piece(attackerColour, attackerType) << 12)
+                | (Piece(attackedColour, attackedType) << 16);
+
+    // The index a packed relation gets under one perspective, or -1.
+    public static int IndexOfPacked(Color perspective, int kingSquare, int packed)
+        => IndexOfPieces(perspective, kingSquare,
+                         (packed >> 12) & 15, (packed >> 16) & 15,
+                         packed & 63, (packed >> 6) & 63);
+
+    private static int IndexOfPieces(Color perspective, int kingSquare,
+                                     int attacker, int attacked, int from, int to)
     {
         int orientation = Orient(kingSquare) ^ (perspective == Color.White ? 0 : 56);
         int fromOriented = from ^ orientation;
         int toOriented = to ^ orientation;
 
         // Flipping perspective swaps the colour of both pieces.
-        int attacker = Piece(attackerColour, attackerType);
-        int attacked = Piece(attackedColour, attackedType);
         if (perspective != Color.White)
         {
             attacker = (attacker + 6) % 12;

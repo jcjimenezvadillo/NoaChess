@@ -62,6 +62,7 @@ param(
     # every net so far used.
     [double]$StartLambda = [double]::NaN,
     [double]$EndLambda = [double]::NaN,
+    [int]$PsqtBuckets = 0,
 
     # 60 is the baseline's value. Change it only when EPOCHS is the axis.
     [int]$Epochs = 60,
@@ -133,6 +134,7 @@ try {
     if ($LossStyle -ne "mse") { $extra += "--loss-style"; $extra += $LossStyle }
     if (-not [double]::IsNaN($StartLambda)) { $extra += "--start-lambda"; $extra += "$StartLambda" }
     if (-not [double]::IsNaN($EndLambda)) { $extra += "--end-lambda"; $extra += "$EndLambda" }
+    if ($PsqtBuckets -gt 0) { $extra += "--psqt-buckets"; $extra += "$PsqtBuckets" }
     python train_nnue.py `
         --data @shards `
         --out "checkpoints\$Name.pt" `

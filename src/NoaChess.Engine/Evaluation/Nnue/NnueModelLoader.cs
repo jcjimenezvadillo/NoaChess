@@ -84,12 +84,14 @@ public static class NnueModelLoader
         ulong payloadLength = BinaryPrimitives.ReadUInt64LittleEndian(bytes[(v2 ? 48 : 40)..]);
         ReadOnlySpan<byte> expectedSha = v2 ? bytes[56..88] : bytes[48..80];
 
-        // Nothing reads a psqt head yet. Rejecting a file that declares one is
-        // the honest response: reading it as if it had none would evaluate a
-        // different network from the one that was trained.
-        if (psqtBuckets != 0)
+        // Psqt head: version 2 headers may declare 1..8 psqt buckets. Phase 1
+        // supports it on the int16/int8 single-transformer architectures only;
+        // combining it with the threat transformer needs a second psqt table
+        // for the threat features (the reference carries both) and is rejected
+        // until that exists, loudly rather than by evaluating half a head.
+        if (psqtBuckets > 8)
         {
-            error = $"this build does not implement the psqt head (header declares {psqtBuckets} buckets)";
+            error = $"implausible psqt bucket count {psqtBuckets}";
             return false;
         }
         if (schema != NnueFeatureIndex.FeatureSchemaId)
@@ -207,9 +209,22 @@ public static class NnueModelLoader
         // rebuilt head without a third architecture id.
         bool hasThreats = arch == NnueModelHeader.ArchitectureThreats
                        || (archFive && (flags & NnueModelHeader.ArchFlagThreats) != 0);
+
         if (hasThreats)
             expectedPayload += NnueModelHeader.ThreatWeightBytes(
                 ThreatFeatureIndex.InputSize, ftOutputs);
+
+        // Psqt head: appended LAST so an older reader that stops early still
+        // sees a coherent file. Phase 1 pairs it with the single-transformer
+        // architectures only; threats need their own psqt table (the reference
+        // carries one per feature set) and arch 5 has its own head layout.
+        if (psqtBuckets > 0 && (hasThreats || archFive))
+        {
+            error = "psqt head is not supported together with threats or arch 5 yet";
+            return false;
+        }
+        if (psqtBuckets > 0)
+            expectedPayload += (long)ftInputs * psqtBuckets * 4;   // psqtWeights int32
 
         if ((long)payloadLength != expectedPayload)
         {
@@ -295,6 +310,11 @@ public static class NnueModelLoader
         if (hasThreats)
             threatWeights = ReadInt16Array(payload, ThreatFeatureIndex.InputSize * ftOutputs);
 
+        // The psqt head, appended after everything else for the same reason.
+        int[]? psqtWeights = null;
+        if (psqtBuckets > 0)
+            psqtWeights = ReadInt32Array(payload, ftInputs * psqtBuckets);
+
         // Built once at load: see NnueNetwork.SquaredActivation for why the
         // activation must not divide at evaluation time.
         var squared = new byte[qa + 1];
@@ -326,6 +346,8 @@ public static class NnueModelLoader
             OutWeights = outWeights,
             OutBias = outBias,
             ThreatWeights = threatWeights,
+            PsqtWeights = psqtWeights,
+            PsqtBuckets = psqtBuckets,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };
         error = "";

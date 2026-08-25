@@ -160,6 +160,124 @@ public static class ThreatDelta
         return count;
     }
 
+    // The same relations as CollectFrom, WITHOUT a perspective: packed pairs
+    // instead of feature indices. This is what the hot path calls.
+    //
+    // WHY IT IS SEPARATE FROM CollectFrom. The geometry - which piece attacks
+    // which - does not depend on the perspective, but CollectFrom takes one and
+    // therefore had to run twice per node, recomputing identical magic lookups
+    // and identical target loops to produce two differently numbered copies of
+    // one fact. Worse, the set difference that follows also ran twice. Working
+    // in pair space collapses both to one pass, and only the surviving
+    // DIFFERENCE - about six relations - is numbered per perspective, which is
+    // a table lookup each.
+    //
+    // CollectFrom is deliberately left in place as the oracle: ThreatDeltaTests
+    // checks this function against it rather than against the reasoning above.
+    //
+    // THE TARGET MASKS ARE NEW AND THEY ARE FREE. CollectFrom filtered with
+    // '& occupied' and let the index reject whatever the schema does not
+    // record, which meant generating and numbering pairs - every attack on a
+    // king, every slider aimed at a queen - that were always going to be
+    // thrown away. The masks below are exactly the Map table expressed as
+    // bitboards, the same ones a full refresh already uses, so the resulting
+    // feature set is unchanged and the lists are shorter.
+    public static int CollectPairs(Board board, ulong attackers, Span<int> destination)
+    {
+        ulong occupied = board.AllOccupancy;
+        ulong pawns = Both(board, PieceType.Pawn);
+        ulong rooks = Both(board, PieceType.Rook);
+
+        // Map says a pawn records against P, N and R; a bishop or a rook adds
+        // B; a knight or a queen adds Q on top. No piece records against a king.
+        ulong pawnTargets = pawns | Both(board, PieceType.Knight) | rooks;
+        ulong minorTargets = pawnTargets | Both(board, PieceType.Bishop);
+        ulong queenTargets = minorTargets | Both(board, PieceType.Queen);
+
+        // Same reason as in CollectFrom: the caller unions the affected set
+        // across the move, so it can name a square that is occupied on one
+        // side of it and empty on the other.
+        attackers &= occupied;
+
+        int count = 0;
+        while (attackers != 0)
+        {
+            int from = Bitboard.PopLsb(ref attackers);
+            Color colour = board.ColorAt(from);
+            PieceType type = board.PieceTypeAt(from);
+
+            if (type == PieceType.Pawn)
+            {
+                AddPawnPairs(board, colour, from, pawns, pawnTargets, destination, ref count);
+                continue;
+            }
+
+            if (type == PieceType.King)
+                continue; // Kings generate no threat features.
+
+            ulong attacks = type switch
+            {
+                PieceType.Knight => Attacks.Knight(from),
+                PieceType.Bishop => Attacks.Bishop(from, occupied),
+                PieceType.Rook => Attacks.Rook(from, occupied),
+                _ => Attacks.Queen(from, occupied),
+            } & (type is PieceType.Knight or PieceType.Queen ? queenTargets : minorTargets);
+
+            while (attacks != 0)
+            {
+                int to = Bitboard.PopLsb(ref attacks);
+                destination[count++] = ThreatFeatureIndex.Pack(
+                    colour, type, from, board.ColorAt(to), board.PieceTypeAt(to), to);
+            }
+        }
+
+        return count;
+    }
+
+    // One pawn's relations as a target bitboard, which also removes the little
+    // stackalloc the indexed version needs to carry its three candidates.
+    private static void AddPawnPairs(Board board, Color colour, int from, ulong pawns,
+                                     ulong pawnTargets, Span<int> destination, ref int count)
+    {
+        int file = from & 7;
+        bool white = colour == Color.White;
+
+        // A pawn cannot stand on the rank it would promote from, so every shift
+        // below stays on the board. Stated rather than assumed because C# masks
+        // a shift count to 63: an out-of-range square would not throw, it would
+        // silently name a different one.
+        if (white ? from >= 56 : from < 8)
+            return;
+
+        ulong targets = 0;
+
+        // File guards, not decoration: without them a pawn on the a-file wraps
+        // around to the h-file and invents an attack that does not exist.
+        if (white ? file != 7 : file != 0)
+            targets |= 1UL << (white ? from + 9 : from - 9);
+        if (white ? file != 0 : file != 7)
+            targets |= 1UL << (white ? from + 7 : from - 7);
+
+        // Blocked by a pawn directly in front, of either colour: the relation
+        // records being stopped, not by whom.
+        int ahead = white ? from + 8 : from - 8;
+        targets |= (1UL << ahead) & pawns;
+
+        // pawnTargets is a subset of the occupancy, so this is also the
+        // "the square must hold something" filter.
+        targets &= pawnTargets;
+
+        while (targets != 0)
+        {
+            int to = Bitboard.PopLsb(ref targets);
+            destination[count++] = ThreatFeatureIndex.Pack(
+                colour, PieceType.Pawn, from, board.ColorAt(to), board.PieceTypeAt(to), to);
+        }
+    }
+
+    private static ulong Both(Board board, PieceType type)
+        => board.Pieces(Color.White, type) | board.Pieces(Color.Black, type);
+
     // One pawn's relations: the two capture diagonals and the blocked push.
     // Mirrors the bulk shifts of a full refresh, including their file guards -
     // without those a pawn on the a-file would wrap around to the h-file and
