@@ -656,3 +656,14 @@ the next NNUE lever**; if this axis reopens it will be from the data side.
 Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
+
+## 2026-08-25/26 - in flight
+
+The three training arms the crashed 11-08 queue never reached are running in
+series on the fq60 recipe, one variable each: fqloss (the reference loss
+instead of the raw MSE every published net trained with), fqlam (lambda
+scheduled 1.0 to 0.7) and fqwd0 (no ft weight decay). Fixed-nodes SPRTs
+follow each export; same architecture means the verdict transfers to the
+clock unchanged. The psqt two-headed net is built end to end (engine lane,
+trainer head, exact virtual-row folding, parity tests) and trains on top of
+whichever recipe wins; verify_export must learn the psqt block first.
