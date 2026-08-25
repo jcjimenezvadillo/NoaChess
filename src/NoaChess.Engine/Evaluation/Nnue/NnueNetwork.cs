@@ -70,6 +70,15 @@ public sealed class NnueNetwork
     // one into FtBias at export and the engine never sees it.
     public short[]? ThreatWeights { get; init; }
 
+    // Psqt head (two-headed net): one int32 output per feature per psqt
+    // bucket, summed into a per-perspective lane alongside the int16
+    // accumulator, read at evaluation as (psqt[stm] - psqt[opp]) / 2. This is
+    // the material-shaped half of the evaluation travelling OUTSIDE the
+    // quantized nonlinear path, which is where this engine's measured
+    // quantization error lives. Null when the net has no psqt head.
+    public int[]? PsqtWeights { get; init; }   // [FtInputs * PsqtBuckets]
+    public int PsqtBuckets { get; init; }
+
     // Arch 4 belongs here, and leaving it out cost a NullReferenceException in
     // the first end-to-end run: the file stores int8 L1 weights, so L1Weights is
     // null and L1WeightsI8 holds them, and a predicate that said "not int8" sent
@@ -82,6 +91,8 @@ public sealed class NnueNetwork
                            || ArchitectureId == NnueModelHeader.ArchitectureDualActivation;
 
     public bool UsesOutputBuckets => OutputBuckets > 1;
+
+    public bool UsesPsqt => PsqtWeights is not null && PsqtBuckets > 0;
 
     // Architecture 5: pairwise feature-transformer read, squared activations,
     // two hidden layers and a linear bypass. Read off the second layer rather

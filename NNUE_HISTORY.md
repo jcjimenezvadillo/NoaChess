@@ -5,6 +5,149 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## Estado a 2026-08-24: amenazas CERRADAS, anchura ABIERTA, y la velocidad por fin calibrada
+
+Dos veredictos y una constante. La constante vale mas que los dos veredictos.
+
+### Las amenazas pierden a reloj y no se publican
+
+    723 partidas a 180+2 (131W 162L 430D, 59,5% tablas)
+    Elo   -14,9   95% [-30,1, +0,1]
+    LLR   -3,371  contra [-2,94, +2,94]   H0 ACEPTADA
+
+    tendencia por bloques de 100:
+      -17,4  -8,7  -18,5  -14,8  -9,7  -10,4  -12,9
+
+Estable en los siete bloques, sin deriva. Los dos brazos con el mismo binario y
+el motor ya acelerado un 15,9% ese dia. **Evaluan mejor - eso quedo probado con
++47,8 a nodos fijos - pero cuestan tanta velocidad que el paquete completo
+pierde.**
+
+### La anchura 512 gana, y su entierro no valia
+
+    637 partidas a nodos fijos (226W 156L 255D)
+    Elo   +38,4   95% [+18,7, +58,3]
+    LLR   +3,338   H1 ACEPTADA
+
+El veredicto anterior era -30,3 y con el se dio por muerta la anchura durante
+semanas. **Aquel brazo se corto en la EPOCA 5 DE 60** para no gastar 13,5 horas.
+Comparar un brazo truncado contra uno convergido mide el truncamiento.
+
+**Y el 256 tampoco se ha medido bien:** su -31,9 sale de un log que termina en
+epoch 5, exactamente igual. La aparente contradiccion - 256 pierde 32 y 512 gana
+38 - desaparece en cuanto se mira el log.
+
+### LA CONSTANTE: ~65 Elo por duplicar la velocidad
+
+Cruzar los dos veredictos de las amenazas da algo que este proyecto no tenia:
+
+    a nodos fijos   +47,8      (solo evaluacion)
+    a reloj         -14,9      (evaluacion + velocidad)
+    ratio de NPS     0,510x
+    ------------------------------------------------
+    la velocidad cuesta  47,8 + 14,9 = 62,7 Elo
+    log2(0,510) = -0,971
+    =>  ~64,6 Elo POR DUPLICAR, a 180+2
+
+Hasta hoy esto se estimaba con una constante prestada y el punto de equilibrio
+salia entre 0,58x y 0,70x segun quien lo escribiera. **Usar el 65.**
+
+Y reordena la pregunta de capacidad: ya no es "mas ancho?" sino **"capacidad
+BARATA?"**. El 512 corre a 0,655x contra un umbral de 0,664x, o sea justo en el
+filo, y por eso su SPRT a reloj no se puede sustituir por una cuenta. Los dos
+candidatos que suben al primer puesto son el **256 convergido** (menos ganancia,
+bastante mas rapido) y los **buckets de salida**, que dan capacidad sin coste por
+evaluacion porque solo se evalua un bucket por llamada.
+
+---
+
+## Estado a 2026-08-23 (noche): las tres vias de MOTOR para las amenazas, medidas y cerradas
+
+Las amenazas valen +47,8 Elo a nodos fijos y lo unico que las bloquea es que no
+caben en el reloj. Se atacaron las tres palancas de motor y ninguna abre la
+puerta del todo:
+
+    delta sin perspectiva   +15,9%   HECHO, 0,446x -> 0,510x del NPS de fq60
+    filas perezosas         NULO     estan calientes en cache
+    tabla finny             ~1%      solo ahorra filas
+    podar relaciones        NO       señal proporcional al coste
+
+### 1. El delta no dependia de la perspectiva, y se hacia dos veces
+
+Que pieza ataca a cual es un hecho del TABLERO. La perspectiva no cambia el
+hecho, solo el NUMERO con que se numera. El delta tomaba la perspectiva como
+parametro, asi que por nodo repetia la geometria identica - busquedas magicas y
+bucles de objetivos - para producir dos copias del mismo hecho, y el diff O(n*n)
+tambien corria dos veces.
+
+               antes   ahora
+    AffectedAttackers    3       2
+    CollectPairs/From    4       2
+    diff                 2       1
+
+**+15,87% [+12,0%, +15,3%]**, emparejado, 4 pares alternados, 208/238
+posiciones, signo p = 0,00000, con nodos BYTE-IDENTICOS (1.109.671 exactos).
+
+Lo que habia que comprobar antes: la pareja->indice es INYECTIVA, y `Map` y
+`symmetric` dependen solo de TIPOS, asi que "esta relacion se registra" no
+depende de la perspectiva. Lo unico que si depende es que direccion sobrevive en
+las simetricas, y eso lo resuelve el indexado final.
+
+Las mascaras de objetivo son las que salvan el diseño: las listas de parejas
+llevan las DOS direcciones de las relaciones simetricas y el diff es cuadratico,
+asi que un 1,4x de longitud habria cancelado la mitad entera. Con las mascaras
+salen 1,043x mas largas y el diff cae un 45,1%.
+
+### 2. Aplazar las filas hasta materializar: NULO
+
+Con una red de amenazas el acumulador era ansioso, mientras que uno HalfKA
+difiere y solo aplica el 54%. Se guardo la diferencia por nivel y se aplico al
+materializar:
+
+    filas de delta   8,00 -> 5,28 por nodo   (-34%)
+    copias           ansiosas -> 36,9%
+    reloj            +2,37%, signo p = 0,139  ->  NULO
+
+**Quitar un tercio del trabajo de filas movio el reloj cero.** El micro-banco de
+fila al azar las precia a 109 ns y en el 12-20% del reloj; en busqueda real
+estan casi siempre calientes en cache porque nodos hermanos tocan relaciones
+parecidas. Tercera vez en este proyecto que un coste aislado exagera el cuello.
+
+Y encontro un fallo real que los 376 tests NO vieron: `PushNull` no llama a
+`CompleteThreatDelta`, asi que un nivel nulo heredaba el diff RANCIO de un
+hermano. Con el codigo ansioso era inofensivo; con el perezoso era corrupcion
+silenciosa. Lo cazo el comprobador de nodos identicos, no la suite.
+
+### 3. Podar relaciones: no hay nada que podar
+
+Comando **`threatbands`**, que cruza el peso medio por fila con las veces que
+aparece cada tipo de relacion:
+
+    objetivo    % de señal   relaciones/pos
+    Pawn           63,4%         36,32
+    Knight         16,1%          9,76
+    Rook           11,1%          7,62
+    Bishop          8,1%          4,78
+    Queen           1,0%          0,86
+
+Proporcional en todos. La mitad mas floja de las 84 bandas son el 5,8% de la
+señal y el 9,7% de las relaciones: una permuta, no un salto.
+
+### Donde queda
+
+El coste que sobra es CALCULO - generar las listas y diferenciarlas - y **no se
+puede diferir**, porque el diff necesita el tablero de ANTES, que desaparece al
+hacer la jugada. Hay que pagarlo en cada nodo aunque nadie evalue ese nodo.
+
+Ya no queda modelo que hacer: la pregunta es empirica y la contesta un SPRT a
+reloj de la red de amenazas contra fq60, con los dos brazos en el mismo binario
+acelerado.
+
+Instrumentos que quedan en el motor: **`threatfinny`** (cuanto ahorraria una
+cache de acumulador para amenazas) y **`threatbands`**.
+
+---
+
 ## Estado a 2026-08-23: las amenazas GANAN a la red que juega, y no se pueden publicar
 
 **+47.8 Elo [+21.6, +74.5] a nodos fijos, 345 partidas, LLR +4.29, H1 aceptada.**
@@ -278,7 +421,7 @@ instrumento de medida.
 > esta seccion haya quedado anulada, hay una nota citando la medida que la anulo.
 
 **Key finding of that era:** the dominant lever looked like datagen label depth
-(`--nodes`), not the generational loop itself. gen2–gen4 all used 14000-node
+(`--nodes`), not the generational loop itself. gen2-gen4 all used 14000-node
 labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
 jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
 positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
@@ -288,7 +431,7 @@ Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
 absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engine
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
-NNUE off) ≈ 3020–3035 CCRL.
+NNUE off) ≈ 3020-3035 CCRL.
 
 **MAS RECIENTE ARRIBA.** La tabla iba en orden ascendente y lo que se consulta
 es siempre la ultima red, no la primera.
@@ -335,7 +478,7 @@ re-measured, because with NNUE shipped in every build the comparison stopped
 mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
-(2862–3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
+(2862-3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
 overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
 gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
 and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.

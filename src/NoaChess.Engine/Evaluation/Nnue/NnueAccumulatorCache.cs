@@ -46,6 +46,9 @@ public sealed class NnueAccumulatorCache
     // Accumulator state per entry, and the piece placement that produced it.
     private readonly short[][] _values = new short[Entries][];
     private readonly ulong[][] _placement = new ulong[Entries][];
+    // Psqt head lane per entry, diffed exactly like the rows above. Zero for
+    // an empty board, so zero-initialisation IS the honest starting point.
+    private readonly int[][] _psqt = new int[Entries][];
 
     public NnueAccumulatorCache(NnueNetwork network)
     {
@@ -57,6 +60,7 @@ public sealed class NnueAccumulatorCache
             _values[i] = new short[network.FtOutputs];
             Array.Copy(network.FtBias, _values[i], network.FtOutputs);
             _placement[i] = new ulong[PlaneCount];
+            _psqt[i] = new int[NnueAccumulator.MaxPsqtBuckets];
         }
     }
 
@@ -69,6 +73,7 @@ public sealed class NnueAccumulatorCache
 
         short[] values = _values[entry];
         ulong[] placement = _placement[entry];
+        int[] psqt = _psqt[entry];
         bool wasPopulated = false;
         int touched = 0;
 
@@ -91,7 +96,7 @@ public sealed class NnueAccumulatorCache
             while (added != 0)
             {
                 int square = Bitboard.PopLsb(ref added);
-                AddRow(values, NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square));
+                AddRow(values, psqt, NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square));
                 touched++;
             }
 
@@ -100,7 +105,7 @@ public sealed class NnueAccumulatorCache
             while (removed != 0)
             {
                 int square = Bitboard.PopLsb(ref removed);
-                SubtractRow(values, NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square));
+                SubtractRow(values, psqt, NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square));
                 touched++;
             }
 
@@ -108,6 +113,10 @@ public sealed class NnueAccumulatorCache
         }
 
         Array.Copy(values, target.Values[(int)perspective], values.Length);
+        if (_network.PsqtBuckets > 0)
+            Array.Copy(psqt, 0, target.Psqt,
+                       (int)perspective * NnueAccumulator.MaxPsqtBuckets,
+                       NnueAccumulator.MaxPsqtBuckets);
         target.Valid[(int)perspective] = true;
         target.Computed[(int)perspective] = true;
 
@@ -117,10 +126,12 @@ public sealed class NnueAccumulatorCache
     // Same ref-based loads as NnueAccumulator: the array-indexed Vector<T>
     // constructor bounds-checks every iteration and the JIT does not reliably
     // hoist it, which the v4.0.0 profile caught costing ~100x the arithmetic.
-    private void AddRow(short[] values, int featureIndex)
+    private void AddRow(short[] values, int[] psqt, int featureIndex)
     {
         short[] weights = _network.FtWeights;
         int ftOut = _network.FtOutputs;
+        for (int b = 0; b < _network.PsqtBuckets; b++)
+            psqt[b] += _network.PsqtWeights![featureIndex * _network.PsqtBuckets + b];
 
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
@@ -143,10 +154,12 @@ public sealed class NnueAccumulatorCache
             values[k] += weights[offset + k];
     }
 
-    private void SubtractRow(short[] values, int featureIndex)
+    private void SubtractRow(short[] values, int[] psqt, int featureIndex)
     {
         short[] weights = _network.FtWeights;
         int ftOut = _network.FtOutputs;
+        for (int b = 0; b < _network.PsqtBuckets; b++)
+            psqt[b] -= _network.PsqtWeights![featureIndex * _network.PsqtBuckets + b];
 
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {

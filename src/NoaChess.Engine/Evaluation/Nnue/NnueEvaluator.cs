@@ -122,6 +122,14 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
             ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc, bucket)
             : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc, bucket);
 
+        // Two-headed net: the psqt half travels in int32 through the
+        // accumulator, outside the quantized nonlinear path, and joins here.
+        // Exported weights are stored at OUTPUT_SCALE (round(w*400)), so the
+        // perspective difference over 2 lands directly in engine centipawns.
+        if (_network.UsesPsqt)
+            score += _accumulators.PsqtDiff(stm,
+                Math.Min(bucket, _network.PsqtBuckets - 1));
+
         return Math.Clamp(score, -EvalClamp, EvalClamp);
     }
 

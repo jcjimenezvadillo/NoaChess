@@ -21,6 +21,8 @@ public sealed class UciOptions
     public bool UseNnueExplicitlySet { get; private set; }
     public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
+    public bool Optimism { get; private set; }
+    public bool NmpEvalGate { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -72,7 +74,7 @@ public sealed class UciOptions
     // their probe cost at fast time controls AT ALL, but 10+0.1 is faster than
     // anything the bots play, so dropping them entirely needs a measurement at a
     // representative time control before it is done.
-    public int SyzygyProbeLimit { get; private set; } = 5;
+    public int SyzygyProbeLimit { get; private set; } = 7;
     public bool Syzygy50MoveRule { get; private set; } = true;
 
     // Prints the option declarations the GUI expects right after "id".
@@ -85,9 +87,11 @@ public sealed class UciOptions
         output.WriteLine("option name UseNNUE type check default false");
         output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet var WideWindow var EarlyLmr");
+        output.WriteLine("option name Optimism type check default false");
+        output.WriteLine("option name NmpEvalGate type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
-        output.WriteLine("option name SyzygyProbeLimit type spin default 5 min 0 max 7");
+        output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
         output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
     }
@@ -135,6 +139,14 @@ public sealed class UciOptions
                 Profile = KnownProfiles.FirstOrDefault(
                     p => p.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? "Default";
                 return "Profile";
+
+            case "optimism" when bool.TryParse(value, out bool optimism):
+                Optimism = optimism;
+                return "Optimism";
+
+            case "nmpevalgate" when bool.TryParse(value, out bool nmpGate):
+                NmpEvalGate = nmpGate;
+                return "NmpEvalGate";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;

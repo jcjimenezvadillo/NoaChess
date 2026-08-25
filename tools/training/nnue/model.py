@@ -158,7 +158,7 @@ class NoaNnue(nn.Module):
     # - only a retrain and an export.
     def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS,
                  factorized=FACTORIZED, qat=False, qa=QA, threats=False,
-                 dual=DUAL, l2_out=L2_OUT):
+                 dual=DUAL, l2_out=L2_OUT, psqt_buckets=0):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
@@ -183,6 +183,23 @@ class NoaNnue(nn.Module):
         self.ft = nn.EmbeddingBag(self.pad_index + 1, ft_out, mode="sum",
                                   padding_idx=self.pad_index)
         self.ft_bias = nn.Parameter(torch.zeros(ft_out))
+
+        # Psqt head (two-headed net): one linear output per feature per psqt
+        # bucket, summed per perspective exactly like the transformer, read at
+        # evaluation as (psqt_stm - psqt_opp) / 2 in RAW output units. It is
+        # exported as int32 at OUTPUT_SCALE, whose rounding step of 1/400 of a
+        # raw unit is far below training noise, so it needs no fake
+        # quantization. When the net trains factorized the batches feed real
+        # AND virtual indices to every EmbeddingBag, this one included, so its
+        # virtual rows train too and export MUST fold them (fold_psqt below,
+        # same exactness argument as fold_features).
+        self.psqt_buckets = max(0, int(psqt_buckets))
+        if self.psqt_buckets > 0:
+            if self.threats or self.dual:
+                raise ValueError("psqt head is not supported with threats or arch 5 yet")
+            self.psqt = nn.EmbeddingBag(self.pad_index + 1, self.psqt_buckets,
+                                        mode="sum", padding_idx=self.pad_index)
+            nn.init.zeros_(self.psqt.weight)
 
         # THREATS: a second transformer summed into the SAME accumulator, which
         # is why it has no bias of its own - a second constant added to one sum
@@ -291,7 +308,10 @@ class NoaNnue(nn.Module):
             hidden_pre = fake_quantize_acts(hidden_pre, self.qa)
         hidden_all = torch.clamp(hidden_pre, 0.0, 1.0)
         if self.out_buckets == 1:
-            return F.linear(hidden_all, out_weight, out_bias).squeeze(1)
+            raw = F.linear(hidden_all, out_weight, out_bias).squeeze(1)
+            if self.psqt_buckets > 0:
+                raw = raw + self._psqt_term(stm_feats, opp_feats, piece_count)
+            return raw
 
         # Select this sample's bucket. Every bucket is computed and one is
         # gathered, which is wasteful in training and irrelevant in cost (l1_out
@@ -302,7 +322,24 @@ class NoaNnue(nn.Module):
             torch.arange(batch, device=hidden_all.device), bucket]
         weight = out_weight[bucket]             # [batch, l1_out]
         bias = out_bias[bucket]                 # [batch]
-        return (hidden * weight).sum(dim=1) + bias
+        raw = (hidden * weight).sum(dim=1) + bias
+        if self.psqt_buckets > 0:
+            raw = raw + self._psqt_term(stm_feats, opp_feats, piece_count)
+        return raw
+
+    def _psqt_term(self, stm_feats, opp_feats, piece_count):
+        # Padding handling mirrors the transformer: EmbeddingBag with the same
+        # padding_idx ignores the -1-mapped slots. Bucket selection reuses the
+        # OUTPUT bucket formula so a future multi-bucket psqt stays aligned
+        # with the head the engine indexes.
+        pad = self.pad_index
+        stm = self.psqt(stm_feats.clamp(min=0).where(stm_feats >= 0, torch.full_like(stm_feats, pad)))
+        opp = self.psqt(opp_feats.clamp(min=0).where(opp_feats >= 0, torch.full_like(opp_feats, pad)))
+        if self.psqt_buckets == 1:
+            return (stm[:, 0] - opp[:, 0]) / 2
+        bucket = bucket_for_piece_count(piece_count, self.psqt_buckets)
+        idx = torch.arange(stm.shape[0], device=stm.device)
+        return (stm[idx, bucket] - opp[idx, bucket]) / 2
 
     def _pair(self, activation):
         """Pairwise product of the two halves of one perspective's accumulator.
@@ -423,6 +460,19 @@ class NoaNnue(nn.Module):
         virtual = self.ft.weight[self.virtual_base:self.virtual_base + PS_NB]
         # repeat tiles the whole block, so row i of the result is virtual[i % PS_NB]
         # - which is the base feature of real row i, by the identity above.
+        return (real + virtual.repeat(KING_BUCKET_COUNT, 1)).detach()
+
+    def fold_psqt(self):
+        """Psqt head as the ENGINE must see it: [INPUT_SIZE, psqt_buckets].
+
+        Same exactness argument as fold_features: training sums real[f] +
+        virtual[f % PS_NB] for every active feature, so adding each virtual row
+        into its 32 king-bucket copies reproduces the trained sum exactly.
+        """
+        real = self.psqt.weight[:INPUT_SIZE]
+        if not self.factorized:
+            return real.detach().clone()
+        virtual = self.psqt.weight[self.virtual_base:self.virtual_base + PS_NB]
         return (real + virtual.repeat(KING_BUCKET_COUNT, 1)).detach()
 
     def fold_threats(self):

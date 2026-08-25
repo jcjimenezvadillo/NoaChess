@@ -226,6 +226,8 @@ def main():
                              "exported as --arch 5.")
     parser.add_argument("--l2-out", type=int, default=L2_OUT,
                         help="second hidden layer width (--dual only)")
+    parser.add_argument("--psqt-buckets", type=int, default=0,
+                        help="psqt head buckets (two-headed net); 0 disables")
     parser.add_argument("--threats", action="store_true",
                         help="train the threat feature transformer as well (arch 4)")
     # Two jobs on one GPU end an eighteen-hour run with an out-of-memory hours
@@ -400,7 +402,7 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
 
     model = NoaNnue(args.ft_out, args.l1_out, args.out_buckets, args.factorized,
                     args.qat, args.qa, threats=args.threats,
-                    dual=args.dual, l2_out=args.l2_out).to(device)
+                    dual=args.dual, l2_out=args.l2_out, psqt_buckets=args.psqt_buckets).to(device)
     # The banner names the architecture this run will EXPORT as, and that is not
     # decoration. It said "export as arch 2/3" while training an arch 5 net on
     # the first --dual run: the shapes were right, the checkpoint was right, and

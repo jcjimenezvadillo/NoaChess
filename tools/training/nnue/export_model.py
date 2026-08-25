@@ -118,6 +118,7 @@ def main():
     # width and an l2 that no other architecture has a place for, so exporting
     # it as anything else cannot even load the state dict - the good failure.
     trained_dual = bool(ckpt_args.get("dual", False))
+    psqt_buckets = int(ckpt_args.get("psqt_buckets", 0) or 0)
     l2_out = ckpt_args.get("l2_out", L2_OUT) if trained_dual else 0
 
     # The architecture follows the checkpoint unless overridden: exporting a
@@ -157,7 +158,8 @@ def main():
     qa = QA_FOR_ARCH[arch]
 
     model = NoaNnue(ft_out, l1_out, buckets, factorized, qa=QA_FOR_ARCH[arch],
-                    threats=trained_threats, dual=trained_dual, l2_out=l2_out)
+                    threats=trained_threats, dual=trained_dual, l2_out=l2_out,
+                    psqt_buckets=psqt_buckets)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
@@ -270,6 +272,24 @@ def main():
 
         blocks.append(th_w.tobytes())
 
+    if psqt_buckets > 0:
+        # Appended LAST, like the threat block: readers that stop early still
+        # see a coherent file. Stored as int32 at OUTPUT_SCALE so the engine's
+        # (sum_stm - sum_opp) / 2 lands directly in centipawns; the rounding
+        # step is 1/400 of a raw output unit, far below training noise, which
+        # is why this head trains without fake quantization.
+        ps = np.round(model.fold_psqt().numpy() * OUTPUT_SCALE)
+        worst = float(np.abs(ps).max())
+        if worst >= 2**31:
+            raise SystemExit(f"psqt weight overflows int32: {worst}")
+        ps_w = ps.astype(np.int32)
+        print(f"  psqt head: {psqt_buckets} bucket(s), max |q| = {int(worst):,}, "
+              f"{100.0 * float((ps_w == 0).mean()):.1f}% zero")
+        print("  NOTE: verify_export does not reproduce the psqt lane yet; the C#")
+        print("  parity test covers the accumulator, but extend verify_export")
+        print("  before the first SPRT with a psqt net.")
+        blocks.append(ps_w.tobytes())
+
     payload = b"".join(blocks)
     sha = hashlib.sha256(payload).digest()
 
@@ -281,6 +301,18 @@ def main():
             INPUT_SIZE, ft_out, l1_out,
             qa, QB, int(OUTPUT_SCALE), buckets,
             l2_out, 0, flags,
+            len(payload), sha)
+        assert len(header) == HEADER_BYTES_V2
+    elif psqt_buckets > 0:
+        # A psqt head needs the version 2 header for its bucket count at
+        # offset 44. l2 stays 0 and no flags are set: this is arch 1/2/3 plus
+        # a lane, not arch 5.
+        header = struct.pack(
+            "<8s I I I i i i H H H H i H H Q 32s",
+            MAGIC, FORMAT_VERSION_2, FEATURE_SCHEMA_ID, arch,
+            INPUT_SIZE, ft_out, l1_out,
+            qa, QB, int(OUTPUT_SCALE), buckets if bucket_capable else 0,
+            0, psqt_buckets, 0,
             len(payload), sha)
         assert len(header) == HEADER_BYTES_V2
     else:

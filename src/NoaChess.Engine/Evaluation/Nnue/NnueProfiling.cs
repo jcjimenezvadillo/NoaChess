@@ -48,6 +48,7 @@ public static class NnueProfiling
         Pushes = 0;
         PendingApplied = 0;
         PerspectiveCopies = 0;
+        ResetThreatFinny();
     }
 
     public static void CountEvaluation() { if (Enabled) Evaluations++; }
@@ -66,5 +67,120 @@ public static class NnueProfiling
         if (fromCache)
             RefreshesFromCache++;
         RefreshFeaturesTouched += featuresTouched;
+    }
+
+    // ---- Threat finny-table probe --------------------------------------
+    //
+    // WHAT IT IS DECIDING. A threat refresh rebuilds from the bias and touches
+    // every active threat relation - about 73 random rows in a 21 MB weight
+    // table, which is 73 cache misses. HalfKA avoids that with a finny table:
+    // it keeps the last accumulator built for each king square and diffs
+    // against it instead of rebuilding. Threats have no such table.
+    //
+    // WHY IT HAS TO BE MEASURED BEFORE IT IS WRITTEN. The HalfKA table diffs
+    // BITBOARDS, which is a dozen popcounts. The obvious threat version would
+    // diff two ~73-entry FEATURE lists, and that is about 5,300 comparisons
+    // against the ~73 cache misses it saves - close enough that arguing about
+    // it settles nothing.
+    //
+    // The version worth having reuses the delta machinery instead: treat the
+    // cached entry as just an earlier position, take the squares whose contents
+    // differ, and run the existing affected-attackers argument over them. That
+    // one scales with the number of DIFFERING SQUARES, not with the list
+    // length. So the number that decides the design is how far the cached
+    // position sits from the current one, and both are counted here.
+    // Threat ROW updates specifically, split out of AccumulatorUpdates: that
+    // counter mixes HalfKA and threat rows, and the two live in different
+    // tables with different cache behaviour, so a share of the total needs
+    // them apart.
+    public static long ThreatRowUpdates;
+    public static void CountThreatRow() { if (Enabled) ThreatRowUpdates++; }
+
+    public static long ThreatRefreshes;
+    public static long ThreatFinnyHits;
+    public static long ThreatRowsFull;       // rows a full rebuild touches
+    public static long ThreatRowsFullOnHit;  // ... restricted to refreshes a cache would serve
+    public static long ThreatRowsChanged;    // rows a diff from the cache would touch
+    public static long ThreatSquaresChanged; // how far the cached position is, in squares
+    public static long ThreatSquaresWorst;
+
+    // One entry per (perspective, king square). A profiling run is
+    // single-threaded by construction, so no synchronisation and no
+    // [ThreadStatic].
+    private const int FinnySlots = 2 * 64;
+    private static byte[]? _finnyBoard;      // 64 squares of piece code per slot
+    private static int[]? _finnyFeatures;
+    private static int[]? _finnyCount;
+    private static bool[]? _finnyValid;
+
+    public static void CountThreatRefresh(int perspective, int kingSquare,
+                                          ReadOnlySpan<byte> squares, ReadOnlySpan<int> features)
+    {
+        if (!Enabled)
+            return;
+
+        _finnyBoard ??= new byte[FinnySlots * 64];
+        _finnyFeatures ??= new int[FinnySlots * ThreatFeatureIndex.MaxActiveFeatures];
+        _finnyCount ??= new int[FinnySlots];
+        _finnyValid ??= new bool[FinnySlots];
+
+        int slot = perspective * 64 + kingSquare;
+        Span<byte> cachedBoard = _finnyBoard.AsSpan(slot * 64, 64);
+        Span<int> cachedFeatures = _finnyFeatures.AsSpan(
+            slot * ThreatFeatureIndex.MaxActiveFeatures, ThreatFeatureIndex.MaxActiveFeatures);
+
+        ThreatRefreshes++;
+        ThreatRowsFull += features.Length;
+
+        if (_finnyValid[slot])
+        {
+            ThreatFinnyHits++;
+            ThreatRowsFullOnHit += features.Length;
+
+            int differing = 0;
+            for (int sq = 0; sq < 64; sq++)
+                if (cachedBoard[sq] != squares[sq])
+                    differing++;
+            ThreatSquaresChanged += differing;
+            if (differing > ThreatSquaresWorst)
+                ThreatSquaresWorst = differing;
+
+            ReadOnlySpan<int> cached = cachedFeatures[.._finnyCount[slot]];
+            int changed = 0;
+            for (int i = 0; i < cached.Length; i++)
+                if (!Contains(features, cached[i]))
+                    changed++;
+            for (int i = 0; i < features.Length; i++)
+                if (!Contains(cached, features[i]))
+                    changed++;
+            ThreatRowsChanged += changed;
+        }
+
+        squares.CopyTo(cachedBoard);
+        features.CopyTo(cachedFeatures);
+        _finnyCount[slot] = features.Length;
+        _finnyValid[slot] = true;
+    }
+
+    private static bool Contains(ReadOnlySpan<int> haystack, int needle)
+    {
+        for (int i = 0; i < haystack.Length; i++)
+            if (haystack[i] == needle)
+                return true;
+        return false;
+    }
+
+    public static void ResetThreatFinny()
+    {
+        ThreatRowUpdates = 0;
+        ThreatRefreshes = 0;
+        ThreatFinnyHits = 0;
+        ThreatRowsFull = 0;
+        ThreatRowsFullOnHit = 0;
+        ThreatRowsChanged = 0;
+        ThreatSquaresChanged = 0;
+        ThreatSquaresWorst = 0;
+        if (_finnyValid != null)
+            Array.Clear(_finnyValid);
     }
 }
