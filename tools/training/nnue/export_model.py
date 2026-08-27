@@ -285,9 +285,8 @@ def main():
         ps_w = ps.astype(np.int32)
         print(f"  psqt head: {psqt_buckets} bucket(s), max |q| = {int(worst):,}, "
               f"{100.0 * float((ps_w == 0).mean()):.1f}% zero")
-        print("  NOTE: verify_export does not reproduce the psqt lane yet; the C#")
-        print("  parity test covers the accumulator, but extend verify_export")
-        print("  before the first SPRT with a psqt net.")
+        print("  verify_export reproduces the psqt lane (extended 26-08); run it")
+        print("  on this export before any SPRT, as with every net.")
         blocks.append(ps_w.tobytes())
 
     payload = b"".join(blocks)

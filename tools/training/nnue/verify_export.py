@@ -87,6 +87,7 @@ def load_model(path):
     buckets = max(1, buckets) if arch in (ARCH_INT8_L1_BUCKETS, ARCH_THREATS,
                                           ARCH_DUAL) else 1
     has_threats = arch == ARCH_THREATS or (arch == ARCH_DUAL and (flags & ARCH_FLAG_THREATS))
+    psqt_buckets = _psqt if version == 2 else 0
 
     body = raw[header_size:]
     offset = 0
@@ -123,6 +124,12 @@ def load_model(path):
         th_w = take(threats.THREAT_INPUT_SIZE * ft_out, np.int16).reshape(
             threats.THREAT_INPUT_SIZE, ft_out)
 
+    # Psqt head, appended after everything: int32 per feature per bucket, at
+    # OUTPUT_SCALE, so (sum_stm - sum_opp) / 2 is already centipawns.
+    ps_w = None
+    if psqt_buckets > 0:
+        ps_w = take(ft_in * psqt_buckets, np.int32).reshape(ft_in, psqt_buckets)
+
     if offset != payload_len:
         raise SystemExit(f"{path}: payload length mismatch ({offset} read, {payload_len} declared)")
 
@@ -130,7 +137,7 @@ def load_model(path):
                 buckets=buckets, qa=qa, qb=qb, out_scale=out_scale,
                 ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b,
                 l2_w=l2_w, l2_b=l2_b, out_w=out_w, out_b=out_b,
-                th_w=th_w)
+                th_w=th_w, ps_w=ps_w, psqt_buckets=psqt_buckets)
 
 
 def _dual_activate(pre, qa, qb):
@@ -198,6 +205,18 @@ def evaluate(model, fen):
 
         accumulators.append(acc)
 
+    psqt_term = 0
+    if model.get("ps_w") is not None:
+        lanes = []
+        for perspective in (0, 1):
+            lane = np.zeros(model["psqt_buckets"], dtype=np.int64)
+            for square, ptype, colour in pieces:
+                index = _make_index(perspective, kings[perspective], ptype, colour, square)
+                lane += model["ps_w"][index]
+            lanes.append(lane)
+        b = 0  # single-bucket phase 1; multi-bucket selects by piece count
+        psqt_term = int((lanes[stm][b] - lanes[1 - stm][b]) // 2)
+
     stm_acc, opp_acc = accumulators[stm], accumulators[1 - stm]
     qa, qb = model["qa"], model["qb"]
 
@@ -227,7 +246,7 @@ def evaluate(model, fen):
     value = output * model["out_scale"]
     divisor = qa * qb
     truncated = abs(value) // divisor
-    return int(-truncated if value < 0 else truncated), bucket, len(pieces)
+    return int(-truncated if value < 0 else truncated) + psqt_term, bucket, len(pieces)
 
 
 def main():
