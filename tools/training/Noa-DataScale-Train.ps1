@@ -63,6 +63,10 @@ param(
     [double]$StartLambda = [double]::NaN,
     [double]$EndLambda = [double]::NaN,
     [int]$PsqtBuckets = 0,
+    [double]$InOffset = [double]::NaN,
+    [double]$InScaling = [double]::NaN,
+    [double]$OutOffset = [double]::NaN,
+    [double]$OutScaling = [double]::NaN,
 
     # 60 is the baseline's value. Change it only when EPOCHS is the axis.
     [int]$Epochs = 60,
@@ -135,6 +139,10 @@ try {
     if (-not [double]::IsNaN($StartLambda)) { $extra += "--start-lambda"; $extra += "$StartLambda" }
     if (-not [double]::IsNaN($EndLambda)) { $extra += "--end-lambda"; $extra += "$EndLambda" }
     if ($PsqtBuckets -gt 0) { $extra += "--psqt-buckets"; $extra += "$PsqtBuckets" }
+    if (-not [double]::IsNaN($InOffset))   { $extra += "--in-offset";   $extra += "$InOffset" }
+    if (-not [double]::IsNaN($InScaling))  { $extra += "--in-scaling";  $extra += "$InScaling" }
+    if (-not [double]::IsNaN($OutOffset))  { $extra += "--out-offset";  $extra += "$OutOffset" }
+    if (-not [double]::IsNaN($OutScaling)) { $extra += "--out-scaling"; $extra += "$OutScaling" }
     python train_nnue.py `
         --data @shards `
         --out "checkpoints\$Name.pt" `

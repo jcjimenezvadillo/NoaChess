@@ -657,7 +657,14 @@ Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
 
-## 2026-08-25/26 - in flight
+## 2026-08-27 - fqwd0 ships as v5.1.0
+
+The no-ft-weight-decay arm measured +11.1 [+2.3, +19.9] H1 over fq60 in 3,224 fixed-node games
+and anchors at 3242 +-25 CCRL on the single-thread gauntlet. Raw reference loss lost -41.8 H0
+(scale mismatch; refit 240/145 trains as fqloss2); the lambda schedule ended +5.3 in 6,000
+unconcluded and waits to stack. The 600M corpus and the psqt net are next.
+
+## 2026-08-25/26 - in flight (superseded by the entry above)
 
 The three training arms the crashed 11-08 queue never reached are running in
 series on the fq60 recipe, one variable each: fqloss (the reference loss
