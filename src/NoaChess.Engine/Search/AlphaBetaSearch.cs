@@ -567,6 +567,16 @@ public sealed class AlphaBetaSearch
     // the value-scale rule: margins are compared against our own eval at the
     // consumption site and the SPRT is the judge of the units.
     public bool UseNmpEvalGate { get; set; }
+
+    // The shallow pruning ladder (off by default, measured before it ships):
+    // the reference's step-14 family that the old note below the flag's use
+    // site documents as deferred and never measured. All margins raw per the
+    // value-scale rule; the SPRT judges the units.
+    public bool UsePruningLadder { get; set; }
+
+    // The futility rung alone, separable for the ablation the measurement
+    // plan requires: it is the one rung with a history of hiding mates here.
+    public bool UsePruningLadderFutility { get; set; } = true;
     private int _optimism;                       // for the root side to move
     private Color _rootSide;
     private int _rootAverageScore = ScoreNone;   // EWMA across iterations
@@ -2175,6 +2185,7 @@ public sealed class AlphaBetaSearch
         int bestScore = -Infinity;
         int searched = 0;
         int quietsSearched = 0;
+        bool skipQuiets = false; // pruning ladder: LMP at every depth
         int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
 
         // Quiet moves actually searched at this node, kept so that a later
@@ -2240,10 +2251,76 @@ public sealed class AlphaBetaSearch
             // when that was cut. Recompute it here if the reshape is ever
             // attempted; until then it is pure cost.
 
+            // ---- THE PRUNING LADDER (UsePruningLadder only) ----
+            // The reference's step-14 family, ported as one coherent unit with
+            // its own lmrDepth. Divergences, all deliberate and visible:
+            // capture futility is omitted in v1 (its givesCheck exemption has
+            // no cheap test at this point in our loop, and pruning checking
+            // captures on eval alone is exactly the mate-hiding failure the
+            // old note below records); the quiet history sum uses level-0
+            // continuation plus butterfly (pawn history is closed on
+            // measurement here); and the parent-futility fail-soft bestValue
+            // update is dropped, keeping prune-only semantics.
+            if (UsePruningLadder && searched > 0 && !inCheck
+                && Math.Abs(alpha) < MateBound && Math.Abs(bestScore) < MateBound
+                && board.HasNonPawnMaterial(stm))
+            {
+                if (searched >= (3 + depth * depth) / (2 - (improving ? 1 : 0)))
+                    skipQuiets = true;
+
+                if (isQuiet && skipQuiets)
+                    continue;
+
+                int ladLmrDepth = Math.Max(0, depth - 1
+                    - LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)] / LmrScale);
+                int ladPiece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
+
+                if (move.IsCapture && !move.IsPromotion)
+                {
+                    var victim = move.Flag == MoveFlag.EnPassant
+                        ? PieceType.Pawn : board.PieceTypeAt(move.To);
+                    int captHist = _captureHistory.Get(ladPiece, move.To, (int)victim);
+                    // SEE pruning for captures, margin grown by depth and eased
+                    // by the capture's own reputation. The stalemate-sacrifice
+                    // exemption: never prune away our last piece when a draw
+                    // still beats alpha.
+                    int margin = 177 * depth + captHist * 34 / 1024;
+                    if (alpha >= 0
+                        && StaticExchangeEvaluator.Evaluate(board, move) < -margin)
+                        continue;
+                }
+                else if (isQuiet && nonPv)
+                {
+                    int ladHist = (prevPiece >= 0
+                            ? _contHist[0].Get(prevPiece, prevTo, ladPiece, move.To) : 0)
+                        + _history.Get(stm, move);
+
+                    // Continuation-history pruning: a quiet the tables hate is
+                    // not worth a search at shallow depth.
+                    if (ladHist < -4136 * depth)
+                        continue;
+
+                    int ladAdjusted = ladLmrDepth + ladHist / 4096;
+
+                    // Parent futility on the REDUCED depth, the reshape the old
+                    // note defers. Mate-visibility guards: alpha and bestScore
+                    // both bounded above, and the block never runs in check.
+                    if (UsePruningLadderFutility && ladAdjusted < 12
+                        && staticEval + 39 + 119 * Math.Max(ladAdjusted, 0)
+                           + 90 * (staticEval > alpha ? 1 : 0) <= alpha)
+                        continue;
+
+                    ladAdjusted = Math.Max(ladAdjusted, 0);
+                    if (StaticExchangeEvaluator.Evaluate(board, move)
+                        < -23 * ladAdjusted * ladAdjusted)
+                        continue;
+                }
+            }
+
             // ---- Forward pruning of quiet moves (shallow, non-PV, not in
             //      check, at least one move already searched so a best move is
             //      guaranteed) ----
-            if (isQuiet && searched > 0 && nonPv && !inCheck && Math.Abs(alpha) < MateBound)
+            if (!UsePruningLadder && isQuiet && searched > 0 && nonPv && !inCheck && Math.Abs(alpha) < MateBound)
             {
                 // Late move pruning: once enough quiet moves have been tried at
                 // low depth, the remaining ones are very unlikely to be best.
@@ -2274,7 +2351,7 @@ public sealed class AlphaBetaSearch
             }
 
             // ---- Shallow capture pruning (non-PV, not in check) ----
-            if (move.IsCapture && !move.IsPromotion && searched > 0 && !inCheck)
+            if (!UsePruningLadder && move.IsCapture && !move.IsPromotion && searched > 0 && !inCheck)
             {
                 // SEE pruning near the horizon: a capture that clearly loses
                 // material will not recover the loss in the couple of plies
