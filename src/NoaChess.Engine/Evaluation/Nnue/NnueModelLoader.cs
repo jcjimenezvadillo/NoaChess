@@ -59,12 +59,39 @@ public static class NnueModelLoader
         // Offset 38 was padding before v4.2.0, so legacy files read 0 here and
         // are treated as unbucketed - old models keep loading unchanged.
         ushort headerBuckets = BinaryPrimitives.ReadUInt16LittleEndian(bytes[38..]);
-        ulong payloadLength = BinaryPrimitives.ReadUInt64LittleEndian(bytes[40..]);
-        ReadOnlySpan<byte> expectedSha = bytes[48..80];
 
-        if (version != NnueModelHeader.SupportedFormatVersion)
+        if (version != NnueModelHeader.SupportedFormatVersion
+            && version != NnueModelHeader.FormatVersionTwo)
         {
             error = $"unsupported format version {version}";
+            return false;
+        }
+
+        // Bytes 0..39 mean the same thing in both versions; only the tail moves.
+        // Version 2 inserts l2 outputs, psqt buckets and a flag word before the
+        // payload length, so everything from offset 40 on shifts by 8 bytes.
+        bool v2 = version == NnueModelHeader.FormatVersionTwo;
+        int headerSize = v2 ? NnueModelHeader.HeaderSizeV2 : NnueModelHeader.HeaderSize;
+        if (bytes.Length < headerSize)
+        {
+            error = "file too small to contain a header";
+            return false;
+        }
+
+        int l2Outputs = v2 ? BinaryPrimitives.ReadInt32LittleEndian(bytes[40..]) : 0;
+        ushort psqtBuckets = v2 ? BinaryPrimitives.ReadUInt16LittleEndian(bytes[44..]) : (ushort)0;
+        ushort flags = v2 ? BinaryPrimitives.ReadUInt16LittleEndian(bytes[46..]) : (ushort)0;
+        ulong payloadLength = BinaryPrimitives.ReadUInt64LittleEndian(bytes[(v2 ? 48 : 40)..]);
+        ReadOnlySpan<byte> expectedSha = v2 ? bytes[56..88] : bytes[48..80];
+
+        // Psqt head: version 2 headers may declare 1..8 psqt buckets. Phase 1
+        // supports it on the int16/int8 single-transformer architectures only;
+        // combining it with the threat transformer needs a second psqt table
+        // for the threat features (the reference carries both) and is rejected
+        // until that exists, loudly rather than by evaluating half a head.
+        if (psqtBuckets > 8)
+        {
+            error = $"implausible psqt bucket count {psqtBuckets}";
             return false;
         }
         if (schema != NnueFeatureIndex.FeatureSchemaId)
@@ -73,11 +100,44 @@ public static class NnueModelLoader
             return false;
         }
         bool int8 = arch is NnueModelHeader.ArchitectureInt8L1
-                         or NnueModelHeader.ArchitectureInt8L1Buckets;
+                         or NnueModelHeader.ArchitectureInt8L1Buckets
+                         or NnueModelHeader.ArchitectureThreats
+                         or NnueModelHeader.ArchitectureDualActivation;
         if (arch != NnueModelHeader.ArchitectureInt16L1 && !int8)
         {
             error = $"unsupported architecture id {arch}";
             return false;
+        }
+        bool archFive = arch == NnueModelHeader.ArchitectureDualActivation;
+        if (archFive && !v2)
+        {
+            error = "architecture 5 requires format version 2 (it has fields version 1 cannot hold)";
+            return false;
+        }
+        if (!archFive && (l2Outputs != 0 || flags != 0))
+        {
+            error = $"architecture {arch} cannot carry a second hidden layer or arch flags";
+            return false;
+        }
+        if (archFive)
+        {
+            if ((flags & NnueModelHeader.ArchFlagPairwiseFt) == 0)
+            {
+                error = "architecture 5 reads the feature transformer pairwise; the flag is not set";
+                return false;
+            }
+            if (l2Outputs <= 0 || l2Outputs > 4096)
+            {
+                error = $"implausible second hidden layer width {l2Outputs}";
+                return false;
+            }
+            // The pairwise read multiplies acc[j] by acc[j + ftOutputs/2], so an
+            // odd width has no second half to pair with.
+            if (ftOutputs % 2 != 0)
+            {
+                error = $"architecture 5 needs an even ft width to pair (got {ftOutputs})";
+                return false;
+            }
         }
         // The int8 architectures pack activations into unsigned bytes and
         // multiply them by signed bytes through VPMADDUBSW, whose int16 lane
@@ -91,12 +151,13 @@ public static class NnueModelLoader
             return false;
         }
 
-        // Only arch 3 is allowed to declare buckets; anything else must be
+        // Arch 3 and arch 4 may declare buckets; anything else must be
         // unbucketed, or the payload size and the head indexing disagree.
-        int buckets = arch == NnueModelHeader.ArchitectureInt8L1Buckets
-            ? (headerBuckets == 0 ? 1 : headerBuckets)
-            : 1;
-        if (arch != NnueModelHeader.ArchitectureInt8L1Buckets && headerBuckets > 1)
+        bool bucketed = arch is NnueModelHeader.ArchitectureInt8L1Buckets
+                             or NnueModelHeader.ArchitectureThreats
+                             or NnueModelHeader.ArchitectureDualActivation;
+        int buckets = bucketed ? (headerBuckets == 0 ? 1 : headerBuckets) : 1;
+        if (!bucketed && headerBuckets > 1)
         {
             error = $"architecture {arch} does not support output buckets (header declares {headerBuckets})";
             return false;
@@ -125,26 +186,58 @@ public static class NnueModelLoader
         // ---- Payload ----
         // Everything after the feature transformer is replicated per bucket.
         int l1WeightBytes = int8 ? 1 : 2;
-        long expectedPayload =
+        long transformerBytes =
             (long)ftInputs * ftOutputs * 2                            // ftWeights int16
-            + ftOutputs * 2                                           // ftBias int16
-            + (long)buckets * l1Outputs * 2 * ftOutputs * l1WeightBytes // l1Weights
-            + (long)buckets * l1Outputs * 4                           // l1Bias int32
-            + (long)buckets * l1Outputs * 2                           // outWeights int16
-            + (long)buckets * 4;                                      // outBias int32
+            + ftOutputs * 2;                                          // ftBias int16
+
+        long expectedPayload = archFive
+            ? transformerBytes
+              + buckets * NnueModelHeader.ArchFiveHeadBytes(ftOutputs, l1Outputs, l2Outputs)
+            : transformerBytes
+              + (long)buckets * l1Outputs * 2 * ftOutputs * l1WeightBytes // l1Weights
+              + (long)buckets * l1Outputs * 4                           // l1Bias int32
+              + (long)buckets * l1Outputs * 2                           // outWeights int16
+              + (long)buckets * 4;                                      // outBias int32
+
+        // Arch 4 appends the threat transformer. Its row count is NOT read from
+        // the file: it is a constant of the feature schema, so a file whose size
+        // implies a different one is rejected here rather than being read into a
+        // net that would then evaluate nonsense.
+        //
+        // Arch 5 carries the same block when its threat flag is set, so the two
+        // improvements compose: a net can have the threat features AND the
+        // rebuilt head without a third architecture id.
+        bool hasThreats = arch == NnueModelHeader.ArchitectureThreats
+                       || (archFive && (flags & NnueModelHeader.ArchFlagThreats) != 0);
+
+        if (hasThreats)
+            expectedPayload += NnueModelHeader.ThreatWeightBytes(
+                ThreatFeatureIndex.InputSize, ftOutputs);
+
+        // Psqt head: appended LAST so an older reader that stops early still
+        // sees a coherent file. Phase 1 pairs it with the single-transformer
+        // architectures only; threats need their own psqt table (the reference
+        // carries one per feature set) and arch 5 has its own head layout.
+        if (psqtBuckets > 0 && (hasThreats || archFive))
+        {
+            error = "psqt head is not supported together with threats or arch 5 yet";
+            return false;
+        }
+        if (psqtBuckets > 0)
+            expectedPayload += (long)ftInputs * psqtBuckets * 4;   // psqtWeights int32
 
         if ((long)payloadLength != expectedPayload)
         {
             error = $"payload length {payloadLength} does not match dimensions (expected {expectedPayload})";
             return false;
         }
-        if (bytes.Length != NnueModelHeader.HeaderSize + expectedPayload)
+        if (bytes.Length != headerSize + expectedPayload)
         {
             error = "file length does not match header";
             return false;
         }
 
-        ReadOnlySpan<byte> payload = bytes[NnueModelHeader.HeaderSize..];
+        ReadOnlySpan<byte> payload = bytes[headerSize..];
 
         Span<byte> actualSha = stackalloc byte[32];
         SHA256.HashData(payload, actualSha);
@@ -182,7 +275,14 @@ public static class NnueModelLoader
         var ftWeights = ReadInt16Array(payload, ftInputs * ftOutputs);
         var ftBias = ReadInt16Array(payload, ftOutputs);
 
-        int l1WeightCount = buckets * l1Outputs * 2 * ftOutputs;
+        // ARCH 5 reads a different head: the pairwise transformer halves the L1
+        // input, there is a second hidden layer, and the output row spans both
+        // layers' activations. Everything stays bucket-major and the blocks are
+        // in the order the exporter writes them.
+        int l1Inputs = archFive ? ftOutputs : 2 * ftOutputs;
+        int outInputs = archFive ? 2 * l1Outputs + 2 * l2Outputs : l1Outputs;
+
+        int l1WeightCount = buckets * l1Outputs * l1Inputs;
         short[]? l1Weights = null;
         sbyte[]? l1WeightsI8 = null;
         if (int8)
@@ -191,15 +291,47 @@ public static class NnueModelLoader
             l1Weights = ReadInt16Array(payload, l1WeightCount);
 
         var l1Bias = ReadInt32Array(payload, buckets * l1Outputs);
-        var outWeights = ReadInt16Array(payload, buckets * l1Outputs);
+
+        sbyte[]? l2Weights = null;
+        int[]? l2Bias = null;
+        if (archFive)
+        {
+            l2Weights = ReadInt8Array(payload, buckets * l2Outputs * 2 * l1Outputs);
+            l2Bias = ReadInt32Array(payload, buckets * l2Outputs);
+        }
+
+        var outWeights = ReadInt16Array(payload, buckets * outInputs);
         var outBias = ReadInt32Array(payload, buckets);
+
+        // The threat transformer, arch 4 only. Read last because it is appended
+        // last, so the offsets of everything before it are the ones arch 1-3
+        // already used and no existing net moves by a byte.
+        short[]? threatWeights = null;
+        if (hasThreats)
+            threatWeights = ReadInt16Array(payload, ThreatFeatureIndex.InputSize * ftOutputs);
+
+        // The psqt head, appended after everything else for the same reason.
+        int[]? psqtWeights = null;
+        if (psqtBuckets > 0)
+            psqtWeights = ReadInt32Array(payload, ftInputs * psqtBuckets);
+
+        // Built once at load: see NnueNetwork.SquaredActivation for why the
+        // activation must not divide at evaluation time.
+        var squared = new byte[qa + 1];
+        for (int c = 0; c <= qa; c++)
+            squared[c] = (byte)(c * c / qa);
 
         network = new NnueNetwork
         {
+            QbShift = System.Numerics.BitOperations.IsPow2(qb)
+                ? System.Numerics.BitOperations.TrailingZeroCount(qb)
+                : -1,
+            SquaredActivation = squared,
             ArchitectureId = arch,
             FtInputs = ftInputs,
             FtOutputs = ftOutputs,
             L1Outputs = l1Outputs,
+            L2Outputs = l2Outputs,
             OutputBuckets = buckets,
             QA = qa,
             QB = qb,
@@ -209,8 +341,13 @@ public static class NnueModelLoader
             L1Weights = l1Weights,
             L1WeightsI8 = l1WeightsI8,
             L1Bias = l1Bias,
+            L2Weights = l2Weights,
+            L2Bias = l2Bias,
             OutWeights = outWeights,
             OutBias = outBias,
+            ThreatWeights = threatWeights,
+            PsqtWeights = psqtWeights,
+            PsqtBuckets = psqtBuckets,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };
         error = "";

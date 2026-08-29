@@ -75,6 +75,20 @@ public static class NnueProfiler
                         + $"   [{nsRefreshCold / Math.Max(nsRefreshCached, 1e-9):F1}x cheaper]");
         report.AppendLine($"  Evaluate (L1 dot + output)    : {nsEval,9:F1} ns");
 
+        // Same row op, random rows: the difference against the line above is
+        // memory latency and nothing else.
+        double nsHalfKaRandom = TimeRowRandom(network, threats: false);
+        double nsThreatRandom = TimeRowRandom(network, threats: true);
+        report.AppendLine($"  HalfKA row, RANDOM row        : {nsHalfKaRandom,9:F1} ns"
+                        + $"   [{nsHalfKaRandom / Math.Max(nsAddSub, 1e-9):F1}x the cached one]");
+        if (nsThreatRandom > 0)
+        {
+            double mb = network.ThreatWeights!.Length * 2 / 1024.0 / 1024.0;
+            report.AppendLine($"  threat row, RANDOM row        : {nsThreatRandom,9:F1} ns"
+                            + $"   [{nsThreatRandom / Math.Max(nsHalfKaRandom, 1e-9):F1}x the HalfKA one,"
+                            + $" table {mb:F1} MB]");
+        }
+
         // ---- 2. Call counts from a real search ----
         report.AppendLine($"--- real search (depth {depth}, Threads=1) ---");
 
@@ -124,6 +138,44 @@ public static class NnueProfiler
                             ? $"   ({100.0 * refreshCached / refreshes:F1}% cached, "
                             + $"{(double)refreshRows / refreshes:F1} rows avg)"
                             : ""));
+
+        // Threat finny probe. Printed only for a net that carries threats,
+        // since for any other one every counter is zero and a block of zeros
+        // reads like a broken instrument.
+        long thRefresh = NnueProfiling.ThreatRefreshes;
+        if (thRefresh > 0)
+        {
+            long hits = NnueProfiling.ThreatFinnyHits;
+            long rowsFull = NnueProfiling.ThreatRowsFull;
+            long rowsDiff = NnueProfiling.ThreatRowsChanged;
+            long sqChanged = NnueProfiling.ThreatSquaresChanged;
+
+            // What the threat ROWS actually cost, priced at the random-row
+            // figure above rather than the cached one. Delta rows and refresh
+            // rows are counted separately because they arrive by different
+            // paths: the refresh has its own loop and never reaches ApplyThreat.
+            long deltaRows = NnueProfiling.ThreatRowUpdates;
+            double rowMs = (deltaRows + rowsFull) * nsThreatRandom / 1e6;
+            report.AppendLine("--- threat rows, priced at the RANDOM row cost ---");
+            report.AppendLine($"  delta rows           : {deltaRows,12:N0}"
+                            + $"   ({deltaRows / (double)Math.Max(nodes, 1):F2} per node)");
+            report.AppendLine($"  refresh rows         : {rowsFull,12:N0}"
+                            + $"   ({rowsFull / (double)Math.Max(nodes, 1):F2} per node)");
+            report.AppendLine($"  their cost           : {rowMs,12:F1} ms"
+                            + $"   ({100.0 * rowMs / sw.Elapsed.TotalMilliseconds:F1}% of wall)");
+
+            report.AppendLine("--- threat finny probe (would a cache pay?) ---");
+            report.AppendLine($"  threat refreshes     : {thRefresh,12:N0}"
+                            + $"   ({100.0 * hits / thRefresh:F1}% would hit a cache)");
+            report.AppendLine($"  rows, full rebuild   : {(double)rowsFull / thRefresh,12:F1}   per refresh");
+            if (hits > 0)
+            {
+                report.AppendLine($"  rows, diff from cache: {(double)rowsDiff / hits,12:F1}   per refresh"
+                                + $"   ({100.0 * (rowsDiff / (double)hits) / (rowsFull / (double)thRefresh):F1}% of a rebuild)");
+                report.AppendLine($"  squares differing    : {(double)sqChanged / hits,12:F1}"
+                                + $"   (worst {NnueProfiling.ThreatSquaresWorst})");
+            }
+        }
 
         // ---- 3. Attribution ----
         report.AppendLine("--- attributed cost (share of NNUE work) ---");
@@ -240,6 +292,64 @@ public static class NnueProfiler
 
         Consume(acc.Values[0][0]);
         return sw.Elapsed.TotalMilliseconds * 1e6 / (pairs * 2);
+    }
+
+    // The same row operation, but over rows picked at RANDOM across the whole
+    // table, which is what a search actually does.
+    //
+    // WHY THE OTHER ONE IS NOT ENOUGH. TimeAddSubFeature hammers ONE feature
+    // index, so after the first touch the row sits in L1 and what comes out is
+    // the arithmetic cost with the memory cost removed. That is why this
+    // report already warns that its own attribution overstates the value of
+    // optimising: it prices instructions in a path whose real bottleneck is
+    // latency.
+    //
+    // The gap between the two IS the memory cost, measured rather than argued.
+    // It matters most for THREATS, whose weight table is 60,720 rows against
+    // HalfKA's 22,528 - at width 128 that is 15.5 MB against 5.8 MB, and only
+    // one of those has any chance of staying in cache.
+    //
+    // The index list is deliberately long enough that the rows touched in the
+    // first pass are evicted before the second reaches them; a short list would
+    // measure L3 and report it as main memory.
+    private static double TimeRowRandom(NnueNetwork net, bool threats)
+    {
+        if (threats && net.ThreatWeights is null)
+            return 0;
+
+        var acc = new NnueAccumulator(net.FtOutputs);
+        int rows = threats
+            ? net.ThreatWeights!.Length / net.FtOutputs
+            : net.FtWeights.Length / net.FtOutputs;
+
+        var rng = new Random(20260823);
+        int[] index = new int[200_000];
+        for (int i = 0; i < index.Length; i++)
+            index[i] = rng.Next(rows);
+
+        void Touch(int i, bool add)
+        {
+            if (threats)
+            {
+                if (add) acc.AddThreat(net, Color.White, index[i]);
+                else acc.SubtractThreat(net, Color.White, index[i]);
+            }
+            else
+            {
+                if (add) acc.AddFeature(net, Color.White, index[i]);
+                else acc.SubtractFeature(net, Color.White, index[i]);
+            }
+        }
+
+        for (int i = 0; i < 2000; i++) { Touch(i, true); Touch(i, false); }
+
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < index.Length; i++) Touch(i, true);
+        for (int i = 0; i < index.Length; i++) Touch(i, false);
+        sw.Stop();
+
+        Consume(acc.Values[0][0]);
+        return sw.Elapsed.TotalMilliseconds * 1e6 / (2.0 * index.Length);
     }
 
     private static double TimeCopyFrom(NnueNetwork net)
