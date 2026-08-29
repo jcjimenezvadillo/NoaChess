@@ -164,6 +164,7 @@ try {
     # 0.005301, correlation 0.9396 vs 0.9402 - and then lost by 108 Elo. These
     # numbers catch a broken run. They do not rank two working ones.
     python validate_nnue.py --checkpoint "checkpoints\$Name.pt" --data $shards[0]
+    if ($LASTEXITCODE -ne 0) { throw "validate failed" }
 
     Write-Host "`n=== export ==="
     $model = Join-Path $repo "models\nnue\noa-$Name.noannue"

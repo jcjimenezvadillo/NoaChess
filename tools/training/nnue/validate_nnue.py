@@ -28,6 +28,14 @@ def quantized_eval(model, stm_feats, opp_feats):
     out_w = np.round(model.out.weight.detach().numpy().flatten() * QB)
     out_b = np.round(model.out.bias.item() * QA * QB)
 
+    psqt_rows = None
+    if getattr(model, "psqt_buckets", 0) > 0:
+        # The engine stores these rows as int32 at OUTPUT_SCALE and adds
+        # (stm - opp) / 2 in centipawns OUTSIDE the quantized path, so the
+        # simulation must do the same or the whole material term reads as
+        # quantization error.
+        psqt_rows = np.round(model.fold_psqt().numpy() * OUTPUT_SCALE)
+
     results = []
     for row in range(stm_feats.shape[0]):
         acc = []
@@ -37,7 +45,12 @@ def quantized_eval(model, stm_feats, opp_feats):
         x = np.concatenate(acc)
         hidden = np.clip((l1_b + l1_w @ x) // QB, 0, QA)
         out = out_b + out_w @ hidden
-        results.append(out * OUTPUT_SCALE / (QA * QB))
+        cp = out * OUTPUT_SCALE / (QA * QB)
+        if psqt_rows is not None:
+            stm_act = stm_feats[row][stm_feats[row] >= 0]
+            opp_act = opp_feats[row][opp_feats[row] >= 0]
+            cp += (psqt_rows[stm_act, 0].sum() - psqt_rows[opp_act, 0].sum()) // 2
+        results.append(cp)
     return np.array(results)
 
 
@@ -65,7 +78,8 @@ def main():
     # forward pass it was never trained to produce.
     model = NoaNnue(ckpt_args.get("ft_out", FT_OUT), ckpt_args.get("l1_out", L1_OUT),
                     buckets, bool(ckpt_args.get("factorized", False)),
-                    bool(ckpt_args.get("qat", False)), ckpt_args.get("qa", QA))
+                    bool(ckpt_args.get("qat", False)), ckpt_args.get("qa", QA),
+                    psqt_buckets=int(ckpt_args.get("psqt_buckets", 0) or 0))
     model.load_state_dict(checkpoint["model"])
     model.eval()
     lam = checkpoint["args"].get("lam", 0.7)
