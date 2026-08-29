@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.1.0";
+    public const string Version = "5.2.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -236,6 +236,8 @@ public sealed class ChessEngine
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
             h.UseNmpEvalGate = _search.UseNmpEvalGate;
+            h.UsePruningLadder = _search.UsePruningLadder;
+            h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
             h.SyzygyProbeLimit = _search.SyzygyProbeLimit;
             h.SyzygyProbeDepth = _search.SyzygyProbeDepth;
             h.Syzygy50MoveRule = _search.Syzygy50MoveRule;
@@ -461,6 +463,18 @@ public sealed class ChessEngine
     {
         get => _search.UseNmpEvalGate;
         set => _search.UseNmpEvalGate = value;
+    }
+
+    public bool UsePruningLadder
+    {
+        get => _search.UsePruningLadder;
+        set => _search.UsePruningLadder = value;
+    }
+
+    public bool UsePruningLadderFutility
+    {
+        get => _search.UsePruningLadderFutility;
+        set => _search.UsePruningLadderFutility = value;
     }
 
     // ---- Evaluator selection (Classical / NNUE) ----
