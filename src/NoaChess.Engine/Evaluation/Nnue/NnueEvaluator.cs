@@ -50,6 +50,34 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // evaluator's output. That mismatch is REAL - it is simply not worth
     // correcting here, because the search was tuned around it.
 
+    // ---- MEASURED AND CUT (2026-08-21): the shuffling damper ----
+    //
+    // The reference damps its evaluation linearly with the halfmove clock:
+    //     v -= v * rule50_count / 199
+    // so an advantage that is not being converted decays towards zero, and at
+    // 100 plies without a pawn move or a capture the score is halved. Ported
+    // faithfully - and it is one of the very few constants that needs NO
+    // rescaling, because the term is a FRACTION of the evaluation and the units
+    // cancel, so 199 means the same thing on both value scales.
+    //
+    // It LOST, at fixed nodes, which is the instrument that isolates the
+    // evaluation from everything else:
+    //     830 games, 100k nodes   -17.2 Elo [-33.7, -0.7]   LLR -7.70   H0
+    // Negative from the second block of 100 and negative in seven of eight
+    // blocks. The confidence interval does not reach zero, so this is not "no
+    // effect" - the term actively costs Elo here.
+    //
+    // WHY IT HELPS THERE AND HURTS HERE, as far as the evidence supports. Our
+    // pruning margins are compared directly against this evaluator's output and
+    // were tuned around it (see the scale note below). Shrinking the evaluation
+    // by up to half is equivalent to DOUBLING every margin in exactly those
+    // positions, so reverse futility, futility and razoring all stop firing
+    // where the engine most needs depth to find the pawn break that resets the
+    // counter. The reference can afford the damping because its margins were
+    // co-tuned with it; ours were not.
+    //
+    // Do not reintroduce it without also re-tuning the margins, which is a
+    // different and much larger experiment.
     private readonly NnueNetwork _network;
     private readonly NnueAccumulatorStack _accumulators;
     private readonly bool _useSimd;
@@ -94,11 +122,20 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
             ? NnueInference.EvaluateSimd(_network, stmAcc, oppAcc, bucket)
             : NnueInference.EvaluateScalar(_network, stmAcc, oppAcc, bucket);
 
+        // Two-headed net: the psqt half travels in int32 through the
+        // accumulator, outside the quantized nonlinear path, and joins here.
+        // Exported weights are stored at OUTPUT_SCALE (round(w*400)), so the
+        // perspective difference over 2 lands directly in engine centipawns.
+        if (_network.UsesPsqt)
+            score += _accumulators.PsqtDiff(stm,
+                Math.Min(bucket, _network.PsqtBuckets - 1));
+
         return Math.Clamp(score, -EvalClamp, EvalClamp);
     }
 
     public void Reset(Board board) => _accumulators.Reset(board);
     public void PushMove(Board board, Move move) => _accumulators.PushMove(board, move);
+    public void CompleteThreatDelta(Board board) => _accumulators.CompleteThreatDelta(board);
     public void PushNull() => _accumulators.PushNull();
     public void Pop() => _accumulators.Pop();
 

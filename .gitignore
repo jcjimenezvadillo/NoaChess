@@ -84,3 +84,11 @@ tools/training/nnue/checkpoints/
 # Generic temporary files
 ~$*
 *~
+
+# Our own working notes NEVER live in this repository. Plans, specs, logs and
+# anything written to coordinate the work belong outside it, in CHESSTEST.
+# THREAT_FEATURES_SPEC.md reached commit 7e34863 before this rule existed.
+/docs/
+/AUTONOMY_LOG.md
+/*_PLAN.md
+/*_SPEC.md

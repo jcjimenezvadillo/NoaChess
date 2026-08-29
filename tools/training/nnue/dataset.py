@@ -11,6 +11,8 @@ import time
 
 import numpy as np
 
+import threats  # threat feature encoder, for the arch 4 shard cache
+
 HEADER_SIZE = 64
 RECORD_SIZE = 40
 MAGIC = b"NOADATA1"
@@ -367,6 +369,297 @@ def build_feature_shards(path, log_every=250_000, force=False):
     return directory
 
 
+# ---- threat feature shards (arch 4) ----------------------------------------
+#
+# A SEPARATE cache, deliberately, and not extra columns in the HalfKA shards.
+# The 324M-position corpus already has its .features directories built; adding
+# threat columns to them would invalidate every one and force a full re-decode
+# for runs that do not want threats at all. This way a threat run pays for the
+# threat cache once and a HalfKA run never pays for it.
+#
+# Same staleness rule as the HalfKA shards, and for the same reason: keying a
+# feature cache on mere existence is what silently trained gen7 on stale
+# features after its dataset was regenerated under the same name. The run looked
+# healthy and measured the wrong net.
+
+THREAT_SHARD_SUFFIX = ".threats"
+_THREAT_ARRAYS = ("stm", "opp")
+
+# Real features plus the three virtual rows each one fires. Sized from the
+# encoder rather than guessed, so a change there cannot silently truncate here.
+THREAT_COLUMNS = threats.MAX_ACTIVE_THREATS * 4
+
+
+def threat_dir_for(path):
+    return path + THREAT_SHARD_SUFFIX
+
+
+# Variable-length threat storage, written alongside the fixed-width one so the
+# two can be compared before either is trusted.
+#
+# WHY IT HAS TO EXIST. The fixed-width cache reserves MAX_ACTIVE_THREATS = 128
+# active threats per position because that is the schema's bound. Measured over
+# 30,032 perspectives of the real corpus, the mean is 18.3 and the largest seen
+# is 61: it reserves 512 int32 columns to store about 73. Over the 65 shards
+# that is 1.33 TB against 0.64 TB of free SSD, so the encode dies of a full disk
+# after hours. The same data in CSR form is 0.19 TB.
+#
+# WHY ONE PASS AND NOT TWO. Measuring the lengths first and allocating after
+# would be simpler and costs a second encode of the whole corpus - and the
+# encode is the expensive half, 5.4 hours becoming 10.8. So rows are appended to
+# an open file in chunks while the offsets accumulate in memory (n+1 int64 is
+# 40 MB per shard) and the file is memory-mapped for reading afterwards.
+# `tofile` writes no .npy header, so the reader uses np.memmap, not np.load.
+#
+# AND IT REMOVES A FAILURE MODE. The fixed-width writer TRUNCATES any row past
+# 512 columns and only reports a counter, so the positions with the most threats
+# - the ones that matter most - would silently train on partial features. A
+# variable-length row cannot be truncated.
+_CSR_ARRAYS = ("stm_values", "stm_offsets", "opp_values", "opp_offsets")
+
+
+def build_threat_shards_csr(path, chunk=200_000, limit=None, force=False):
+    """Encodes a .noadata into variable-length threat shards. Returns the dir.
+
+    'limit' caps the record count, for the comparison harness only: a full shard
+    is 5M positions and the gate does not need them to prove the two encodings
+    agree.
+    """
+    directory = threat_dir_for(path) + ".csr"
+    os.makedirs(directory, exist_ok=True)
+    paths = {n: os.path.join(directory, n + ".bin") for n in _CSR_ARRAYS}
+    meta_path = os.path.join(directory, "meta.json")
+
+    # Same validity rule as the fixed-width cache, and for the same reason:
+    # keying a feature cache on mere existence is what silently trained gen7 on
+    # stale features. Existence, then mtime against the source, then the column
+    # contract - and 'format', so a leftover fixed-width cache can never be read
+    # as this one.
+    if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
+        if min(os.path.getmtime(p) for p in paths.values()) >= os.path.getmtime(path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            if meta.get("format") == "csr" and meta.get("columns") == THREAT_COLUMNS:
+                print(f"threat shards (csr) reused: {directory} ({meta['count']:,} records)")
+                return directory
+            print(f"threat shards (csr) mismatch: format {meta.get('format')}, "
+                  f"columns {meta.get('columns')}; rebuilding: {directory}")
+        else:
+            print(f"threat shards (csr) STALE (source is newer), rebuilding: {directory}")
+
+    records = load_records(path)
+    n = len(records) if limit is None else min(limit, len(records))
+
+    offsets = {"stm": np.zeros(n + 1, dtype=np.int64),
+               "opp": np.zeros(n + 1, dtype=np.int64)}
+    start_time = time.time()
+
+    with open(paths["stm_values"], "wb") as fs, open(paths["opp_values"], "wb") as fo:
+        buffers = {"stm": [], "opp": []}
+        for i in range(n):
+            rec = records[i]
+            white, black = threats.active_threats(int(rec["occupancy"]), rec["pieces"])
+            a, b = (white, black) if int(rec["stm"]) == 0 else (black, white)
+            a, b = threats.factorize(a), threats.factorize(b)
+
+            buffers["stm"].append(np.asarray(a, dtype=np.int32))
+            buffers["opp"].append(np.asarray(b, dtype=np.int32))
+            offsets["stm"][i + 1] = offsets["stm"][i] + len(a)
+            offsets["opp"][i + 1] = offsets["opp"][i] + len(b)
+
+            if (i + 1) % chunk == 0 or i + 1 == n:
+                np.concatenate(buffers["stm"]).tofile(fs)
+                np.concatenate(buffers["opp"]).tofile(fo)
+                buffers = {"stm": [], "opp": []}
+                elapsed = max(time.time() - start_time, 1e-9)
+                rate = (i + 1) / elapsed
+                print(f"  csr {i + 1:,}/{n:,} ({rate:,.0f} rec/s, "
+                      f"ETA {(n - i - 1) / rate / 60:.1f} min)", flush=True)
+
+    offsets["stm"].tofile(paths["stm_offsets"])
+    offsets["opp"].tofile(paths["opp_offsets"])
+
+    # Written last, exactly as the fixed-width path does, so an interrupted
+    # encode leaves no meta and the next run rebuilds instead of reading a
+    # half-written mapping.
+    with open(meta_path, "w") as f:
+        json.dump({"count": int(n), "format": "csr",
+                   "source": os.path.basename(path),
+                   "source_mtime": os.path.getmtime(path),
+                   "columns": THREAT_COLUMNS,
+                   "threat_input_size": threats.THREAT_INPUT_SIZE,
+                   "factored_input_size": threats.FACTORED_INPUT_SIZE}, f, indent=2)
+    return directory
+
+
+def expand_csr(values, offsets, begin, end, columns=None):
+    """Rebuilds rows [begin, end) as a fixed-width block padded with -1.
+
+    THE SAVING IS ON DISK, NOT IN RAM, and that is what makes this safe to drop
+    in. The cache shrinks 7x because rows are stored at their real length, but
+    the block handed to the training loop is the same fixed-width int32 array
+    the fixed-width cache produced, so everything downstream - the shuffling,
+    the concatenation, the fancy indexing, the model - sees byte-identical
+    input. A batch of 16384 at 512 columns is 67 MB; the disk was the problem,
+    never the batch.
+    """
+    columns = THREAT_COLUMNS if columns is None else columns
+    rows = end - begin
+    out = np.full((rows, columns), -1, dtype=np.int32)
+    base = int(offsets[begin])
+    # One read of the whole span rather than one per row: the span is
+    # contiguous by construction, and paging it in row by row is what made the
+    # HalfKA path slow enough to need np.asarray in the first place.
+    span = np.asarray(values[base:int(offsets[end])])
+    starts = np.asarray(offsets[begin:end + 1], dtype=np.int64) - base
+
+    # Checked, not assumed. Forgetting to subtract the base reads past the span
+    # and numpy happens to raise a broadcast error - but only when the span runs
+    # short. With a longer span the same bug fills rows with the WRONG values
+    # and says nothing, which is the failure this whole cache must not have. One
+    # comparison turns luck into a guarantee.
+    if starts[0] != 0 or starts[-1] != len(span) or np.any(np.diff(starts) < 0):
+        raise ValueError(
+            f"expand_csr: offsets incoherentes para [{begin},{end}) - "
+            f"empiezan en {starts[0]}, acaban en {starts[-1]}, tramo de {len(span)}")
+    for i in range(rows):
+        a, b = int(starts[i]), int(starts[i + 1])
+        n = min(b - a, columns)
+        if n > 0:
+            out[i, :n] = span[a:a + n]
+    return out
+
+
+class _CsrView:
+    """Makes a CSR pair behave like the 2D array the consumer already expects.
+
+    The streaming loop slices these caches by row range and hands the result
+    straight on. Rather than teach that loop about two storage formats - the
+    exact drift that puts a stream in one place and forgets it in another - the
+    format is hidden behind the one operation the loop performs. len() and
+    [begin:end] are all it ever asks for, and both mean here what they meant
+    before, so nothing downstream changes or needs to know.
+    """
+
+    __slots__ = ("_values", "_offsets")
+
+    def __init__(self, values, offsets):
+        self._values = values
+        self._offsets = offsets
+
+    def __len__(self):
+        return len(self._offsets) - 1
+
+    def __getitem__(self, key):
+        if not isinstance(key, slice):
+            raise TypeError("los caches de amenazas solo se cortan por rangos")
+        begin, end, step = key.indices(len(self))
+        if step != 1:
+            raise ValueError("los caches de amenazas no admiten paso distinto de 1")
+        return expand_csr(self._values, self._offsets, begin, end)
+
+
+def load_threat_csr(directory):
+    """Memory-maps a CSR threat shard. Returns (values, offsets) per perspective."""
+    out = {}
+    for side in ("stm", "opp"):
+        values = np.memmap(os.path.join(directory, f"{side}_values.bin"),
+                           dtype=np.int32, mode="r")
+        offsets = np.memmap(os.path.join(directory, f"{side}_offsets.bin"),
+                            dtype=np.int64, mode="r")
+        out[side] = (values, offsets)
+    return out
+
+
+def build_threat_shards(path, force=False, fixed_width=False):
+    """Decodes a .noadata into memory-mappable threat feature shards.
+
+    MEASURED 2026-08-16 and the old figure here was wrong: 4,313 records per
+    second, which is 20.9 hours for the 325M corpus, not the 5.4 this used to
+    claim. Taken while a training run had the machine, so it is an upper bound
+    and an idle box will do better - but not four times better. Paid once per
+    corpus and only by runs that ask for threats.
+    """
+    # DESVIADO AL FORMATO DE LONGITUD VARIABLE, y este es el sitio.
+    #
+    # La primera version de este desvio acabo dentro de build_feature_shards
+    # -la de HalfKA- porque el patron que se busco para insertarlo existe en
+    # LAS DOS funciones y la sustitucion cogio la primera. Rompio TODO el
+    # entrenamiento con un NameError, no solo el de amenazas, y ni los tres
+    # gates del CSR lo vieron: llamaban a build_threat_shards_csr directamente
+    # y nunca pasaban por este punto de entrada. Probar el camino nuevo no es
+    # probar que el camino viejo lleva a el.
+    if not fixed_width:
+        return build_threat_shards_csr(path, force=force)
+    directory = threat_dir_for(path)
+    paths = {n: os.path.join(directory, n + ".npy") for n in _THREAT_ARRAYS}
+    meta_path = os.path.join(directory, "meta.json")
+
+    if not force and os.path.exists(meta_path) and all(os.path.exists(p) for p in paths.values()):
+        if min(os.path.getmtime(p) for p in paths.values()) >= os.path.getmtime(path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            # The column count is part of the contract: a cache built when the
+            # encoder emitted a different number of virtuals would load without
+            # complaint and feed the net truncated rows.
+            if meta.get("columns") == THREAT_COLUMNS:
+                print(f"threat shards reused: {directory} ({meta['count']:,} records)")
+                return directory
+            print(f"threat shards have {meta.get('columns')} columns, encoder now emits "
+                  f"{THREAT_COLUMNS}; rebuilding: {directory}")
+        else:
+            print(f"threat shards STALE (source .noadata is newer), rebuilding: {directory}")
+
+    records = load_records(path)
+    n = len(records)
+    os.makedirs(directory, exist_ok=True)
+
+    stm_t = np.lib.format.open_memmap(paths["stm"], mode="w+", dtype=np.int32,
+                                      shape=(n, THREAT_COLUMNS))
+    opp_t = np.lib.format.open_memmap(paths["opp"], mode="w+", dtype=np.int32,
+                                      shape=(n, THREAT_COLUMNS))
+    stm_t[:] = -1
+    opp_t[:] = -1
+
+    print(f"encoding threats for {n:,} records -> {directory}", flush=True)
+    start_time = time.time()
+    overflow = 0
+    for i in range(n):
+        rec = records[i]
+        white, black = threats.active_threats(int(rec["occupancy"]), rec["pieces"])
+        a, b = (white, black) if int(rec["stm"]) == 0 else (black, white)
+        a, b = threats.factorize(a), threats.factorize(b)
+        if len(a) > THREAT_COLUMNS or len(b) > THREAT_COLUMNS:
+            overflow += 1
+        stm_t[i, :min(len(a), THREAT_COLUMNS)] = a[:THREAT_COLUMNS]
+        opp_t[i, :min(len(b), THREAT_COLUMNS)] = b[:THREAT_COLUMNS]
+
+        if (i + 1) % 200_000 == 0:
+            elapsed = time.time() - start_time
+            rate = (i + 1) / elapsed
+            print(f"  {i + 1:,}/{n:,} ({rate:,.0f} rec/s, "
+                  f"ETA {(n - i - 1) / rate / 60:.1f} min)", flush=True)
+
+    for array in (stm_t, opp_t):
+        array.flush()
+
+    if overflow:
+        print(f"  WARNING: {overflow:,} positions exceeded {THREAT_COLUMNS} columns "
+              f"and were TRUNCATED - features were dropped")
+
+    # Written last, so an interrupted encode leaves no meta and the next run
+    # rebuilds instead of training on a half-written mapping.
+    with open(meta_path, "w") as f:
+        json.dump({"count": int(n), "source": os.path.basename(path),
+                   "source_mtime": os.path.getmtime(path),
+                   "columns": THREAT_COLUMNS,
+                   "threat_input_size": threats.THREAT_INPUT_SIZE,
+                   "factored_input_size": threats.FACTORED_INPUT_SIZE}, f, indent=2)
+
+    print(f"threat shards written: {directory}")
+    return directory
+
+
 class FeatureStore:
     """
     Memory-mapped features for one or more datasets, addressed as one logical
@@ -378,7 +671,10 @@ class FeatureStore:
     because the record format is ordered by game.
     """
 
-    def __init__(self, paths, val_fraction=0.05):
+    def __init__(self, paths, val_fraction=0.05, threats=False):
+        # Threat shards are OPTIONAL and live in their own directory, so a run
+        # without them never touches - or builds - that cache.
+        self.threats = bool(threats)
         self.files = []
         for path in paths:
             directory = build_feature_shards(path)
@@ -398,11 +694,25 @@ class FeatureStore:
                       f"with --resume, or drop the file.")
                 continue
             train_count = count - int(count * val_fraction)
-            self.files.append({
+            entry = {
                 "path": path, "stm": stm, "opp": opp,
                 "scores": scores, "results": results,
                 "count": count, "train_count": train_count,
-            })
+            }
+            if self.threats:
+                tdir = build_threat_shards(path)
+                csr = load_threat_csr(tdir)
+                entry["stm_t"] = _CsrView(*csr["stm"])
+                entry["opp_t"] = _CsrView(*csr["opp"])
+                # A threat cache built from a different slice of the same corpus
+                # would line up row for row with the wrong positions and train
+                # on labels that belong to other boards. Cheap to check, and
+                # impossible to notice afterwards.
+                if len(entry["stm_t"]) != count:
+                    raise SystemExit(
+                        f"{path}: threat shards hold {len(entry['stm_t']):,} rows but the "
+                        f"HalfKA shards hold {count:,}. They describe different data.")
+            self.files.append(entry)
             print(f"dataset: {count:,} records from {path} "
                   f"(train {train_count:,} / val {count - train_count:,})")
 
@@ -425,7 +735,8 @@ class FeatureStore:
     def stream_batches(self, batch_size, rng, split="train",
                        chunk=8192, buffer_chunks=64):
         """
-        Yields (stm, opp, scores, results) batches. Chunk order is shuffled
+        Yields (stm, opp, scores, results) batches, plus (stm_t, opp_t) when
+        the store was opened with threats. Chunk order is shuffled
         globally across every file, then each buffer of chunks is shuffled
         internally before being cut into batches.
         """
@@ -438,7 +749,15 @@ class FeatureStore:
 
         order = rng.permutation(len(chunks))
 
-        pending = ([], [], [], [])
+        # Six streams with threats, four without. Built from a key list rather
+        # than hard-coded tuples so the two paths cannot drift: adding a stream
+        # in one place and forgetting the other is how a buffer ends up shuffled
+        # with a permutation of the wrong length.
+        keys = ["stm", "opp", "scores", "results"]
+        if self.threats:
+            keys += ["stm_t", "opp_t"]
+
+        pending = tuple([] for _ in keys)
         pending_rows = 0
         # Rows left over when a buffer does not divide evenly into batches. They
         # are CARRIED into the next buffer rather than dropped: discarding a
@@ -453,10 +772,8 @@ class FeatureStore:
             f = self.files[file_index]
             # np.asarray forces the mapped slice into real memory once, so the
             # later fancy-indexing does not fault page by page.
-            pending[0].append(np.asarray(f["stm"][begin:end]))
-            pending[1].append(np.asarray(f["opp"][begin:end]))
-            pending[2].append(np.asarray(f["scores"][begin:end]))
-            pending[3].append(np.asarray(f["results"][begin:end]))
+            for slot, key in enumerate(keys):
+                pending[slot].append(np.asarray(f[key][begin:end]))
             pending_rows += end - begin
 
             is_last = position == len(order) - 1
@@ -483,7 +800,7 @@ class FeatureStore:
             if start < rows and not is_last:
                 carry = [a[start:] for a in arrays]
 
-            pending = ([], [], [], [])
+            pending = tuple([] for _ in keys)
             pending_rows = 0
 
 

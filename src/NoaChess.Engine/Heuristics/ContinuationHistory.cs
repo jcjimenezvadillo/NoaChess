@@ -29,7 +29,22 @@ public sealed class ContinuationHistory
     // is not semantic fidelity, so the bound is measured rather than copied.
     private const int MaxScore = 8192;
 
-    private readonly int[] _scores = new int[12 * 64 * 12 * 64];
+    // short, not int, and the reason is 5G rather than tidiness.
+    //
+    // Entries are bounded at +-MaxScore = 8192 by the gravity rule above, which
+    // fits a short with room to spare, so the int was paying four bytes to store
+    // fourteen bits. That was affordable while the search kept ONE of these
+    // tables. Multi-level continuation history keeps SIX, and at 4 bytes that is
+    // 14.2 MB of working set on the hottest lookup in move ordering; at 2 it is
+    // 7.1 MB. This engine has measured before that layout beats algorithm here -
+    // flattening the history and piece tables was worth +6.1% nps at identical
+    // node counts - so halving the footprint of the biggest table is the first
+    // thing to try against the cost 5G adds.
+    //
+    // Behaviour must not move. The values stored are the same integers as
+    // before, so node counts have to come out byte-identical; if they do not,
+    // the change is wrong rather than merely slow.
+    private readonly short[] _scores = new short[12 * 64 * 12 * 64];
 
     public static int PieceIndex(Color color, PieceType type) => (int)color * 6 + (int)type;
 
@@ -50,10 +65,62 @@ public sealed class ContinuationHistory
     public void AddMalus(int prevPiece, int prevTo, int piece, int to, int depth)
         => Update(prevPiece, prevTo, piece, to, -depth * depth);
 
+    // Weighted variant, for the multi-level update. The reference does not credit
+    // every ply-distance equally: the move one ply back explains a reply far
+    // better than the move six plies back, so its bonuses carry weights
+    // {1040, 780, 290, 502, 132, 418} out of 1024. Kept as a separate entry
+    // point so the single-level callers stay byte-identical.
+    //
+    // DAMPING. The reference feeds the continuation update `bonus * 750 / 1024`
+    // where the butterfly table gets the bonus whole, so continuation history
+    // moves about three quarters as fast. With gravity that does not change
+    // where an entry SATURATES - the equilibrium is the bound either way - it
+    // changes how heavily the table weights what happened recently. Without
+    // this the port ran roughly 1.75x faster than the reference on the one
+    // mechanism it is being re-run for being unfaithful.
+    //
+    // Not modelled: the reference also multiplies by a consistency factor of
+    // 94-126 depending on how many nearer distances already hold a positive
+    // entry. That needs state this engine does not keep, so it is left out
+    // rather than guessed, and it is the remaining known gap.
+    private const int ContinuationDamping = 750;
+
+    // ONE division, not two, and in 64-bit.
+    //
+    // Dividing by 1024 for the damping and again by 1024 for the weight
+    // truncates twice, and at shallow depths the second truncation took the far
+    // distances to exactly zero: at depth 2 and 3 the tables for four, five and
+    // six plies back learned NOTHING. That is the same failure as the gravity
+    // term of v2.8.2, which looked implemented, evaluated to zero on every
+    // realistic update, and was credited with Elo it could not have produced.
+    //
+    // The 64-bit cast is not decoration either: depth can reach the ply cap, so
+    // depth*depth*750*1040 overflows a signed 32-bit int well before it.
+    private static int Scale(int depth, int weight)
+        => (int)((long)depth * depth * ContinuationDamping * weight / (1024L * 1024L));
+
+    public void AddWeighted(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
+        => Update(prevPiece, prevTo, piece, to, Scale(depth, weight));
+
+    public void AddWeightedMalus(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
+        => Update(prevPiece, prevTo, piece, to, -Scale(depth, weight));
+
     private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
         bonus = Math.Clamp(bonus, -MaxScore, MaxScore);
-        ref int score = ref _scores[Index(prevPiece, prevTo, piece, to)];
-        score += bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
+        ref short score = ref _scores[Index(prevPiece, prevTo, piece, to)];
+
+        // Computed in int and stored in short. The arithmetic is identical to
+        // the int version - same operands, same order, same truncation - so the
+        // stored value is the same integer it always was.
+        //
+        // The clamp is a belt on top of braces. The gravity rule keeps entries
+        // inside +-MaxScore by construction (at score = MaxScore the decay term
+        // exactly cancels the bonus), but "by construction" is what was said
+        // about the v2.8.2 gravity that turned out to be inert, so the invariant
+        // is enforced rather than trusted. Reaching it would mean the rule is
+        // broken, and silently wrapping a short is the worst way to find out.
+        int updated = score + bonus - (int)((long)score * Math.Abs(bonus) / MaxScore);
+        score = (short)Math.Clamp(updated, -MaxScore, MaxScore);
     }
 }

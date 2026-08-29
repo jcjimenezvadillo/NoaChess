@@ -13,8 +13,20 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // subtracting a couple of weight rows instead of recomputing the sum of ~30.
 public sealed class NnueAccumulator
 {
+
+    // Scratch for the threat half of a full refresh. See its use below.
+    [ThreadStatic]
+    private static int[]? ThreatScratch;
+
     // [perspective, ftOutputs] - White = 0, Black = 1.
     public readonly short[][] Values;
+
+    // Psqt head lane, [perspective * MaxPsqtBuckets + bucket]. Fixed-size so
+    // no constructor call site changes; 64 bytes per accumulator is noise
+    // against the 2 x ftOutputs shorts above. All zero for nets without a
+    // psqt head, and every update below is gated so those nets never touch it.
+    public const int MaxPsqtBuckets = 8;
+    public readonly int[] Psqt = new int[2 * MaxPsqtBuckets];
 
     // A perspective becomes invalid when ITS king moves (every feature of the
     // perspective is king-relative, so all of them change at once) and must
@@ -40,12 +52,70 @@ public sealed class NnueAccumulator
     {
         short[] values = Values[(int)perspective];
         Array.Copy(network.FtBias, values, values.Length);
+        if (network.PsqtBuckets > 0)
+            Array.Clear(Psqt, (int)perspective * MaxPsqtBuckets, MaxPsqtBuckets);
 
         Span<int> features = stackalloc int[NnueFeatureIndex.MaxActiveFeatures];
         int count = NnueFeatureIndex.ActiveFeatures(board, perspective, features);
 
         for (int i = 0; i < count; i++)
             AddFeature(network, perspective, features[i]);
+
+        // Threat features sum into the SAME accumulator, which is why there is
+        // one bias and not two: the reference does exactly this, its
+        // InputDimensions being the HalfKA size plus the threat size over one
+        // transformer output.
+        //
+        // FULL REFRESH ONLY, and knowingly so. This costs about 1600-1900 ns per
+        // perspective against roughly 1000 ns for an entire evaluation, measured
+        // in ThreatFeatureCostTests, so a net using it cannot ship. It CAN be
+        // measured at fixed nodes, where speed leaves the comparison, and that
+        // is the whole plan: prove the features are worth it on a slow build,
+        // then write the incremental update - which has to track discovered
+        // threats through opening and closing slider rays - only if they are.
+        if (network.UsesThreats)
+        {
+            // Per-thread scratch, NOT a stackalloc. The bound is 512 since a
+            // dense position overflowed 128 and crashed seven games, and C#
+            // zeroes a stackalloc, so this was memsetting two kilobytes every
+            // time a king move forced a rebuild. The sibling buffer in
+            // CompleteThreatDelta cost 96.6% of the search for the same reason;
+            // this is the same mistake in the path that call falls back to.
+            //
+            // ThreadStatic rather than a field on the accumulator: there are
+            // MaxPly accumulators per stack and only one is refreshing at a
+            // time, so one buffer per worker beats 256 of them. It is written
+            // by ActiveFeatures up to threatCount and read only that far, so it
+            // never needs to start clean.
+            Span<int> threats = ThreatScratch ??= new int[ThreatFeatureIndex.MaxActiveFeatures];
+            int threatCount = ThreatFeatureIndex.ActiveFeatures(board, perspective, threats);
+
+            // Probe only, off in normal play: what a finny table for threats
+            // would have saved here. See NnueProfiling.CountThreatRefresh for
+            // what it is deciding and why counting beats arguing about it.
+            if (NnueProfiling.Enabled)
+            {
+                Span<byte> signature = stackalloc byte[64];
+                for (int sq = 0; sq < 64; sq++)
+                {
+                    PieceType type = board.PieceTypeAt(sq);
+                    signature[sq] = type == PieceType.None
+                        ? (byte)12
+                        : (byte)((int)board.ColorAt(sq) * 6 + (int)type);
+                }
+                NnueProfiling.CountThreatRefresh((int)perspective, board.KingSquare(perspective),
+                                                 signature, threats[..threatCount]);
+            }
+
+            short[] weights = network.ThreatWeights!;
+            int width = network.FtOutputs;
+            for (int i = 0; i < threatCount; i++)
+            {
+                int off = threats[i] * width;
+                for (int j = 0; j < width; j++)
+                    values[j] += weights[off + j];
+            }
+        }
 
         Valid[(int)perspective] = true;
         Computed[(int)perspective] = true;
@@ -58,6 +128,7 @@ public sealed class NnueAccumulator
         NnueProfiling.CountCopyFrom();
         Array.Copy(other.Values[0], Values[0], Values[0].Length);
         Array.Copy(other.Values[1], Values[1], Values[1].Length);
+        Array.Copy(other.Psqt, Psqt, Psqt.Length);
         Valid[0] = other.Valid[0];
         Valid[1] = other.Valid[1];
         Computed[0] = other.Computed[0];
@@ -72,6 +143,7 @@ public sealed class NnueAccumulator
         NnueProfiling.CountPerspectiveCopy();
         int p = (int)perspective;
         Array.Copy(other.Values[p], Values[p], Values[p].Length);
+        Array.Copy(other.Psqt, p * MaxPsqtBuckets, Psqt, p * MaxPsqtBuckets, MaxPsqtBuckets);
     }
 
     // ---- Feature-transformer row updates: the hottest code in NNUE play ----
@@ -91,9 +163,67 @@ public sealed class NnueAccumulator
     // The portable Vector<T> path is kept for non-AVX2 hardware; both produce
     // identical results, which the incremental-vs-refresh tests assert.
 
+    // Threat rows, added and removed one at a time.
+    //
+    // The threat transformer sums into the SAME accumulator as HalfKA, just from
+    // a different weight table, so an incremental threat update is the identical
+    // operation over ThreatWeights instead of FtWeights. Kept as its own pair
+    // rather than a weight-array parameter on AddFeature because that method is
+    // the hottest in the engine and a parameter it does not need is a parameter
+    // the JIT has to carry.
+    public void AddThreat(NnueNetwork network, Color perspective, int featureIndex)
+        => ApplyThreat(network, perspective, featureIndex, add: true);
+
+    public void SubtractThreat(NnueNetwork network, Color perspective, int featureIndex)
+        => ApplyThreat(network, perspective, featureIndex, add: false);
+
+    private void ApplyThreat(NnueNetwork network, Color perspective, int featureIndex, bool add)
+    {
+        NnueProfiling.CountAccumulatorUpdate();
+        NnueProfiling.CountThreatRow();
+        short[] values = Values[(int)perspective];
+        short[] weights = network.ThreatWeights!;
+        int ftOut = network.FtOutputs;
+
+        if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
+        {
+            ref short v = ref MemoryMarshal.GetArrayDataReference(values);
+            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            nuint row = (nuint)featureIndex * (nuint)ftOut;
+            for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+            {
+                Vector256<short> cur = Vector256.LoadUnsafe(ref v, i);
+                Vector256<short> delta = Vector256.LoadUnsafe(ref w, row + i);
+                (add ? cur + delta : cur - delta).StoreUnsafe(ref v, i);
+            }
+            return;
+        }
+
+        int offset = featureIndex * ftOut;
+        for (int j = 0; j < ftOut; j++)
+            values[j] = (short)(add ? values[j] + weights[offset + j]
+                                    : values[j] - weights[offset + j]);
+    }
+
+    // The psqt half of one feature update. Rides along every row operation
+    // below: a lane that can be updated from one place and forgotten in
+    // another is exactly the silent-corruption shape this module has already
+    // paid for twice, so the row op and the lane share the entry point.
+    private void PsqtApply(NnueNetwork network, Color perspective, int featureIndex, int sign)
+    {
+        int buckets = network.PsqtBuckets;
+        int[] pw = network.PsqtWeights!;
+        int off = featureIndex * buckets;
+        int lane = (int)perspective * MaxPsqtBuckets;
+        for (int b = 0; b < buckets; b++)
+            Psqt[lane + b] += sign * pw[off + b];
+    }
+
     public void AddFeature(NnueNetwork network, Color perspective, int featureIndex)
     {
         NnueProfiling.CountAccumulatorUpdate();
+        if (network.PsqtBuckets > 0)
+            PsqtApply(network, perspective, featureIndex, +1);
         short[] values = Values[(int)perspective];
         short[] weights = network.FtWeights;
         int ftOut = network.FtOutputs;
@@ -115,6 +245,8 @@ public sealed class NnueAccumulator
     public void SubtractFeature(NnueNetwork network, Color perspective, int featureIndex)
     {
         NnueProfiling.CountAccumulatorUpdate();
+        if (network.PsqtBuckets > 0)
+            PsqtApply(network, perspective, featureIndex, -1);
         short[] values = Values[(int)perspective];
         short[] weights = network.FtWeights;
         int ftOut = network.FtOutputs;
@@ -141,6 +273,11 @@ public sealed class NnueAccumulator
     public void MoveFeature(NnueNetwork network, Color perspective, int removeIndex, int addIndex)
     {
         NnueProfiling.CountFusedMove();
+        if (network.PsqtBuckets > 0)
+        {
+            PsqtApply(network, perspective, addIndex, +1);
+            PsqtApply(network, perspective, removeIndex, -1);
+        }
         short[] values = Values[(int)perspective];
         short[] weights = network.FtWeights;
         int ftOut = network.FtOutputs;

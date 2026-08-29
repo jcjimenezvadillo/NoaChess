@@ -5,6 +5,241 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## Estado a 2026-08-24: amenazas CERRADAS, anchura ABIERTA, y la velocidad por fin calibrada
+
+Dos veredictos y una constante. La constante vale mas que los dos veredictos.
+
+### Las amenazas pierden a reloj y no se publican
+
+    723 partidas a 180+2 (131W 162L 430D, 59,5% tablas)
+    Elo   -14,9   95% [-30,1, +0,1]
+    LLR   -3,371  contra [-2,94, +2,94]   H0 ACEPTADA
+
+    tendencia por bloques de 100:
+      -17,4  -8,7  -18,5  -14,8  -9,7  -10,4  -12,9
+
+Estable en los siete bloques, sin deriva. Los dos brazos con el mismo binario y
+el motor ya acelerado un 15,9% ese dia. **Evaluan mejor - eso quedo probado con
++47,8 a nodos fijos - pero cuestan tanta velocidad que el paquete completo
+pierde.**
+
+### La anchura 512 gana, y su entierro no valia
+
+    637 partidas a nodos fijos (226W 156L 255D)
+    Elo   +38,4   95% [+18,7, +58,3]
+    LLR   +3,338   H1 ACEPTADA
+
+El veredicto anterior era -30,3 y con el se dio por muerta la anchura durante
+semanas. **Aquel brazo se corto en la EPOCA 5 DE 60** para no gastar 13,5 horas.
+Comparar un brazo truncado contra uno convergido mide el truncamiento.
+
+**Y el 256 tampoco se ha medido bien:** su -31,9 sale de un log que termina en
+epoch 5, exactamente igual. La aparente contradiccion - 256 pierde 32 y 512 gana
+38 - desaparece en cuanto se mira el log.
+
+### LA CONSTANTE: ~65 Elo por duplicar la velocidad
+
+Cruzar los dos veredictos de las amenazas da algo que este proyecto no tenia:
+
+    a nodos fijos   +47,8      (solo evaluacion)
+    a reloj         -14,9      (evaluacion + velocidad)
+    ratio de NPS     0,510x
+    ------------------------------------------------
+    la velocidad cuesta  47,8 + 14,9 = 62,7 Elo
+    log2(0,510) = -0,971
+    =>  ~64,6 Elo POR DUPLICAR, a 180+2
+
+Hasta hoy esto se estimaba con una constante prestada y el punto de equilibrio
+salia entre 0,58x y 0,70x segun quien lo escribiera. **Usar el 65.**
+
+Y reordena la pregunta de capacidad: ya no es "mas ancho?" sino **"capacidad
+BARATA?"**. El 512 corre a 0,655x contra un umbral de 0,664x, o sea justo en el
+filo, y por eso su SPRT a reloj no se puede sustituir por una cuenta. Los dos
+candidatos que suben al primer puesto son el **256 convergido** (menos ganancia,
+bastante mas rapido) y los **buckets de salida**, que dan capacidad sin coste por
+evaluacion porque solo se evalua un bucket por llamada.
+
+---
+
+## Estado a 2026-08-23 (noche): las tres vias de MOTOR para las amenazas, medidas y cerradas
+
+Las amenazas valen +47,8 Elo a nodos fijos y lo unico que las bloquea es que no
+caben en el reloj. Se atacaron las tres palancas de motor y ninguna abre la
+puerta del todo:
+
+    delta sin perspectiva   +15,9%   HECHO, 0,446x -> 0,510x del NPS de fq60
+    filas perezosas         NULO     estan calientes en cache
+    tabla finny             ~1%      solo ahorra filas
+    podar relaciones        NO       señal proporcional al coste
+
+### 1. El delta no dependia de la perspectiva, y se hacia dos veces
+
+Que pieza ataca a cual es un hecho del TABLERO. La perspectiva no cambia el
+hecho, solo el NUMERO con que se numera. El delta tomaba la perspectiva como
+parametro, asi que por nodo repetia la geometria identica - busquedas magicas y
+bucles de objetivos - para producir dos copias del mismo hecho, y el diff O(n*n)
+tambien corria dos veces.
+
+               antes   ahora
+    AffectedAttackers    3       2
+    CollectPairs/From    4       2
+    diff                 2       1
+
+**+15,87% [+12,0%, +15,3%]**, emparejado, 4 pares alternados, 208/238
+posiciones, signo p = 0,00000, con nodos BYTE-IDENTICOS (1.109.671 exactos).
+
+Lo que habia que comprobar antes: la pareja->indice es INYECTIVA, y `Map` y
+`symmetric` dependen solo de TIPOS, asi que "esta relacion se registra" no
+depende de la perspectiva. Lo unico que si depende es que direccion sobrevive en
+las simetricas, y eso lo resuelve el indexado final.
+
+Las mascaras de objetivo son las que salvan el diseño: las listas de parejas
+llevan las DOS direcciones de las relaciones simetricas y el diff es cuadratico,
+asi que un 1,4x de longitud habria cancelado la mitad entera. Con las mascaras
+salen 1,043x mas largas y el diff cae un 45,1%.
+
+### 2. Aplazar las filas hasta materializar: NULO
+
+Con una red de amenazas el acumulador era ansioso, mientras que uno HalfKA
+difiere y solo aplica el 54%. Se guardo la diferencia por nivel y se aplico al
+materializar:
+
+    filas de delta   8,00 -> 5,28 por nodo   (-34%)
+    copias           ansiosas -> 36,9%
+    reloj            +2,37%, signo p = 0,139  ->  NULO
+
+**Quitar un tercio del trabajo de filas movio el reloj cero.** El micro-banco de
+fila al azar las precia a 109 ns y en el 12-20% del reloj; en busqueda real
+estan casi siempre calientes en cache porque nodos hermanos tocan relaciones
+parecidas. Tercera vez en este proyecto que un coste aislado exagera el cuello.
+
+Y encontro un fallo real que los 376 tests NO vieron: `PushNull` no llama a
+`CompleteThreatDelta`, asi que un nivel nulo heredaba el diff RANCIO de un
+hermano. Con el codigo ansioso era inofensivo; con el perezoso era corrupcion
+silenciosa. Lo cazo el comprobador de nodos identicos, no la suite.
+
+### 3. Podar relaciones: no hay nada que podar
+
+Comando **`threatbands`**, que cruza el peso medio por fila con las veces que
+aparece cada tipo de relacion:
+
+    objetivo    % de señal   relaciones/pos
+    Pawn           63,4%         36,32
+    Knight         16,1%          9,76
+    Rook           11,1%          7,62
+    Bishop          8,1%          4,78
+    Queen           1,0%          0,86
+
+Proporcional en todos. La mitad mas floja de las 84 bandas son el 5,8% de la
+señal y el 9,7% de las relaciones: una permuta, no un salto.
+
+### Donde queda
+
+El coste que sobra es CALCULO - generar las listas y diferenciarlas - y **no se
+puede diferir**, porque el diff necesita el tablero de ANTES, que desaparece al
+hacer la jugada. Hay que pagarlo en cada nodo aunque nadie evalue ese nodo.
+
+Ya no queda modelo que hacer: la pregunta es empirica y la contesta un SPRT a
+reloj de la red de amenazas contra fq60, con los dos brazos en el mismo binario
+acelerado.
+
+Instrumentos que quedan en el motor: **`threatfinny`** (cuanto ahorraria una
+cache de acumulador para amenazas) y **`threatbands`**.
+
+---
+
+## Estado a 2026-08-23: las amenazas GANAN a la red que juega, y no se pueden publicar
+
+**+47.8 Elo [+21.6, +74.5] a nodos fijos, 345 partidas, LLR +4.29, H1 aceptada.**
+Es lo primero que supera a `fq60` desde el 10 de agosto. El primer bloque de 100
+partidas ya daba +45.4, o sea que no es deriva del final.
+
+    entrenamiento   60/60 epocas, 125.5 h, la epoca 60 fue la MEJOR (val 0.005856)
+    exportada       --arch 4 explicito, verificada: arch 4, 21.3 MB
+    linea base      noa-fq60 (hash 7f18eade), que es la red EMBEBIDA en el
+                    ejecutable que juegan los bots
+
+**Cuidado con la linea base**, porque el bat que existia comparaba contra
+`noa-fqc60`, que es otra red. Comprobado cargando las tres candidatas y leyendo
+el hash que reporta el motor. Contra la red equivocada el resultado no habria
+significado nada.
+
+### Por que no se publica: cuesta dos tercios de la velocidad
+
+    NPS con fq60        ~746.000
+    NPS con amthreat    ~245.000     -> 0.33x
+    profundidad a 3+2   19.1 contra 17.5   -> 1.6 plies de handicap
+
+A reloj sale con +48 de evaluacion y del orden de -55 de velocidad. Eso no es un
+empate del que se pueda sacar una version: es una red mejor que no cabe en el
+tiempo que tiene.
+
+**Donde se va el tiempo, medido con el perfilador de la busqueda:**
+
+    ThreatDelta.CollectFrom        16.4%
+    CompleteThreatDelta            19.9%
+    NnueAccumulator.Refresh        10.5%
+    ThreatDelta.AddPawn             3.8%
+                                   -----
+    maquinaria de amenazas          ~50% del tiempo de busqueda
+
+Es el coste inherente de rastrear ~37 features por posicion con un delta, no algo
+que quite una micro-optimizacion. **La via para publicarla es rediseñar el
+refresco, no ajustar lo que hay.**
+
+### Dos intentos de acelerarlo, los dos medidos, uno revertido
+
+**Buffers preasignados en vez de `stackalloc`.** El perfil ponia
+`Buffer.ZeroMemoryInternal` en el **96.6%** del tiempo: `MaxActiveFeatures` paso
+de 128 a 512 al arreglar un desbordamiento que mataba partidas, y ese numero
+dimensiona tres `stackalloc` que C# ZEREA, en un metodo que corre por nodo.
+Quitado, el zerado bajo a 1.62%.
+
+**Y el A/B cronometrado dice que valia ~3%, no 96%.** Mismo binario antes y
+despues, misma red, pasadas alternas: 241.788 contra 249.692 nps, con 10% de
+dispersion dentro de cada brazo. La aritmetica lo confirma: 2 KB de memset son
+~50 ns, por 805.073 nodos son 40 ms de 3.200, el 1.25%. **Un perfil de muestreo
+dice DONDE mirar; solo un cronometro dice CUANTO vale.** El cambio se queda por
+ser identico en nodos y mas limpio, no por su Elo.
+
+**Fusion ordenada en vez del barrido O(n*n): REVERTIDA por medirse peor.**
+
+    barrido lineal original      19.87% de self
+    fusion + IntroSort           21.61%  (5.47% solo ordenando)
+    fusion + insercion           22.51%
+
+Las listas tienen ~37 entradas y **el 83% de las features sobreviven al
+movimiento**, asi que `Contains` sale antes casi siempre mientras el orden paga
+por todos los elementos. El comentario original decia que un barrido lineal gana
+a cualquier estructura, y tenia razon.
+
+## Estado a 2026-08-23: la arquitectura 5 se midio y PIERDE
+
+Cabeza reconstruida al estilo de la referencia - lectura pareada del
+transformer, activacion al cuadrado junto a la recortada, segunda capa oculta que
+la salida lee de largo, y puente lineal. Dos brazos de 3 epocas, identicos salvo
+`--dual`, a nodos fijos:
+
+    575 partidas   -32.8 Elo [-56.5, -9.3]   LLR -6.01   H0 aceptada
+
+Las dos redes verificadas: `noa-a5dual` es arch 5 y `noa-a5ctrl` arch 2.
+
+**La causa mas probable es de diseño y no de implementacion: la lectura pareada
+HALVA la entrada de L1**, de 256 a 128, dejando 64 valores por perspectiva. La
+referencia se lo permite porque su transformer es de 1024 y al parear le quedan
+512. Copiamos la tecnica sin la anchura que la sostiene.
+
+**Lo que las pruebas de paridad no podian ver.** Salieron exactas - motor contra
+numpy, y float con QAT contra entero por debajo de 1 cp - y la arquitectura sigue
+siendo mala. **Verifican que las dos partes calculan LO MISMO, no que lo que
+calculan sea BUENO.**
+
+El experimento que separaria las causas, si se retoma: arch 5 SIN el pareado. Si
+eso gana, el culpable es parear a esta anchura y lo correcto es ensanchar
+primero.
+
+---
+
 ## Estado a 2026-08-11: la red que juega es `fq60`, y mide 3271 ±40 CCRL
 
 **+128 sobre los 3143 de v4.5.0**, y el primer salto del proyecto que sale
@@ -28,17 +263,109 @@ filas 1 y 8), o sea que ninguna característica legal se ignora.
 **Conversión SPRT propio → campo: +195,4 se quedó en +128.** Anotarlo antes de
 prometer nada a partir de un SPRT contra uno mismo.
 
-### Tres ejes medidos, y los tres apuntan al corpus
+### Los ejes, remedidos el 2026-08-14: son los DATOS, no el profesor
 
 | eje | medido | cómo |
 |---|---|---|
-| mejores ETIQUETAS | **+22,1** [+6,8, +35,9] | prueba del profesor, 1.288 partidas |
+| más DATOS (20M a 324M) | **+104,6** [+68,8, +142,8] | `told` vs `fq60`, H1 en 171 partidas |
 | más DATOS a igual cómputo | **+182** ±16,6 | calibración de escala, LOS 100% |
+| mejores ETIQUETAS a 20M | **+21,2** [+6,8, +35,7] | prueba del profesor, 1.295 partidas |
+| mejores ETIQUETAS a 324M | **+10,7** [−3,4, +24,9] | `fqc60` vs `fq60`, 1.100 partidas, sin concluir |
 | más CAPACIDAD (ancho 256) | **−30,3** [−52,4, −8,5] | `fqw256`, H0 en 494 partidas |
 
-**El cuello de botella es el corpus, no la forma de la red.** En curso: regenerar
-las 324.297.032 posiciones con `fq60` como profesor (~60 h), todo idéntico al
-corpus viejo salvo quién etiqueta.
+**El cuello de botella son las POSICIONES, y el profesor importa poco.** Las dos
+filas de etiquetas son la misma pregunta a dos escalas de corpus: **+21,2 con 20M
+posiciones por brazo se quedó en +10,7 con las 324M reales**. Es la lección cara de
+esta campaña, y está escrita aparte porque se repite: **un efecto medido con un
+corpus pequeño no predice el mismo efecto con el corpus completo**. Las 59 h de
+datagen que regeneraron las 324.299.195 posiciones con `fq60` como profesor
+compraron una línea base algo mejor, no un salto.
+
+Dos salvedades sobre la primera fila, que es la que manda:
+
+- `told` (20M) y `fq60` (324M) se entrenaron **60 épocas cada una**, así que la de
+  324M recibió también 16 veces más pasos de gradiente. El +104,6 **mezcla más
+  posiciones únicas con más cómputo de entrenamiento** y esta medida no los separa.
+- El **+182** de la calibración no es una medida pura de volumen: comparaba 20M a
+  6.000 nodos contra 4,3M a 28.000, o sea volumen contra profundidad a cómputo
+  igual. La única medida limpia de volumen es la de arriba.
+
+Por duplicación del corpus eso da **+82 Elo abajo** (4,3M a 20M) y **+26 aquí
+arriba** (20M a 324M). Decae rápido, y son dos puntos: no sirven para extrapolar
+la siguiente duplicación.
+
+### Auditoría de los negativos: cuáles de estos entierros valen
+
+Escrita el 2026-08-14 después de estar a punto de enterrar las features de amenazas
+con dos defectos de diseño dentro de la prueba. La regla que faltaba, y que ahora se
+aplica a todo lo que se declare muerto:
+
+**Antes de aceptar un negativo hay que responder cuatro preguntas.** 1) ¿Convergieron
+todos los brazos? 2) ¿Está la configuración en el régimen donde la cosa se sabe que
+funciona? 3) ¿Hay **control positivo**, un brazo que mida algo ya medido como
+ganancia? 4) ¿Qué diferencia queda con la referencia? Si falta cualquiera, el
+veredicto es "sin veredicto", no "no funciona".
+
+Pasando el listado por esas cuatro preguntas:
+
+| conclusión enterrada | estado tras la auditoría |
+|---|---|
+| "el eje de datos está cerrado" | **ERA FALSA**. Nunca se midió. Medida el 2026-08-14: **+104,6** |
+| `fqw512`, ancho 512, perdedor | **INVÁLIDA**: cortada en la **época 5 de 60** para ahorrar 13,5 h. Es exactamente el brazo truncado que la pregunta 1 prohíbe |
+| `fqw256`, ancho 256, −30,3 | **EN DUDA**: 494 partidas, convergida, pero medida sobre la entrada POBRE. Si entrada y capacidad van acopladas, esto mide el acoplamiento, no la anchura |
+| `ds1b8`, buckets, −15,2 | ya se sabía inválida: mezcla buckets con cuantización arch 1 contra arch 3 |
+| "el self-play está agotado" | ya se sabía falsa: medida con el entrenador roto |
+| King safety fase B | **VÁLIDA**: tres medidas independientes, eval clásica, sin dependencia de escala |
+
+Cinco de seis entierros no aguantan la auditoría. El patrón no es que las ideas
+fueran malas: es que **el listón para decir "no" estaba mucho más bajo que el listón
+para decir "sí"**, y eso sesga una campaña entera hacia abandonar cosas que
+funcionaban.
+
+### El eje de épocas, MEDIDO: +6,4 y sin concluir
+
+`fqc120` (mismo corpus, misma receta, 120 épocas en vez de 60) contra `fq60`:
+
+    2.920 partidas a 10+0.1   score 0.5092
+    +6,4 Elo  95% [-2,1, +14,9]   LLR +0,756 de +-2,94, 26% del camino a H1
+
+**No concluye.** La lectura honesta es "positivo pequeño, por debajo de lo que
+3.000 partidas resuelven". No basta para publicar - el intervalo toca el cero -
+pero tampoco cierra el eje: doblar las épocas vale **algo**, del orden de +6.
+
+**Coste: 19 h de entrenamiento más 14 h de SPRT para un número que no concluye.**
+Ese es el dato que importa para planificar: 33 horas de máquina por un efecto que
+no se puede resolver con el presupuesto que tenemos.
+
+#### Mi predicción falló, y por confiar en la validación
+
+Predije **plano**, por escrito y antes del resultado, apoyado en que `fqc120`
+terminó con validación **0,10% PEOR** que `fqc60` (0,005860 contra 0,005854), y en
+que a igual fracción de recocido iba +0,42% peor en los dos puntos comparables.
+
+Las dos redes entrenaron el mismo corpus con la misma partición de validación, así
+que era la comparación más limpia posible entre validaciones. **Y aun así apuntó
+al signo contrario.**
+
+Es la tercera vez en la misma semana que un proxy barato da el signo equivocado:
+
+| proxy | dijo | midió |
+|---|---|---|
+| profesor a 20M | +21,2 | +10,7 a 324M |
+| sonda de amenazas v1 | −5,43% | +3,96% con sus defectos arreglados |
+| validación de fqc120 | −0,10% (peor) | **+6,4 Elo (mejor)** |
+
+**La pérdida de validación orienta; no decide.** Estaba escrito como advertencia
+en este mismo fichero antes de que yo la ignorara en una predicción propia.
+
+### La red está infra-entrenada, no saturada
+
+La curva de validación de `fqc60` seguía bajando **5,59% en sus últimas diez
+épocas** y solo se aplanó en la 60 porque el coseno del learning rate tocó fondo en
+1,07e-05. Su pérdida de entrenamiento (0,005545) sigue **por debajo** de la de
+validación (0,005866) con la distancia cerrándose, que es lo contrario del
+sobreajuste. En curso: `fqc120`, la misma receta con el coseno estirado a 120
+épocas (`T_max=args.epochs`, comprobado antes de lanzarlo), unas 19 h.
 
 ### Dos conclusiones de este fichero quedan ANULADAS
 
@@ -51,21 +378,38 @@ cuantización borra. **El argumento era razonable y estaba equivocado**: con
 factorización y QAT, el ancho 256 sigue perdiendo 30 Elo. Ahora el eje está
 cerrado con evidencia válida.
 
-**2. "El self-play está agotado" era FALSO.** Cinco generaciones planas dieron esa
-conclusión, medidas con el entrenador que cuantizaba a cero el 85,6% del
-transformador: una generación podía salir plana porque la red no podía aprovechar
-mejores etiquetas, no porque no las hubiera. Repetido con el entrenador arreglado,
-el profesor nuevo gana **+22,1**.
+**2. "El self-play está agotado" era FALSO, pero se quedó a medias.** Cinco
+generaciones planas dieron esa conclusión, medidas con el entrenador que cuantizaba
+a cero el 85,6% del transformador: una generación podía salir plana porque la red
+no podía aprovechar mejores etiquetas, no porque no las hubiera. Repetido con el
+entrenador arreglado, el profesor nuevo gana, pero **+10,7 a escala real, no los
++22 que prometía la prueba a 20M**. La conclusión correcta no es "el profesor
+importa": es que **cambiar de profesor sobre las mismas posiciones da poco, y
+añadir posiciones da mucho**.
 
-### Lo que viene
+### Lo que viene, reordenado el 2026-08-14
 
-`fqb1`/`fqb8` (buckets de salida con su control int8 - un net con buckets solo se
-exporta como arch 3, que es int8 con QA=127, así que medirlo contra `fq60` que es
-arch 1 movería dos variables), luego `fqwd0`, `fqe120`, `fqloss`, `fqlam`. Después,
-**características de amenazas**: la referencia añade a HalfKA un juego entero de
-60.720 dimensiones con 128 activas que codifica qué pieza ataca a cuál, y nosotros
-no tenemos nada de eso. Es contenido de evaluación, no capacidad, que es
-justamente lo que la tabla de arriba dice que falta.
+El orden lo fija el coste por Elo, no el interés de la idea:
+
+1. **`fqc120`**, 120 épocas sobre el corpus nuevo. Ataca la mitad del +104,6 que es
+   cómputo, no requiere generar nada ni tocar el motor, y cuesta 19 h. EN CURSO.
+2. **Más corpus.** Unas 60 h por duplicación, del orden de +26 esperado según la
+   pendiente actual, y conviene medir antes cuánto del +104,6 era cómputo.
+3. **Características de amenazas**: la referencia añade a HalfKA un juego entero de
+   60.720 dimensiones con 128 activas que codifica qué pieza ataca a cuál, y
+   nosotros no tenemos nada de eso. Sigue siendo el ataque estructural, pero son
+   semanas de C# y hay dos ejes más baratos por delante. La sonda que decide si
+   merece la pena ya está escrita y verificada (`probe_threats.py`).
+
+**De la cola vieja sobrevive solo `fqb1`/`fqb8`** (buckets de salida con su control
+int8 - un net con buckets solo se exporta como arch 3, que es int8 con QA=127, así
+que medirlo contra `fq60` que es arch 1 movería dos variables). Sobrevive porque
+resuelve una contradicción real (+20,1 con LOS 99,8% en v4.2.0 contra −15,2 en
+`ds1b8`), no porque ajuste un número. **`fqwd0`, `fqloss` y `fqlam` quedan
+descartados**: son búsqueda de hiperparámetros, viven en la banda ±10-20, y a
+10+0.1 resolver **+10 Elo pide unas 8.700 partidas (45 h)** y **+5 Elo pide unas
+35.000 (181 h)**. No se prueba nada cuyo efecto esperado sea más pequeño que el
+instrumento de medida.
 
 ---
 
@@ -77,7 +421,7 @@ justamente lo que la tabla de arriba dice que falta.
 > esta seccion haya quedado anulada, hay una nota citando la medida que la anulo.
 
 **Key finding of that era:** the dominant lever looked like datagen label depth
-(`--nodes`), not the generational loop itself. gen2–gen4 all used 14000-node
+(`--nodes`), not the generational loop itself. gen2-gen4 all used 14000-node
 labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
 jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
 positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
@@ -87,7 +431,7 @@ Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
 absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engine
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
-NNUE off) ≈ 3020–3035 CCRL.
+NNUE off) ≈ 3020-3035 CCRL.
 
 **MAS RECIENTE ARRIBA.** La tabla iba en orden ascendente y lo que se consulta
 es siempre la ultima red, no la primera.
@@ -134,7 +478,7 @@ re-measured, because with NNUE shipped in every build the comparison stopped
 mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
-(2862–3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
+(2862-3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
 overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
 gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
 and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
@@ -312,3 +656,21 @@ the next NNUE lever**; if this axis reopens it will be from the data side.
 Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
+
+## 2026-08-27 - fqwd0 ships as v5.1.0
+
+The no-ft-weight-decay arm measured +11.1 [+2.3, +19.9] H1 over fq60 in 3,224 fixed-node games
+and anchors at 3242 +-25 CCRL on the single-thread gauntlet. Raw reference loss lost -41.8 H0
+(scale mismatch; refit 240/145 trains as fqloss2); the lambda schedule ended +5.3 in 6,000
+unconcluded and waits to stack. The 600M corpus and the psqt net are next.
+
+## 2026-08-25/26 - in flight (superseded by the entry above)
+
+The three training arms the crashed 11-08 queue never reached are running in
+series on the fq60 recipe, one variable each: fqloss (the reference loss
+instead of the raw MSE every published net trained with), fqlam (lambda
+scheduled 1.0 to 0.7) and fqwd0 (no ft weight decay). Fixed-nodes SPRTs
+follow each export; same architecture means the verdict transfers to the
+clock unchanged. The psqt two-headed net is built end to end (engine lane,
+trainer head, exact virtual-row folding, parity tests) and trains on top of
+whichever recipe wins; verify_export must learn the psqt block first.
