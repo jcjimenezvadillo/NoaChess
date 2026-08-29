@@ -23,6 +23,8 @@ public sealed class UciOptions
     public string Profile { get; private set; } = "Default";
     public bool Optimism { get; private set; }
     public bool NmpEvalGate { get; private set; }
+    public bool PruningLadder { get; private set; }
+    public bool PruningLadderFutility { get; private set; } = true;
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -89,6 +91,8 @@ public sealed class UciOptions
         output.WriteLine("option name Profile type combo default Default var Default var Bullet var WideWindow var EarlyLmr");
         output.WriteLine("option name Optimism type check default false");
         output.WriteLine("option name NmpEvalGate type check default false");
+        output.WriteLine("option name PruningLadder type check default false");
+        output.WriteLine("option name PruningLadderFutility type check default true");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
@@ -147,6 +151,14 @@ public sealed class UciOptions
             case "nmpevalgate" when bool.TryParse(value, out bool nmpGate):
                 NmpEvalGate = nmpGate;
                 return "NmpEvalGate";
+
+            case "pruningladder" when bool.TryParse(value, out bool ladder):
+                PruningLadder = ladder;
+                return "PruningLadder";
+
+            case "pruningladderfutility" when bool.TryParse(value, out bool ladFut):
+                PruningLadderFutility = ladFut;
+                return "PruningLadderFutility";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;

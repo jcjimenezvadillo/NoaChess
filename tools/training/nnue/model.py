@@ -195,7 +195,7 @@ class NoaNnue(nn.Module):
         # same exactness argument as fold_features).
         self.psqt_buckets = max(0, int(psqt_buckets))
         if self.psqt_buckets > 0:
-            if self.threats or self.dual:
+            if threats or dual:
                 raise ValueError("psqt head is not supported with threats or arch 5 yet")
             self.psqt = nn.EmbeddingBag(self.pad_index + 1, self.psqt_buckets,
                                         mode="sum", padding_idx=self.pad_index)
@@ -333,8 +333,13 @@ class NoaNnue(nn.Module):
         # OUTPUT bucket formula so a future multi-bucket psqt stays aligned
         # with the head the engine indexes.
         pad = self.pad_index
-        stm = self.psqt(stm_feats.clamp(min=0).where(stm_feats >= 0, torch.full_like(stm_feats, pad)))
-        opp = self.psqt(opp_feats.clamp(min=0).where(opp_feats >= 0, torch.full_like(opp_feats, pad)))
+        # .int(): the streaming loader serves indices as int16 (they fit), and
+        # embedding_bag_cuda only takes Int/Long. The ft path casts on its own
+        # route; this one must too, and the smoke test's tiny file took the
+        # in-RAM route and never saw it - the streaming shape is the one that
+        # counts.
+        stm = self.psqt(stm_feats.where(stm_feats >= 0, torch.full_like(stm_feats, pad)).int())
+        opp = self.psqt(opp_feats.where(opp_feats >= 0, torch.full_like(opp_feats, pad)).int())
         if self.psqt_buckets == 1:
             return (stm[:, 0] - opp[:, 0]) / 2
         bucket = bucket_for_piece_count(piece_count, self.psqt_buckets)

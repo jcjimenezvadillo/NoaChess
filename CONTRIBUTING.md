@@ -1,6 +1,4 @@
-# Contributing Guide / Guía de Contribución
-
-[Spanish below]
+# Contributing Guide
 
 ## How to contribute
 
@@ -14,30 +12,6 @@ Please follow these steps for efficient collaboration:
 4. **Write clear, well-documented commits.**
 5. **Submit a pull request** against the main branch (`main`), explaining the changes and your motivation.
 6. **Always include tests** for new features or fixes.
-7. **Respect the license**: Do not contribute code you cannot license under CC BY-NC 4.0.
+7. **Respect the license**: contributions must be yours to license and are accepted under the [MIT License](LICENSE).
 
 For suggestions, questions, or bug reports, use the [Issues](../../issues) tab.
-
-**Remember: all contributions must be for NON-commercial purposes only.**
-
----
-
-## Cómo contribuir
-
-¡Gracias por tu interés en colaborar con **NoaChess**!
-
-Sigue estos pasos para contribuir de manera eficiente:
-
-1. **Lee primero el README y revisa el roadmap.**
-2. **Abre un issue** antes de comenzar cambios grandes o nuevas funcionalidades.
-3. **Haz un fork** del repositorio y crea una rama por cada nueva contribución.
-4. **Haz commits claros y bien documentados.**
-5. **Haz un pull request** contra la rama principal (`main`), explicando claramente los cambios y su motivación.
-6. **Incluye siempre tests** para nuevas funcionalidades o correcciones.
-7. **Respeta la licencia**: No aportes código que no puedas licenciar bajo CC BY-NC 4.0.
-
-Para sugerencias, preguntas o reportes de bugs, usa la pestaña [Issues](../../issues).
-
-**Recuerda: cualquier contribución debe ser para fines NO comerciales.**
-
----

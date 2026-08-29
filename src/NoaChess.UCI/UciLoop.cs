@@ -811,6 +811,10 @@ public sealed class UciLoop
             _engine.UseOptimism = _options.Optimism;
         if (changed == "NmpEvalGate")
             _engine.UseNmpEvalGate = _options.NmpEvalGate;
+        if (changed == "PruningLadder")
+            _engine.UsePruningLadder = _options.PruningLadder;
+        if (changed == "PruningLadderFutility")
+            _engine.UsePruningLadderFutility = _options.PruningLadderFutility;
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
