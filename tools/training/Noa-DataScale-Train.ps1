@@ -62,6 +62,11 @@ param(
     # every net so far used.
     [double]$StartLambda = [double]::NaN,
     [double]$EndLambda = [double]::NaN,
+    [int]$PsqtBuckets = 0,
+    [double]$InOffset = [double]::NaN,
+    [double]$InScaling = [double]::NaN,
+    [double]$OutOffset = [double]::NaN,
+    [double]$OutScaling = [double]::NaN,
 
     # 60 is the baseline's value. Change it only when EPOCHS is the axis.
     [int]$Epochs = 60,
@@ -133,6 +138,11 @@ try {
     if ($LossStyle -ne "mse") { $extra += "--loss-style"; $extra += $LossStyle }
     if (-not [double]::IsNaN($StartLambda)) { $extra += "--start-lambda"; $extra += "$StartLambda" }
     if (-not [double]::IsNaN($EndLambda)) { $extra += "--end-lambda"; $extra += "$EndLambda" }
+    if ($PsqtBuckets -gt 0) { $extra += "--psqt-buckets"; $extra += "$PsqtBuckets" }
+    if (-not [double]::IsNaN($InOffset))   { $extra += "--in-offset";   $extra += "$InOffset" }
+    if (-not [double]::IsNaN($InScaling))  { $extra += "--in-scaling";  $extra += "$InScaling" }
+    if (-not [double]::IsNaN($OutOffset))  { $extra += "--out-offset";  $extra += "$OutOffset" }
+    if (-not [double]::IsNaN($OutScaling)) { $extra += "--out-scaling"; $extra += "$OutScaling" }
     python train_nnue.py `
         --data @shards `
         --out "checkpoints\$Name.pt" `
@@ -154,6 +164,7 @@ try {
     # 0.005301, correlation 0.9396 vs 0.9402 - and then lost by 108 Elo. These
     # numbers catch a broken run. They do not rank two working ones.
     python validate_nnue.py --checkpoint "checkpoints\$Name.pt" --data $shards[0]
+    if ($LASTEXITCODE -ne 0) { throw "validate failed" }
 
     Write-Host "`n=== export ==="
     $model = Join-Path $repo "models\nnue\noa-$Name.noannue"

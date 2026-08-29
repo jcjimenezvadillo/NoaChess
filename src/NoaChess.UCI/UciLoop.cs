@@ -349,6 +349,28 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "threatfinny":
+                {
+                    // Not UCI: measures whether a finny table for THREAT
+                    // features would pay, over a whole position set rather
+                    // than the single position nnueprofile searches. One
+                    // position decides nothing here - four of them inverted
+                    // the sign of an ordering measurement in both directions
+                    // on this engine.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleThreatFinny(tokens);
+                    break;
+                }
+
+                case "threatbands":
+                {
+                    // Not UCI: which RELATION TYPES a trained threat net
+                    // actually uses, crossed with how often each one occurs.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleThreatBands(tokens);
+                    break;
+                }
+
                 case "nnuewidth":
                 {
                     // Not UCI: measures what each feature-transformer width
@@ -504,8 +526,236 @@ public sealed class UciLoop
         }
     }
 
+    // "threatfinny [depth] [fenfile]" - not UCI.
+    //
+    // A threat refresh rebuilds from the bias and touches every active threat
+    // relation, each one a random row in a 21 MB weight table. HalfKA avoids
+    // that with a finny table - the last accumulator built for each king
+    // square, diffed instead of rebuilt - and threats have no such table.
+    //
+    // Whether one would pay comes down to how far the cached position sits
+    // from the current one, because the version worth building reuses the
+    // delta machinery: take the squares whose contents differ and run the
+    // affected-attackers argument over them, which scales with that count and
+    // not with the length of the feature list. So this reports the differing
+    // square count alongside the rows saved, and does it over a whole set of
+    // positions because the answer is phase-dependent: a quiet opening has far
+    // fewer live threats than a middlegame.
+    private void HandleThreatFinny(string[] tokens)
+    {
+        var network = _engine.NnueNetwork;
+        if (network is null || !network.UsesThreats)
+        {
+            _output.WriteLine("info string threatfinny: needs a net that carries threat features");
+            return;
+        }
+
+        int depth = 8;
+        if (tokens.Length > 1 && int.TryParse(tokens[1], out int requested) && requested > 0)
+            depth = Math.Min(requested, 20);
+
+        string[] positions;
+        if (tokens.Length > 2 && File.Exists(tokens[2]))
+        {
+            positions = File.ReadAllLines(tokens[2])
+                            .Select(l => l.Trim())
+                            .Where(l => l.Length > 0 && !l.StartsWith('#'))
+                            .ToArray();
+        }
+        else
+        {
+            _output.WriteLine("info string threatfinny: needs a FEN file, one position per line");
+            return;
+        }
+
+        int savedThreads = _engine.Threads;
+        bool savedNnue = _engine.NnueActive;
+        try
+        {
+            _engine.Threads = 1;
+            if (!savedNnue)
+                _engine.SetUseNnue(true);
+
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Reset();
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = true;
+
+            long nodes = 0;
+            int searched = 0;
+            var board = new Board();
+            foreach (string fen in positions)
+            {
+                try { Fen.Load(board, fen); }
+                catch { continue; }
+                _engine.NewGame();
+                nodes += _engine.FindBestMove(board, depth: depth).NodesSearched;
+                searched++;
+            }
+
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = false;
+
+            long refreshes = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatRefreshes;
+            long hits = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatFinnyHits;
+            long rowsFull = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatRowsFull;
+            long rowsDiff = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatRowsChanged;
+            long squares = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatSquaresChanged;
+            int worst = (int)NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatSquaresWorst;
+
+            void Say(string line) => _output.WriteLine("info string " + line);
+
+            Say($"threatfinny: {searched} positions at depth {depth}, {nodes:N0} nodes");
+            if (refreshes == 0)
+            {
+                Say("  no threat refreshes happened - nothing to decide");
+                return;
+            }
+
+            Say($"  threat refreshes     : {refreshes,12:N0}"
+              + $"   ({100.0 * refreshes / Math.Max(nodes, 1):F2}% of nodes)");
+            Say($"  cache would hit      : {100.0 * hits / refreshes,12:F1} %");
+            Say($"  rows, full rebuild   : {(double)rowsFull / refreshes,12:F1}   per refresh");
+            if (hits > 0)
+            {
+                double full = rowsFull / (double)refreshes;
+                double diff = rowsDiff / (double)hits;
+                Say($"  rows, diff from cache: {diff,12:F1}   per refresh"
+                  + $"   ({100.0 * diff / full:F1}% of a rebuild)");
+                Say($"  squares differing    : {(double)squares / hits,12:F1}   (worst {worst})");
+                // Only the refreshes a cache would actually SERVE can save
+                // anything; a miss rebuilds in full either way, so charging its
+                // rows to the saving would invent a gain.
+                long onHit = NoaChess.Engine.Evaluation.Nnue.NnueProfiling.ThreatRowsFullOnHit;
+                Say($"  rows saved per node  : {(onHit - rowsDiff) / (double)Math.Max(nodes, 1),12:F2}");
+            }
+        }
+        finally
+        {
+            _engine.Threads = savedThreads;
+            if (!savedNnue)
+                _engine.SetUseNnue(false);
+            NoaChess.Engine.Evaluation.Nnue.NnueProfiling.Enabled = false;
+            _engine.NewGame();
+        }
+    }
+
+    // "threatbands [fenfile]" - not UCI.
+    //
+    // WHAT IT IS FOR. What is left of the threat cost is generating the
+    // relation lists and differencing them, and that scales with how many
+    // relations a position PRODUCES. Deferring the row updates was measured and
+    // bought nothing, because the rows are cache-warm in a real search. So the
+    // only lever left is producing fewer relations, and the way to do that
+    // without guessing is to ask the trained net which relation types it uses.
+    //
+    // TWO NUMBERS, AND NEITHER IS ENOUGH ALONE. A relation type with tiny
+    // weights still costs nothing to drop only if it is also common enough to
+    // matter; a rare type with large weights is cheap to keep. So this reports
+    // the mean row weight AND the occurrences per position, and the product,
+    // which is what ranks them.
+    private void HandleThreatBands(string[] tokens)
+    {
+        var network = _engine.NnueNetwork;
+        if (network is null || !network.UsesThreats || network.ThreatWeights is null)
+        {
+            _output.WriteLine("info string threatbands: needs a net that carries threat features");
+            return;
+        }
+
+        string[] positions = tokens.Length > 1 && File.Exists(tokens[1])
+            ? File.ReadAllLines(tokens[1]).Select(l => l.Trim())
+                  .Where(l => l.Length > 0 && !l.StartsWith('#')).ToArray()
+            : [];
+        if (positions.Length == 0)
+        {
+            _output.WriteLine("info string threatbands: needs a FEN file, one position per line");
+            return;
+        }
+
+        short[] weights = network.ThreatWeights;
+        int width = network.FtOutputs;
+
+        // Occurrences per relation type, counted over the position set. The
+        // pairs are perspective-free, so one pass covers both.
+        var occurrences = new long[12 * 12];
+        int counted = 0;
+        var pairs = new int[NoaChess.Engine.Evaluation.Nnue.ThreatFeatureIndex.MaxActiveFeatures];
+        var board = new Board();
+        foreach (string fen in positions)
+        {
+            try { Fen.Load(board, fen); }
+            catch { continue; }
+            int n = NoaChess.Engine.Evaluation.Nnue.ThreatDelta.CollectPairs(board, board.AllOccupancy, pairs);
+            for (int i = 0; i < n; i++)
+            {
+                int att = (pairs[i] >> 12) & 15;
+                int def = (pairs[i] >> 16) & 15;
+                // ONE PAIR FEEDS TWO BANDS, not one. The indexing swaps both
+                // colours for the black perspective, so the same relation lands
+                // in (attacker, attacked) seen from white and in its
+                // colour-swapped counterpart seen from black. Counting only the
+                // absolute-colour band attributed half the occurrences to the
+                // wrong row and made a band that IS used look dead.
+                occurrences[att * 12 + def]++;
+                occurrences[((att + 6) % 12) * 12 + ((def + 6) % 12)]++;
+            }
+            counted++;
+        }
+
+        void Say(string line) => _output.WriteLine("info string " + line);
+        Say($"threatbands: {counted} positions, net width {width}");
+        Say("  atacante      objetivo      dims   |w| medio   veces/pos   producto");
+
+        var rows = new List<(string Name, int Dims, double MeanW, double Occ, double Product)>();
+        double totalProduct = 0;
+
+        for (int a = 0; a < 12; a++)
+        {
+            var aCol = (Color)(a / 6);
+            var aType = (PieceType)(a % 6);
+            for (int d = 0; d < 12; d++)
+            {
+                var dCol = (Color)(d / 6);
+                var dType = (PieceType)(d % 6);
+
+                (int start, int length) = NoaChess.Engine.Evaluation.Nnue.ThreatFeatureIndex.BandRange(aCol, aType, dCol, dType);
+                if (length == 0)
+                    continue;
+
+                double sum = 0;
+                for (int f = start; f < start + length; f++)
+                {
+                    int off = f * width;
+                    for (int j = 0; j < width; j++)
+                        sum += Math.Abs(weights[off + j]);
+                }
+
+                double meanW = sum / (length * (double)width);
+                double occ = occurrences[a * 12 + d] / (double)Math.Max(counted, 1);
+                double product = meanW * occ;
+                totalProduct += product;
+
+                string name = $"{(aCol == Color.White ? "b" : "n")}{aType}"
+                            + $" -> {(dCol == Color.White ? "b" : "n")}{dType}";
+                rows.Add((name, length, meanW, occ, product));
+            }
+        }
+
+        foreach (var r in rows.OrderByDescending(r => r.Product))
+        {
+            Say($"  {r.Name,-26}{r.Dims,6}{r.MeanW,11:F2}{r.Occ,12:F2}"
+              + $"{100.0 * r.Product / Math.Max(totalProduct, 1e-9),10:F1}%");
+        }
+
+        double tail = rows.OrderBy(r => r.Product).Take(rows.Count / 2)
+                          .Sum(r => r.Product);
+        double tailOcc = rows.OrderBy(r => r.Product).Take(rows.Count / 2)
+                             .Sum(r => r.Occ);
+        double allOcc = rows.Sum(r => r.Occ);
+        Say($"  la mitad mas floja: {100.0 * tail / Math.Max(totalProduct, 1e-9):F1}% del producto"
+          + $" y {100.0 * tailOcc / Math.Max(allOcc, 1e-9):F1}% de las relaciones generadas");
+    }
+
     // "nnuewidth [w1,w2,...] [l1] [buckets]" - not UCI. Defaults sweep the
-    // widths BLOCK 12 is choosing between.
+    // widths BLOCK 12 is choosing between."""
     private void HandleNnueWidth(string[] tokens)
     {
         int[] widths = [128, 256, 512, 1024];
@@ -557,6 +807,14 @@ public sealed class UciLoop
             _engine.Threads = _options.Threads;
         if (changed == "Profile")
             _engine.Profile = EngineProfile.ByName(_options.Profile);
+        if (changed == "Optimism")
+            _engine.UseOptimism = _options.Optimism;
+        if (changed == "NmpEvalGate")
+            _engine.UseNmpEvalGate = _options.NmpEvalGate;
+        if (changed == "PruningLadder")
+            _engine.UsePruningLadder = _options.PruningLadder;
+        if (changed == "PruningLadderFutility")
+            _engine.UsePruningLadderFutility = _options.PruningLadderFutility;
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
@@ -566,6 +824,13 @@ public sealed class UciLoop
         if (changed == "SyzygyPath")
         {
             NoaChess.Engine.Tablebases.Syzygy.Init(_options.SyzygyPath);
+            // Push the probe settings HERE too, not only when they change. A
+            // host that sets SyzygyPath and nothing else - which is what both
+            // bots do - would otherwise run on the search's own defaults and
+            // ignore the option entirely.
+            _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
+            _engine.SyzygyProbeDepth = _options.SyzygyProbeDepth;
+            _engine.Syzygy50MoveRule = _options.Syzygy50MoveRule;
             _engine.RefreshTablebaseLimit();
             _output.WriteLine(NoaChess.Engine.Tablebases.Syzygy.Available
                 ? $"info string Syzygy: {NoaChess.Engine.Tablebases.Syzygy.Cardinality}-man tablebases loaded"
