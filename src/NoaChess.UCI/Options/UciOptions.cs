@@ -25,6 +25,15 @@ public sealed class UciOptions
     public bool NmpEvalGate { get; private set; }
     public bool PruningLadder { get; private set; }
     public bool PruningLadderFutility { get; private set; } = true;
+    public bool CorrectionBlend { get; private set; }
+    public bool StatScoreLmr { get; private set; } = true;
+    public bool CutNodeLmr { get; private set; }
+    public bool FailLowCorrection { get; private set; }
+    public bool MoveCountLmr { get; private set; }
+    public bool DynamicAspiration { get; private set; }
+    public bool HistoryBonus { get; private set; }
+    public bool CorrectionLmr { get; private set; }
+    public bool KillerShallowing { get; private set; } = true;
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -93,6 +102,15 @@ public sealed class UciOptions
         output.WriteLine("option name NmpEvalGate type check default false");
         output.WriteLine("option name PruningLadder type check default false");
         output.WriteLine("option name PruningLadderFutility type check default true");
+        output.WriteLine("option name CorrectionBlend type check default false");
+        output.WriteLine("option name StatScoreLmr type check default true");
+        output.WriteLine("option name CutNodeLmr type check default false");
+        output.WriteLine("option name FailLowCorrection type check default false");
+        output.WriteLine("option name MoveCountLmr type check default false");
+        output.WriteLine("option name DynamicAspiration type check default false");
+        output.WriteLine("option name HistoryBonus type check default false");
+        output.WriteLine("option name CorrectionLmr type check default false");
+        output.WriteLine("option name KillerShallowing type check default true");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
@@ -159,6 +177,33 @@ public sealed class UciOptions
             case "pruningladderfutility" when bool.TryParse(value, out bool ladFut):
                 PruningLadderFutility = ladFut;
                 return "PruningLadderFutility";
+            case "correctionblend" when bool.TryParse(value, out bool corrBlend):
+                CorrectionBlend = corrBlend;
+                return "CorrectionBlend";
+            case "statscorelmr" when bool.TryParse(value, out bool statLmr):
+                StatScoreLmr = statLmr;
+                return "StatScoreLmr";
+            case "cutnodelmr" when bool.TryParse(value, out bool cutLmr):
+                CutNodeLmr = cutLmr;
+                return "CutNodeLmr";
+            case "faillowcorrection" when bool.TryParse(value, out bool flc):
+                FailLowCorrection = flc;
+                return "FailLowCorrection";
+            case "movecountlmr" when bool.TryParse(value, out bool mcl):
+                MoveCountLmr = mcl;
+                return "MoveCountLmr";
+            case "dynamicaspiration" when bool.TryParse(value, out bool dyna):
+                DynamicAspiration = dyna;
+                return "DynamicAspiration";
+            case "historybonus" when bool.TryParse(value, out bool hb):
+                HistoryBonus = hb;
+                return "HistoryBonus";
+            case "correctionlmr" when bool.TryParse(value, out bool clmr):
+                CorrectionLmr = clmr;
+                return "CorrectionLmr";
+            case "killershallowing" when bool.TryParse(value, out bool ks):
+                KillerShallowing = ks;
+                return "KillerShallowing";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;
