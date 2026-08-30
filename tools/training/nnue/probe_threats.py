@@ -388,4 +388,5 @@ def main():
         print("  DATOS: ellos entrenan con miles de millones de posiciones.")
 
 
-main()
+if __name__ == "__main__":
+    main()

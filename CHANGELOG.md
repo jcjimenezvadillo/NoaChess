@@ -1,4 +1,43 @@
 # CHANGELOG
+## 2026-08-30 (v5.3.0) - the volume axis pays, and statScore ships
+
+**Volume, finally measured alone, wins: +29.7 Elo [+12.2, +47.3], LLR +3.13, H1 over 763
+fixed-node games against fqmix.** `fq594` is the fqmix recipe verbatim - same teacher, same
+6,000-node labels, same architecture and hyperparameters - trained on the corpus extended from
+324M to ~594M positions (the 70 inherited shards plus 54 new random-opening bulk shards of
+identical provenance). One variable moved and it was worth +29.7, the second-largest net gain of
+the project after factorization. Same architecture means same NPS by construction, so the
+fixed-nodes verdict carries to the clock.
+
+**The search ships its one winner: statScore in LMR, ON by default (+20.9 [+7.2, +34.7], H1
+over 1,099 fixed-node games).** The faithful formula - both continuation distances, consumer-site
+scale 439/0.28 - resurrects an idea buried three times in regimes that no longer exist. The rest
+of the resurrection campaign closed with seven H0 on the statScore-on base, every one kept as an
+inert option with its tombstone: cutNode third burial (-10.7), correction learning on fail-lows
+(-11.7), the moveCount pair (-7.4), the dynamic initial aspiration window (-8.6), the reference
+history-bonus shape with the consumer rescaled (-30.7), correction magnitude in LMR (-15.1), and
+removing the killer/counter shallowing (-15.5, so the shallowing stays). The campaign rule those
+numbers wrote: on this engine's softer reduction curve, the reference's standalone LMR terms do
+not transfer; the one thing that paid was a new signal at consumer scale.
+
+The single-thread gauntlet moves to a stronger 12-engine field (mean 3337, four anchors shared
+with the old field as a bridge) and scores **47.3% over 240 games: 3317 +-44 CCRL**. A series
+break, not comparable 1:1 with the 3342 +-86 measured on the old saturated field; against the
+four bridge anchors the per-opponent performances run 3334-3451 (Patricia 3281 at 57.5% against
+55% before), and the gradient is monotone from 85% at 3150 down to 12.5% at 3450 with no single
+pairing carrying the figure.
+
+Also in this release: the `histstats` UCI command (consumer-site statScore sampling with exact
+percentiles, rebuilt after the July instrument was lost with its branch); the CI relanded fixed
+from closed PR #70 (deduplicated triggers, the Ubuntu job builds the UCI project and the test
+projects it actually runs, the nodecount script's tuple-call bug fixed and its reference
+regenerated at 258,577 nodes on the classical path so local and CI totals agree with no network
+in the checkout); and a documented finding for the next version: the statScore capture branch is
+structurally dead because LMR sits entirely behind the quiet gate - capture LMR is a future axis.
+
+378 tests. Both bots run 5.3.0, hash-verified; previous binaries kept alongside as rollbacks.
+
+
 ## 2026-08-29 (v5.2.0) - the three loss-campaign axes stack
 
 **The stack holds: +19.6 Elo [+6.4, +32.9], LLR +3.20, H1 over 1,295 fixed-node games against
@@ -29,9 +68,10 @@ reductions this engine does not make.
 
 In flight: `fq594`, the fqmix recipe verbatim on the corpus extended to ~594M positions. The
 270M extension finished after 57 hours (3.9M games, same teacher net and 6,000-node label depth
-as the original corpus, so volume is the only axis that moves); the corpus audit also surfaced
-50M human-book-opening positions from an earlier run, kept OUT of this training to hold it at
-one variable, plus one interrupted shard excluded outright. About 27 hours of GPU; its SPRT runs
+as the original corpus, so volume is the only axis that moves). The corpus program continues past
+it: a three-source mix mirroring the original corpus (45% random-opening bulk, 20% human opening
+seeds, 35% human middlegame seeds, ~600M new positions in all), whose human segments stay OUT of
+this training to hold it at one variable, plus one interrupted shard excluded outright. About 27 hours of GPU; its SPRT runs
 against fqmix.
 
 378 tests. Both bots run 5.2.0, hash-verified on both platforms, with the previous binaries

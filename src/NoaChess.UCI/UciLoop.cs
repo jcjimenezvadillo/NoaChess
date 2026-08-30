@@ -371,6 +371,25 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "histstats":
+                {
+                    // Not UCI: "histstats on" arms raw statScore sampling on
+                    // the main search; "histstats" prints exact percentiles
+                    // of what LMR actually consumed since arming. Rebuilt for
+                    // the history-bonus package calibration; the July
+                    // measurement it replaces was hand-rolled and
+                    // unrepeatable.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    if (tokens.Length > 1 && tokens[1] == "on")
+                    {
+                        _engine.ArmStatScoreSampling();
+                        _output.WriteLine("info string histstats sampling armed");
+                    }
+                    else
+                        _output.WriteLine(_engine.DumpStatScoreStats());
+                    break;
+                }
+
                 case "nnuewidth":
                 {
                     // Not UCI: measures what each feature-transformer width
@@ -815,6 +834,24 @@ public sealed class UciLoop
             _engine.UsePruningLadder = _options.PruningLadder;
         if (changed == "PruningLadderFutility")
             _engine.UsePruningLadderFutility = _options.PruningLadderFutility;
+        if (changed == "CorrectionBlend")
+            _engine.UseCorrectionBlend = _options.CorrectionBlend;
+        if (changed == "StatScoreLmr")
+            _engine.UseStatScoreLmr = _options.StatScoreLmr;
+        if (changed == "CutNodeLmr")
+            _engine.UseCutNodeLmr = _options.CutNodeLmr;
+        if (changed == "FailLowCorrection")
+            _engine.UseFailLowCorrection = _options.FailLowCorrection;
+        if (changed == "MoveCountLmr")
+            _engine.UseMoveCountLmr = _options.MoveCountLmr;
+        if (changed == "DynamicAspiration")
+            _engine.UseDynamicAspiration = _options.DynamicAspiration;
+        if (changed == "HistoryBonus")
+            _engine.UseHistoryBonus = _options.HistoryBonus;
+        if (changed == "CorrectionLmr")
+            _engine.UseCorrectionLmr = _options.CorrectionLmr;
+        if (changed == "KillerShallowing")
+            _engine.UseKillerShallowing = _options.KillerShallowing;
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;

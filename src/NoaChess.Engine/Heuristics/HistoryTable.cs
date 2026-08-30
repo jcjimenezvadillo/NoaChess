@@ -53,6 +53,12 @@ public sealed class HistoryTable
     public void AddBonus(Color color, Move move, int depth)
         => Update(color, move, depth * depth);
 
+    // Raw-amount entry point for the reference-shaped bonus package; the
+    // depth-squared callers above stay untouched so the package's off state
+    // is byte-identical.
+    public void Add(Color color, Move move, int amount)
+        => Update(color, move, amount);
+
     // Punishes a quiet move that was searched before the cutoff move at this
     // node and did NOT refute: it sinks in the ordering next time.
     public void AddMalus(Color color, Move move, int depth)
