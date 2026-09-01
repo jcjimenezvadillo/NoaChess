@@ -1,0 +1,86 @@
+name: CI
+
+# push and pull_request together used to run everything twice on PR branches;
+# push is now limited to the long-lived branches and PRs cover the rest.
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+
+jobs:
+  build-windows:
+    name: Build & Test (Windows) + nodecount
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build solution
+        run: dotnet build NoaChess.sln -c Release
+
+      - name: Run tests (Core)
+        run: dotnet test tests/NoaChess.Core.Tests -c Release --no-build
+
+      - name: Run tests (Engine)
+        run: dotnet test tests/NoaChess.Engine.Tests -c Release --no-build
+
+      - name: Run nodecount check
+        shell: pwsh
+        run: pwsh -NoProfile -NonInteractive -File tools/ci/check_nodecount.ps1
+
+  # The WPF GUI cannot build on Linux, so this job builds the cross-platform
+  # projects individually instead of the solution. The UCI project is built
+  # too: the nodecount check runs the engine through it.
+  build-ubuntu:
+    name: Build & Test (Ubuntu, limited) + nodecount
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build Core
+        run: dotnet build src/NoaChess.Core -c Release
+
+      - name: Build Engine
+        run: dotnet build src/NoaChess.Engine -c Release
+
+      - name: Build UCI
+        run: dotnet build src/NoaChess.UCI -c Release
+
+      # No --no-build here: the test projects are not part of the builds
+      # above, so dotnet test has to build them first.
+      - name: Run tests (Core)
+        run: dotnet test tests/NoaChess.Core.Tests -c Release
+
+      - name: Run tests (Engine)
+        run: dotnet test tests/NoaChess.Engine.Tests -c Release
+
+      - name: Run nodecount check
+        shell: pwsh
+        run: pwsh -NoProfile -NonInteractive -File tools/ci/check_nodecount.ps1

@@ -5,6 +5,32 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## 2026-08-30 - fq594 ships as v5.3.0: volume, measured alone, wins
+
+**+29.7 Elo [+12.2, +47.3], LLR +3.13, H1 over 763 fixed-node games against
+fqmix**, with the trend rising at the close (the last 160 games near 59%).
+The recipe is fqmix verbatim - factorized + QAT, no transformer weight decay,
+the refit reference-style loss (240/145), lambda 1.0 to 0.7, 60 epochs, seed 1 -
+on the corpus extended from 324M to ~594M positions: the 70 inherited shards
+plus 54 new random-opening bulk shards of identical provenance (gen7 teacher,
+6,000-node labels, engine 5.0.2.1). One variable moved. Volume had never been
+measured alone at this scale - the -108.6 that once seemed to close the data
+axis had moved three variables at once - and it turns out to be worth the
+second-largest net gain of the project after factorization. Training took ~54
+wall-clock hours sharing the GPU with datagen; validate/export/verify all
+green, engine-side parity exact on both contract FENs (54 / -137 cp).
+
+Held out on purpose: the corpus program's human segments (openings done,
+middlegames still generating at the time). They are the NEXT arm - mix at
+comparable volume, one variable again - and close a historical debt: the
+human-seeding hypothesis from the gen7 era was never actually tested (the
+provenance bug: every manifest said random).
+
+The gauntlet moves to a stronger field (mean 3337) and anchors **3317 +-44
+CCRL (47.3% over 240)** - a series break by design, with four bridge anchors
+shared with the old field running 3334-3451 per-opponent. Both bots run it,
+hash-verified, previous binaries kept as rollbacks.
+
 ## 2026-08-29 - fqmix ships as v5.2.0: the axes add
 
 **+19.6 Elo [+6.4, +32.9], LLR +3.20, H1 over 1,295 fixed-node games against
@@ -22,9 +48,9 @@ Same day, the psqt verdict (entry below) and the launch of **fq594**: the fqmix
 recipe verbatim on the 70 inherited shards plus the 54 new bulk shards - ~594M
 positions, teacher net and 6,000-node label depth held fixed so volume is the
 only moving axis, epochs held at 60 by series convention (which knowingly mixes
-volume with training compute, as the told-vs-fq60 row did). The 50M human-book
-positions found in the corpus audit stay out of this run, and the interrupted
-open.0010 shard is excluded outright. About 27 hours; SPRT against fqmix.
+volume with training compute, as the told-vs-fq60 row did). The corpus program's human
+segments (openings and middlegames, still generating) stay out of this run,
+and the interrupted open.0010 shard is excluded outright. About 27 hours; SPRT against fqmix.
 
 ## 2026-08-28 - the loss axis runs at last, and wins
 
