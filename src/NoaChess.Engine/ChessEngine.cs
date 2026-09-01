@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.2.0";
+    public const string Version = "5.3.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -236,6 +236,15 @@ public sealed class ChessEngine
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
             h.UseNmpEvalGate = _search.UseNmpEvalGate;
+            h.UseMoveCountLmr = _search.UseMoveCountLmr;
+            h.UseFailLowCorrection = _search.UseFailLowCorrection;
+            h.UseDynamicAspiration = _search.UseDynamicAspiration;
+            h.UseHistoryBonus = _search.UseHistoryBonus;
+            h.UseCorrectionLmr = _search.UseCorrectionLmr;
+            h.UseKillerShallowing = _search.UseKillerShallowing;
+            h.UseCutNodeLmr = _search.UseCutNodeLmr;
+            h.UseStatScoreLmr = _search.UseStatScoreLmr;
+            h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
             h.SyzygyProbeLimit = _search.SyzygyProbeLimit;
@@ -463,6 +472,65 @@ public sealed class ChessEngine
     {
         get => _search.UseNmpEvalGate;
         set => _search.UseNmpEvalGate = value;
+    }
+
+    public bool UseMoveCountLmr
+    {
+        get => _search.UseMoveCountLmr;
+        set => _search.UseMoveCountLmr = value;
+    }
+
+    public bool UseFailLowCorrection
+    {
+        get => _search.UseFailLowCorrection;
+        set => _search.UseFailLowCorrection = value;
+    }
+
+    public bool UseDynamicAspiration
+    {
+        get => _search.UseDynamicAspiration;
+        set => _search.UseDynamicAspiration = value;
+    }
+
+    public bool UseHistoryBonus
+    {
+        get => _search.UseHistoryBonus;
+        set => _search.UseHistoryBonus = value;
+    }
+
+    public bool UseCorrectionLmr
+    {
+        get => _search.UseCorrectionLmr;
+        set => _search.UseCorrectionLmr = value;
+    }
+
+    public bool UseKillerShallowing
+    {
+        get => _search.UseKillerShallowing;
+        set => _search.UseKillerShallowing = value;
+    }
+
+    // histstats instrument: sampling lives on the main search only, so the
+    // calibration runs single-threaded by construction.
+    public void ArmStatScoreSampling() => _search.ArmStatScoreSampling();
+    public string DumpStatScoreStats() => _search.DumpStatScoreStats();
+
+    public bool UseCutNodeLmr
+    {
+        get => _search.UseCutNodeLmr;
+        set => _search.UseCutNodeLmr = value;
+    }
+
+    public bool UseStatScoreLmr
+    {
+        get => _search.UseStatScoreLmr;
+        set => _search.UseStatScoreLmr = value;
+    }
+
+    public bool UseCorrectionBlend
+    {
+        get => _search.UseCorrectionBlend;
+        set => _search.UseCorrectionBlend = value;
     }
 
     public bool UsePruningLadder

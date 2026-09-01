@@ -1,0 +1,9 @@
+258577
+
+# Generated 2026-08-30 against the 5.3.0 tree (statScore on by default),
+# UseNNUE=false: the number is tied to the SEARCH plus the classical
+# evaluator only, never to a network (the embedded net is gitignored, so a
+# CI checkout builds a network-free binary; the check forces the classical
+# path so local and CI totals agree). When the search or the classical
+# evaluator changes, regenerate by hand with tools/ci/check_nodecount.ps1
+# and note in the commit which source produced it. Never automatically.

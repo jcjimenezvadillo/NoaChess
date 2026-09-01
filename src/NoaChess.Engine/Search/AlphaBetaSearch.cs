@@ -308,6 +308,24 @@ public sealed class AlphaBetaSearch
         => ply > 0 && _stackPiece[ply - 1] >= 0
             ? CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1])
             : 0;
+
+    // Keys for the reference blend's two context tables: (our move 2 plies up,
+    // the arriving move) and (our move 4 plies up, the arriving move). A null
+    // move or the root anywhere in a pair breaks the chain and yields 0, the
+    // same "nothing to say" sentinel the one-move key uses. Kept beside it for
+    // the same reason: update and lookup must never key differently.
+    private ulong ContextCorrectionKeyA(int ply)
+        => ply > 1 && _stackPiece[ply - 1] >= 0 && _stackPiece[ply - 2] >= 0
+            ? CorrectionHistorySet.PairKey(
+                CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 2], _stackTo[ply - 2]),
+                CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1]))
+            : 0;
+    private ulong ContextCorrectionKeyB(int ply)
+        => ply > 3 && _stackPiece[ply - 1] >= 0 && _stackPiece[ply - 4] >= 0
+            ? CorrectionHistorySet.PairKey(
+                CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 4], _stackTo[ply - 4]),
+                CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1]))
+            : 0;
     private readonly Stopwatch _timer = new();
 
     // ---- Quiescence pruning constants (reference Step 6) ----
@@ -410,8 +428,11 @@ public sealed class AlphaBetaSearch
     // 5C adjuster suite kept measuring against.
     private const int LmrScale = 1024;
 
-    // NO history-informed LMR adjustment, on measured evidence - the line is
-    // closed, not merely unimplemented. Three variants of "let LMR read the
+    // History-informed LMR: closed for most of the engine's life, REOPENED and
+    // WON on 2026-08-29 (+20.9 H1, see UseStatScoreLmr). The old closure below
+    // is kept because its evidence was real for the regime it measured: no
+    // contHist[1], killer/counter hard bands still in place, and the v4.4.0
+    // ordering fix still in the future. Three variants of "let LMR read the
     // butterfly history" were tested against v2.8.3-class baselines and land on
     // a monotone curve by how much reduction they remove:
     //     statScore, continuous, biased to LESS reduction   -18 Elo (H0)
@@ -572,6 +593,129 @@ public sealed class AlphaBetaSearch
     // the reference's step-14 family that the old note below the flag's use
     // site documents as deferred and never measured. All margins raw per the
     // value-scale rule; the SPRT judges the units.
+    // The reference correction read blend (see CorrectionHistorySet): inert
+    // until measured.
+    // Correction learning from fail-low nodes (see the update site). Measured
+    // 2026-08-29: H0, -11.7 [-26.4, +3.0] over 982 fixed-node games
+    // (sprt_faillow.pgn). The extra learning class hurts here; stays inert.
+    public bool UseFailLowCorrection;
+
+    // The reference's base-offset + moveCount LMR pair. Measured 2026-08-30:
+    // H0, -7.4 [-19.8, +4.9], LLR -3.15 over 1,400 fixed-node games
+    // (sprt_movecount.pgn). Stays inert - the running pattern: the
+    // reference's standalone LMR terms measure zero or negative on this
+    // engine's softer reduction curve; statScore was the exception.
+    public bool UseMoveCountLmr;
+
+    // The reference's dynamic initial aspiration window (see the root loop).
+    // Measured 2026-08-30: H0, -8.6 [-21.6, +4.4], LLR -3.10 over 1,251
+    // fixed-node games (sprt_dynasp.pgn). The tight window pays +13% nodes
+    // in re-searches at fixed depth and buys nothing back. Stays inert.
+    public bool UseDynamicAspiration;
+
+    // The reference's history bonus/malus SHAPE for the butterfly and capture
+    // tables (see the cutoff site), with the statScore consumer rescaled to
+    // constant mean torque (1568 -> 27, histstats-measured). Measured
+    // 2026-08-30: H0, -30.7 [-51.5, -10.1], LLR -3.26 in only 510 fixed-node
+    // games (sprt_histbonus.pgn) - clearly negative, not noise. The likely
+    // culprit is balance, not recency itself: the picker's killer/counter/
+    // check constants and the small continuation tables are tuned around the
+    // depth^2 ranges, and a rail-saturated butterfly swamps them all. Any
+    // reopening must re-tune those consumers as part of the arm. Stays inert.
+    public bool UseHistoryBonus;
+
+    // Consumer gain when the package is on, holding the consumer's MEAN
+    // torque constant: mean|statScore| measured 117 off vs 6825 on (30 bench
+    // positions, depth 10, histstats command), 1568 * 117/6825 = 27. The
+    // package changes the distribution FAMILY - long-tail (p99 991, max
+    // 6410) to rail-saturated (p50 7066, max 15816 = 2252*7183/1024) - so no
+    // scalar preserves every quantile; the mean is the anchor, and a
+    // p99-matched 116 is the documented follow-up arm if this one fails.
+    private const int PackagedStatScoreScale = 27;
+
+    // The reference's correction-magnitude LMR term (see the LMR block).
+    // Measured 2026-08-30: H0, -15.1 [-30.6, +0.4], LLR -3.21 over 900
+    // fixed-node games (sprt_corrlmr.pgn). Even a NEW signal into the
+    // reduction formula fails here - statScore stays the resurrection
+    // campaign's only winner. Stays inert.
+    public bool UseCorrectionLmr;
+
+    // The killer/counter one-ply LMR shallowing, ON since it measured net
+    // positive in the classical era. The 5C tombstone once called statScore
+    // redundant with THIS, so removing it was measured 2026-08-30: H0,
+    // -15.5 [-31.6, +0.6], LLR -3.06 over 898 games with the removal
+    // (sprt_killershallow.pgn). Not redundant - it earns its keep even with
+    // statScore shipped. Stays true.
+    public bool UseKillerShallowing = true;
+
+    // histstats sampling: raw statScore reservoirs for exact percentiles.
+    // Armed only by the histstats command; in matches the fields stay null
+    // and the hot path pays one predicted-not-taken branch. The July
+    // measurement this replaces was hand-rolled and unrepeatable.
+    private int[]? _ssQuiet, _ssCapture;
+    private int _ssQuietN, _ssCaptureN;
+
+    public void ArmStatScoreSampling()
+    {
+        _ssQuiet = new int[1 << 22];
+        _ssCapture = new int[1 << 22];
+        _ssQuietN = 0;
+        _ssCaptureN = 0;
+    }
+
+    private void RecordStatScore(bool capture, int value)
+    {
+        if (capture)
+        {
+            if (_ssCaptureN < _ssCapture!.Length)
+                _ssCapture[_ssCaptureN++] = value;
+        }
+        else if (_ssQuietN < _ssQuiet!.Length)
+            _ssQuiet[_ssQuietN++] = value;
+    }
+
+    public string DumpStatScoreStats()
+    {
+        if (_ssQuiet == null || _ssCapture == null)
+            return "info string histstats: sampling never armed";
+        return Describe("quiet", _ssQuiet, _ssQuietN) + Environment.NewLine
+             + Describe("capture", _ssCapture, _ssCaptureN);
+
+        static string Describe(string arm, int[] buffer, int n)
+        {
+            if (n == 0)
+                return $"info string histstats {arm}: no samples";
+            int[] abs = new int[n];
+            long sum = 0;
+            for (int i = 0; i < n; i++)
+                sum += abs[i] = Math.Abs(buffer[i]);
+            Array.Sort(abs);
+            return $"info string histstats {arm}: n {n} mean {sum / n}"
+                 + $" p50 {Quantile(abs, 0.50)} p90 {Quantile(abs, 0.90)}"
+                 + $" p99 {Quantile(abs, 0.99)} max {abs[n - 1]}";
+        }
+
+        static int Quantile(int[] sorted, double q)
+            => sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * q))];
+    }
+
+    // The reference's cutNode LMR term, faithful. Measured 2026-08-29: H0,
+    // -10.7 [-23.8, +2.5], LLR -3.49 over 1,077 fixed-node games
+    // (sprt_cutnode.pgn) - third burial, this time with IIR, statScore and
+    // the ttMove sub-term all present. Stays inert.
+    public bool UseCutNodeLmr;
+
+    // 5C statScore in LMR, faithful formula at consumer scale. Measured
+    // 2026-08-29: +20.9 [+7.2, +34.7], LLR +3.24, H1 over 1,099 fixed-node
+    // games - on by default since 5.3.0.
+    public bool UseStatScoreLmr = true;
+
+    public bool UseCorrectionBlend
+    {
+        get => _corrections.ReferenceBlend;
+        set => _corrections.ReferenceBlend = value;
+    }
+
     public bool UsePruningLadder { get; set; }
 
     // The futility rung alone, separable for the ablation the measurement
@@ -580,6 +724,9 @@ public sealed class AlphaBetaSearch
     private int _optimism;                       // for the root side to move
     private Color _rootSide;
     private int _rootAverageScore = ScoreNone;   // EWMA across iterations
+    // EWMA of score*|score| across iterations, same 1/2 weight and the same
+    // validity sentinel as the average above (both are set together).
+    private long _rootMeanSquaredScore;
 
     // Cross-move state (persists between searches, cleared on new game):
     // the previous move's score/average score, the previous move's stability
@@ -834,6 +981,23 @@ public sealed class AlphaBetaSearch
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
 
+            // The reference's dynamic initial window: delta grows with the
+            // volatility of the root score (EWMA of score*|score|) and the
+            // window centers on the EWMA score rather than the last one.
+            // Base 5 raw; the divisor is the reference's 10193 calibrated to
+            // our centipawn scale (theirs is ~3.3x larger per pawn, and the
+            // term is quadratic in the score). Their per-thread diversification
+            // term has no equivalent here (helpers carry no index) and the
+            // SPRT runs single-threaded anyway. Widening below is untouched:
+            // that part of our loop won its own SPRT long ago.
+            if (UseDynamicAspiration && depth >= 3 && _rootAverageScore != ScoreNone)
+            {
+                window = (int)Math.Min(5 + Math.Abs(_rootMeanSquaredScore) / 3000,
+                                       Infinity);
+                alpha = Math.Max(_rootAverageScore - window, -Infinity);
+                beta = Math.Min(_rootAverageScore + window, Infinity);
+            }
+
             // Optimism follows the same guard as the aspiration window: it
             // exists only once there is a stable average to derive it from.
             // The reference updates its average with an adaptive weight built
@@ -932,9 +1096,17 @@ public sealed class AlphaBetaSearch
             best = new SearchResult(bestMove, score, _nodes, depth);
             carryScore = score;
             previousScore = score;
-            _rootAverageScore = _rootAverageScore == ScoreNone
-                ? score
-                : (score + _rootAverageScore) / 2;
+            if (_rootAverageScore == ScoreNone)
+            {
+                _rootAverageScore = score;
+                _rootMeanSquaredScore = (long)score * Math.Abs(score);
+            }
+            else
+            {
+                _rootAverageScore = (score + _rootAverageScore) / 2;
+                _rootMeanSquaredScore =
+                    ((long)score * Math.Abs(score) + _rootMeanSquaredScore) / 2;
+            }
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
             lastReportedMove = bestMove;
@@ -1816,6 +1988,11 @@ public sealed class AlphaBetaSearch
         // the NEXT visit - often via IIR or a re-search - skips it too.
         int rawStaticEval;
         int staticEval;
+        // How many centipawns the correction history moved this node's eval.
+        // The LMR correction term reads its magnitude: a heavily corrected
+        // eval is one the tables distrust, and the reference searches such
+        // nodes deeper. Zero in check, where no eval exists.
+        int correctionDelta = 0;
         if (inCheck)
         {
             rawStaticEval = 0;
@@ -1835,8 +2012,11 @@ public sealed class AlphaBetaSearch
                               BoundType.None, Move.None, ttPv);
             }
 
-            staticEval = _corrections.Correct(board, rawStaticEval + OptimismTerm(board),
-                                              ContinuationCorrectionKey(ply));
+            int optimismTerm = OptimismTerm(board);
+            staticEval = _corrections.Correct(board, rawStaticEval + optimismTerm,
+                                              ContinuationCorrectionKey(ply),
+                                              ContextCorrectionKeyA(ply), ContextCorrectionKeyB(ply));
+            correctionDelta = staticEval - rawStaticEval - optimismTerm;
         }
 
         // ---- Improvement / improving ----
@@ -2457,16 +2637,64 @@ public sealed class AlphaBetaSearch
                     // than being compared against it, so it goes the other way:
                     // 439 / 0.28 = 1568. Same rule, opposite direction, and the rule
                     // is applied at the consumer site as this project learned to.
-                    int statScore = move.IsCapture
-                        ? 873 * StatScoreVictimValue(victimIdx) / 128
-                          + _captureHistory.Get(movePieceIdx, move.To, victimIdx)
-                        : (2252 * _history.Get(stm, move)
-                           + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
-                           + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
+                    // Gated with its consumer: the rebuild left this computation
+                    // in the tree with the adjuster line missing, so every
+                    // LMR-eligible move paid the table reads for a value nothing
+                    // used. Off skips the reads entirely.
+                    if (UseStatScoreLmr)
+                    {
+                        int statScore = move.IsCapture
+                            ? 873 * StatScoreVictimValue(victimIdx) / 128
+                              + _captureHistory.Get(movePieceIdx, move.To, victimIdx)
+                            : (2252 * _history.Get(stm, move)
+                               + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
+                               + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
+                        if (_ssQuiet != null)
+                            RecordStatScore(move.IsCapture, statScore);
+                        r -= statScore
+                             * (UseHistoryBonus ? PackagedStatScoreScale : 1568) / 4096;
+                    }
+
+                    // The reference's base-offset + moveCount pair, ported AS A
+                    // PAIR (never existed here; the classic-era cut was a
+                    // different binary term). r += 697 - moveCount*65 shifts
+                    // reduction from late moves toward early ones: +567 at move
+                    // 2, roughly neutral at move 10, -600 at move 20. Porting
+                    // the subtraction alone would bias the whole curve toward
+                    // less reduction, the direction the old measurements
+                    // punished in proportion. Plies scale: no unit conversion.
+                    // Measured 2026-08-30: H0, -7.4 over 1,400 games; stays off.
+                    if (UseMoveCountLmr)
+                        r += 697 - (searched + 1) * 65;
+
+                    // cutNode term, REOPENED 2026-08-29. Rejected twice pre-IIR
+                    // (-4.0 at 4026, -7.1 at 1536) with "no IIR, noisy cut-node
+                    // classification" as the written reason. IIR exists now
+                    // (depth-- without a ttMove), statScore modulates the same
+                    // budget, and the faithful term carries the !ttMove sub-term
+                    // the old arms lacked. Plies scale: no unit conversion.
+                    if (UseCutNodeLmr && cutNode)
+                        r += 4026 + (ttMove == Move.None ? 933 : 0);
 
                     // Killer/counter shallowing, kept: measured net positive.
-                    if (move == counterMove || _killers.Rank(ply, move) > 0)
+                    // The flag exists to measure REMOVING it now that
+                    // statScore covers the same ground from history space.
+                    if (UseKillerShallowing
+                        && (move == counterMove || _killers.Rank(ply, move) > 0))
                         r -= LmrScale;
+
+                    // The reference's correction-magnitude term: a node whose
+                    // eval the correction tables moved hard is a node the
+                    // tables distrust, and it gets searched deeper. Unit
+                    // calibration, not range: their correctionValue carries
+                    // 131072 fixed-point per cp and their divisor 26310 makes
+                    // the term 131072/26310 = 4.98 r per internal unit, which
+                    // is 16.3 r per OUR centipawn (their internal unit is
+                    // ~3.28x smaller than a cp). Eval error in pawns means
+                    // the same thing in both engines, so 16 needs no range
+                    // measurement the way the history consumers did.
+                    if (UseCorrectionLmr)
+                        r -= Math.Abs(correctionDelta) * 16;
 
                     // 5C adjuster (shipped, +7.1 Elo): reduce quiet moves one
                     // extra ply when the TT best move is a capture. Reference
@@ -2572,7 +2800,28 @@ public sealed class AlphaBetaSearch
                         if (isQuiet)
                         {
                             _killers.Store(ply, move);
-                            _history.AddBonus(stm, move, depth);
+
+                            // Reference bonus/malus shape for the BUTTERFLY
+                            // table only: linear-saturating amounts replace
+                            // depth*depth at the table's own bound, with the
+                            // reference's quiet gains (899/1024 bonus,
+                            // 1159/1024 malus) and its multiplicative 921/1024
+                            // malus decay across the quiets tried before the
+                            // cutoff. Their ttMove bonus, statScore feedback
+                            // and tried-count scaling are separate axes, not
+                            // ported here. Continuation below keeps depth^2:
+                            // its shape was measured alone (-5.8, see the 5G
+                            // note) and that verdict stands.
+                            int quietMalus = 0;
+                            if (UseHistoryBonus)
+                            {
+                                _history.Add(stm, move,
+                                    Math.Min(133 * depth - 81, 1487) * 899 / 1024);
+                                quietMalus =
+                                    Math.Min(968 * depth - 235, 2244) * 1159 / 1024;
+                            }
+                            else
+                                _history.AddBonus(stm, move, depth);
 
                             // movePieceIdx already holds exactly this: it was
                             // read from the same square of the same position,
@@ -2612,7 +2861,13 @@ public sealed class AlphaBetaSearch
                                 Move tried = triedQuiets[q];
                                 if (tried == move)
                                     continue;
-                                _history.AddMalus(stm, tried, depth);
+                                if (UseHistoryBonus)
+                                {
+                                    quietMalus = quietMalus * 921 / 1024;
+                                    _history.Add(stm, tried, -quietMalus);
+                                }
+                                else
+                                    _history.AddMalus(stm, tried, depth);
                                 int triedPiece =
                                     ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From));
                                 if (prevPiece >= 0)
@@ -2626,9 +2881,20 @@ public sealed class AlphaBetaSearch
                             // history, which is what the quiescence capture
                             // ordering reads. The board is restored here, so
                             // the victim is back on its square.
-                            _captureHistory.AddBonus(
-                                movePieceIdx,
-                                move.To, CaptureHistory.VictimIndex(board, move), depth * depth);
+                            // Package shape: the reference's capture gain
+                            // (1427/1024) rescaled into OUR bound, 4096 vs
+                            // their 10692, so every consumer keeps its
+                            // calibrated ratio to the rail: 1427*4096/1024
+                            // = 5708 over 10692.
+                            if (UseHistoryBonus)
+                                _captureHistory.AddBonus(
+                                    movePieceIdx,
+                                    move.To, CaptureHistory.VictimIndex(board, move),
+                                    Math.Min(133 * depth - 81, 1487) * 5708 / 10692);
+                            else
+                                _captureHistory.AddBonus(
+                                    movePieceIdx,
+                                    move.To, CaptureHistory.VictimIndex(board, move), depth * depth);
                         }
 
                         // Captures tried before the cutoff move failed to
@@ -2639,9 +2905,19 @@ public sealed class AlphaBetaSearch
                             Move tried = triedCaptures[c];
                             if (tried == move)
                                 continue;
-                            _captureHistory.AddMalus(
-                                ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
-                                tried.To, CaptureHistory.VictimIndex(board, tried), depth * depth);
+                            // Package: flat reference malus (their 1489/1024
+                            // gain, same bound rescale: 1489*4096/1024 = 5956
+                            // over 10692); the reference does not decay this
+                            // one across tried captures.
+                            if (UseHistoryBonus)
+                                _captureHistory.AddMalus(
+                                    ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
+                                    tried.To, CaptureHistory.VictimIndex(board, tried),
+                                    Math.Min(968 * depth - 235, 2244) * 5956 / 10692);
+                            else
+                                _captureHistory.AddMalus(
+                                    ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From)),
+                                    tried.To, CaptureHistory.VictimIndex(board, tried), depth * depth);
                         }
                         break;
                     }
@@ -2679,9 +2955,27 @@ public sealed class AlphaBetaSearch
             bool boundAgrees = bestScore >= beta ? bestScore > staticEval
                               : bestScore <= originalAlpha ? bestScore < staticEval
                               : true;
-            if (!inCheck && quietBest && boundAgrees && Math.Abs(bestScore) < TbScoreBound)
+            // Fail-low learning (audit find, 2026-08-30). The reference's
+            // bestMove only records alpha-raisers, so on a fail-low it is None
+            // and its correction update fires whatever kind of move was tried.
+            // Ours records the best TRIED move (fail-soft), so quietBest
+            // already covers the fail-lows whose best try was quiet - the
+            // class this engine never learned from is fail-lows whose best try
+            // was a CAPTURE, and captures are tried first, so it is most of
+            // the all-nodes. Directionally safe by the fail-low upper bound:
+            // the truth sits at or under bestScore, so requiring
+            // bestScore < staticEval means the eval was genuinely high.
+            // Excluded-move searches stay out: their fail-lows are engineered.
+            // The reference weighs this class 18/128 vs 12/128; our update
+            // keeps its validated rate, one variable at a time.
+            // Measured 2026-08-29: H0, -11.7 over 982 games; the flag stays off.
+            bool failLowLearn = UseFailLowCorrection && excluded == Move.None
+                && !quietBest && bestScore <= originalAlpha && bestScore < staticEval;
+            if (!inCheck && (quietBest && boundAgrees || failLowLearn)
+                && Math.Abs(bestScore) < TbScoreBound)
                 _corrections.Update(board, bestScore - staticEval, depth,
-                                    ContinuationCorrectionKey(ply));
+                                    ContinuationCorrectionKey(ply),
+                                    ContextCorrectionKeyA(ply), ContextCorrectionKeyB(ply));
         }
 
         return bestScore;
@@ -2848,7 +3142,8 @@ public sealed class AlphaBetaSearch
             }
 
             bestScore = _corrections.Correct(board, rawEval + OptimismTerm(board),
-                                             ContinuationCorrectionKey(ply));
+                                             ContinuationCorrectionKey(ply),
+                                             ContextCorrectionKeyA(ply), ContextCorrectionKeyB(ply));
 
             // A stored SCORE beats the static evaluation as a stand-pat floor
             // when its bound points the right way: it came from a real search

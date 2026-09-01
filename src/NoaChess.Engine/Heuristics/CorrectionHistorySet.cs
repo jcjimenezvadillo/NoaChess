@@ -28,6 +28,28 @@ public sealed class CorrectionHistorySet
     private const int OtherWeight = 1;
     private const int Divisor = PawnWeight;
 
+    // The reference blend, measured as ONE candidate (option CorrectionBlend).
+    // Read weights in 128ths of the pawn table, taken from the reference's
+    // correction_value: minor 10569/15341 = 88, each non-pawn colour
+    // 12906/15341 = 108, each continuation context 8761/15341 = 73. The
+    // reference carries NO major-key table and no coarse one-move continuation,
+    // so in this blend both read at zero. The pawn anchor and the single final
+    // rounding are unchanged - what moves is how loudly the secondaries speak.
+    private const int RefPawnWeight = 128;
+    private const int RefMinorWeight = 88;
+    private const int RefNonPawnWeight = 108;
+    private const int RefContextWeight = 73;
+    private const int RefDivisor = RefPawnWeight;
+
+    // The reference's two continuation reads are keyed by CONTEXT: the table
+    // selected by our move 2 (respectively 4) plies up, indexed by the arriving
+    // move. Our tables are global, so the context pair becomes part of the key.
+    // Write-side ratios (150/186/130/70 over 128) are NOT ported: they belong
+    // to the reference's gravity update, ours converges to the observed
+    // residual, and translating rates across schemes would be a second
+    // variable. If this blend passes, the rates are their own candidate.
+    public bool ReferenceBlend;
+
     // The five secondary tables can together move the evaluation by at most
     // 5/4 of a full pawn-table correction, and the total is clamped regardless.
     private const int MaxTotalCorrectionCp = 320;
@@ -39,6 +61,8 @@ public sealed class CorrectionHistorySet
     // piece placement") is invisible to a colour-blind key.
     private readonly CorrectionHistory[] _nonPawn = [new(), new()];
     private readonly CorrectionHistory _continuation = new();
+    private readonly CorrectionHistory _contextA = new();
+    private readonly CorrectionHistory _contextB = new();
 
     public void Clear()
     {
@@ -48,13 +72,29 @@ public sealed class CorrectionHistorySet
         _nonPawn[0].Clear();
         _nonPawn[1].Clear();
         _continuation.Clear();
+        _contextA.Clear();
+        _contextB.Clear();
     }
 
     // Corrects a raw static evaluation. 'continuationKey' encodes the move that
     // led here (see ContinuationKey); pass 0 at the root or after a null move,
     // where there is no such move and the table has nothing to say.
-    public int Correct(Board board, int rawEval, ulong continuationKey)
+    public int Correct(Board board, int rawEval, ulong continuationKey,
+                       ulong contextKeyA = 0, ulong contextKeyB = 0)
     {
+        if (ReferenceBlend)
+        {
+            long refWeighted =
+                (long)RefPawnWeight * _pawn.RawEntry(board, board.PawnZobristKey)
+                + RefMinorWeight * _minor.RawEntry(board, board.MinorZobristKey)
+                + RefNonPawnWeight * _nonPawn[0].RawEntry(board, board.NonPawnZobristKey(Color.White))
+                + RefNonPawnWeight * _nonPawn[1].RawEntry(board, board.NonPawnZobristKey(Color.Black))
+                + (contextKeyA != 0 ? RefContextWeight * _contextA.RawEntry(board, contextKeyA) : 0)
+                + (contextKeyB != 0 ? RefContextWeight * _contextB.RawEntry(board, contextKeyB) : 0);
+            int refCorrection = (int)(refWeighted / ((long)RefDivisor * CorrectionHistory.Scale));
+            return rawEval + Math.Clamp(refCorrection, -MaxTotalCorrectionCp, MaxTotalCorrectionCp);
+        }
+
         long weighted =
             (long)PawnWeight * _pawn.RawEntry(board, board.PawnZobristKey)
             + OtherWeight * _minor.RawEntry(board, board.MinorZobristKey)
@@ -74,13 +114,23 @@ public sealed class CorrectionHistorySet
     // Feeds the observed residual to every table. They all learn from the same
     // observation; what differs is the key each one files it under, which is
     // what lets them generalise over different things.
-    public void Update(Board board, int errorCp, int depth, ulong continuationKey)
+    public void Update(Board board, int errorCp, int depth, ulong continuationKey,
+                       ulong contextKeyA = 0, ulong contextKeyB = 0)
     {
         _pawn.Update(board, board.PawnZobristKey, errorCp, depth);
         _minor.Update(board, board.MinorZobristKey, errorCp, depth);
-        _major.Update(board, board.MajorZobristKey, errorCp, depth);
         _nonPawn[0].Update(board, board.NonPawnZobristKey(Color.White), errorCp, depth);
         _nonPawn[1].Update(board, board.NonPawnZobristKey(Color.Black), errorCp, depth);
+        if (ReferenceBlend)
+        {
+            // The blend neither reads nor teaches the tables it removed.
+            if (contextKeyA != 0)
+                _contextA.Update(board, contextKeyA, errorCp, depth);
+            if (contextKeyB != 0)
+                _contextB.Update(board, contextKeyB, errorCp, depth);
+            return;
+        }
+        _major.Update(board, board.MajorZobristKey, errorCp, depth);
         if (continuationKey != 0)
             _continuation.Update(board, continuationKey, errorCp, depth);
     }
@@ -95,4 +145,10 @@ public sealed class CorrectionHistorySet
     // previous move" (root, or immediately after a null move).
     public static ulong ContinuationKey(int pieceIndex, int toSquare)
         => (ulong)(pieceIndex * 64 + toSquare) + 1;
+
+    // Composes a context key from two ContinuationKeys, both already non-zero.
+    // The largest ContinuationKey is 11 * 64 + 63 + 1 = 768, so a 10-bit shift
+    // keeps the pair collision-free before the table masks it down.
+    public static ulong PairKey(ulong olderKey, ulong arrivingKey)
+        => arrivingKey + (olderKey << 10);
 }
