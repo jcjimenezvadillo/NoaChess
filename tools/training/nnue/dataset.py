@@ -541,11 +541,12 @@ class _CsrView:
     before, so nothing downstream changes or needs to know.
     """
 
-    __slots__ = ("_values", "_offsets")
+    __slots__ = ("_values", "_offsets", "_columns")
 
-    def __init__(self, values, offsets):
+    def __init__(self, values, offsets, columns=None):
         self._values = values
         self._offsets = offsets
+        self._columns = columns
 
     def __len__(self):
         return len(self._offsets) - 1
@@ -556,7 +557,95 @@ class _CsrView:
         begin, end, step = key.indices(len(self))
         if step != 1:
             raise ValueError("los caches de amenazas no admiten paso distinto de 1")
-        return expand_csr(self._values, self._offsets, begin, end)
+        return expand_csr(self._values, self._offsets, begin, end,
+                          columns=self._columns)
+
+
+# ---- Coarse-threat companions (gate 2b of the coarse-threats design) ----
+#
+# The C# encoder (DataGen coarse-encode) writes one .coarsedata per shard:
+# NOACRS1 magic + u64 count, then per record u8 n + n x u8 ABSOLUTE pair ids
+# (attacker piece code * 12 + victim code, colours absolute). That file IS
+# the CSR cache - 19 bytes per record against the 1.24 TB the fine cache
+# once asked for - so the build step below only parses it once into npz
+# form and adds the one thing the feature shards do not keep: each record's
+# side to move (byte 24 of the .noadata record), which the perspective flip
+# needs at batch time.
+
+COARSE_DIR = os.environ.get("NOA_COARSE_DIR", r"C:\NoaData\coarse")
+COARSE_COLUMNS = 96
+
+
+def coarse_companion_for(path):
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return os.path.join(COARSE_DIR, parent, stem + ".coarsedata")
+
+
+def build_coarse_shards(path, force=False):
+    comp = coarse_companion_for(path)
+    if not os.path.exists(comp):
+        raise SystemExit(f"{path}: missing coarse companion {comp} - "
+                         f"run Noa-CoarseEncodeAll.ps1 first")
+    cache = comp + ".npz"
+    if (not force and os.path.exists(cache)
+            and os.path.getmtime(cache) > os.path.getmtime(comp)):
+        return cache
+
+    raw = np.fromfile(comp, dtype=np.uint8)
+    if raw[:8].tobytes() != b"NOACRS1\0":
+        raise SystemExit(f"{comp}: unknown header")
+    count = int(np.frombuffer(raw[8:16].tobytes(), dtype="<u8")[0])
+
+    counts = np.empty(count, dtype=np.int64)
+    values = np.empty(len(raw), dtype=np.int16)
+    pos = 16
+    vpos = 0
+    for i in range(count):
+        n = int(raw[pos])
+        pos += 1
+        counts[i] = n
+        values[vpos:vpos + n] = raw[pos:pos + n]
+        pos += n
+        vpos += n
+    if pos != len(raw):
+        raise SystemExit(f"{comp}: {len(raw) - pos} bytes left over after "
+                         f"{count} records - corrupt file")
+    if counts.max(initial=0) > COARSE_COLUMNS:
+        raise SystemExit(f"{comp}: a record carries {int(counts.max())} relations "
+                         f"and the fixed window is {COARSE_COLUMNS}; raise "
+                         f"COARSE_COLUMNS rather than truncate silently")
+    offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+
+    rec = np.fromfile(path, dtype=np.uint8)
+    stm = rec[64:64 + count * 40].reshape(count, 40)[:, 24].copy()
+
+    tmp = cache + ".tmp.npz"
+    np.savez(tmp, values=values[:vpos], offsets=offsets, stm=stm)
+    os.replace(tmp, cache)
+    return cache
+
+
+def load_coarse_csr(cache):
+    data = np.load(cache, mmap_mode="r")
+    return data["values"], data["offsets"], data["stm"]
+
+
+def coarse_perspectives(abs_ids, stm):
+    """Per-perspective bucket views from ABSOLUTE pair ids, vectorized.
+
+    White's view is the absolute id itself; black's flips both colour bits:
+    ((att+6)%12)*12 + (vic+6)%12. Padding (-1) survives both views - the
+    flip of a pad would be garbage, so it is masked back explicitly.
+    """
+    att = abs_ids // 12
+    vic = abs_ids % 12
+    flip = ((att + 6) % 12) * 12 + (vic + 6) % 12
+    black = np.where(abs_ids < 0, -1, flip)
+    is_black = (stm != 0)[:, None]
+    stm_view = np.where(is_black, black, abs_ids)
+    opp_view = np.where(is_black, abs_ids, black)
+    return stm_view, opp_view
 
 
 def load_threat_csr(directory):
@@ -671,10 +760,11 @@ class FeatureStore:
     because the record format is ordered by game.
     """
 
-    def __init__(self, paths, val_fraction=0.05, threats=False):
+    def __init__(self, paths, val_fraction=0.05, threats=False, coarse=False):
         # Threat shards are OPTIONAL and live in their own directory, so a run
         # without them never touches - or builds - that cache.
         self.threats = bool(threats)
+        self.coarse = bool(coarse)
         self.files = []
         for path in paths:
             directory = build_feature_shards(path)
@@ -712,6 +802,19 @@ class FeatureStore:
                     raise SystemExit(
                         f"{path}: threat shards hold {len(entry['stm_t']):,} rows but the "
                         f"HalfKA shards hold {count:,}. They describe different data.")
+            if self.coarse:
+                cache = build_coarse_shards(path)
+                values, offsets, stm_side = load_coarse_csr(cache)
+                entry["coarse"] = _CsrView(values, offsets, columns=COARSE_COLUMNS)
+                entry["coarse_stm"] = stm_side
+                # Same alignment guarantee the threat cache demands: a coarse
+                # companion built from another slice would pair the wrong
+                # relations with every position and never say so.
+                if len(entry["coarse"]) != count:
+                    raise SystemExit(
+                        f"{path}: coarse companion holds {len(entry['coarse']):,} rows "
+                        f"but the HalfKA shards hold {count:,}. They describe "
+                        f"different data.")
             self.files.append(entry)
             print(f"dataset: {count:,} records from {path} "
                   f"(train {train_count:,} / val {count - train_count:,})")
@@ -756,6 +859,8 @@ class FeatureStore:
         keys = ["stm", "opp", "scores", "results"]
         if self.threats:
             keys += ["stm_t", "opp_t"]
+        if self.coarse:
+            keys += ["coarse", "coarse_stm"]
 
         pending = tuple([] for _ in keys)
         pending_rows = 0

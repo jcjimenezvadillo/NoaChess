@@ -49,7 +49,11 @@ public sealed class AlphaBetaSearch
 
     // Lowest score that still belongs to the decisive tablebase band. Like
     // mate scores, TB scores carry a root-ply component and must be converted
-    // when they cross the TT boundary.
+    // when they cross the TT boundary. Measured 2026-08-30: this bound CANNOT
+    // be widened - scores DERIVED from band scores (singular margins, window
+    // edges) land just below the band, and a wider ToTT threshold starts
+    // ply-shifting them, which changed off-state node counts. Any resistance
+    // grade has to live outside the score space entirely (see SearchRoot).
     private const int TbScoreBound = TbWin - MaxPly;
 
     // Scale used by the reference root DTZ ranking. It leaves separate bands
@@ -235,6 +239,83 @@ public sealed class AlphaBetaSearch
     // reached over a warm TT) otherwise runs to the loose hard maximum. Applies
     // to single-thread AND SMP. See the _maxTimeMs update in FindBestMove.
     private const double OvershootFactor = 1.5;
+
+    // How fast the overshoot allowance shrinks as threads are added, per
+    // DOUBLING of the thread count, and the floor it may not go below.
+    //
+    // The soft budget is enforced at ROOT-MOVE boundaries, and when it fires
+    // the root move in progress is finished. What that costs in wall time is
+    // not a constant: with four threads the search is shallower and a root
+    // move is cheap, with twenty-four it is deep and a single root move can
+    // run over a second. So "allow 1.5x the budget" is a much bigger licence
+    // at 24 threads than at 4 - the STOP GRANULARITY grows with the thread
+    // count while the allowance does not.
+    //
+    // Observed on the bot on 2026-09-01, Ryzen at 24 threads against the Mac
+    // at 4, same day and same opponent pool: 1.77 s per move against 1.37 at
+    // 60+1 and 2.51 against 2.17 at 60+2, with the clock low point falling
+    // from 14.7 s to 9.8 - and NO gain in depth (21 against 20). Time paid
+    // for nothing, and a margin thin enough to flag in a long game.
+    //
+    // The taper is logarithmic because SMP depth gain is: each doubling of
+    // threads buys a similar increment, so each doubling should cost a
+    // similar slice of the allowance. At one thread this is exactly
+    // OvershootFactor, so the single-threaded path stays byte-identical and
+    // only SMP play changes.
+    //
+    //     hilos:      1      2      4      8     12     16     24
+    //     factor:  1.500  1.410  1.320  1.230  1.177  1.140  1.091
+    private const double OvershootTaperPerDoubling = 0.09;
+    private const double OvershootFloor = 1.05;
+
+    // The same guard for a search converted in place by a ponderhit, and it
+    // is deliberately 1.0: no overshoot at all.
+    //
+    // MEASURED, and this is what the first version of PonderInPlace got wrong.
+    // A converted search is DEEP when its budget expires - it never restarted -
+    // so the partial iteration it is inside costs seconds, while a relaunch
+    // that restarted at depth one expires among cheap iterations and stops
+    // almost at once. Over 25 games at 60+0.6 that made the converted arm
+    // spend a median 1.00 s per move against 0.74 s, and it lost three games
+    // on time to the other arm's zero.
+    //
+    // Paying for an iteration it cannot finish is the worst use of a clock the
+    // ponder already bought depth with: the answer comes from the last
+    // COMPLETED iteration either way, so cutting here costs no depth.
+    private const double ConvertedOvershootFactor = 1.0;
+
+    // Share of the optimum a CONVERTED search may spend. This is the piece the
+    // first two candidates were missing, and the measurements say it is not
+    // optional: converting in place and then spending the full budget costs
+    // 20-22% more clock per move and loses games on time in every clock regime
+    // tried (60+0.6: 30 forfeits to 6 in 421 games; 60+1, which is what the
+    // bot actually plays: 12 to 1 in 152, at -25 Elo).
+    //
+    // The relaunch it replaces was spending less by ACCIDENT - the obvious-move
+    // shortcut firing on confidence inherited from the transposition table -
+    // and that accident turns out to be load-bearing for the whole clock. So
+    // this does the same saving ON PURPOSE, and keeps what the relaunch threw
+    // away: the tree, the heuristics and the real depth.
+    //
+    // The share is of NEW time, measured from the ponderhit, NOT of total
+    // elapsed - and that distinction is the whole design. Capping total
+    // elapsed was tried first and it is far too blunt: elapsed already spans
+    // the ponder, so with any opponent think longer than half the optimum the
+    // search stops the instant it is converted. Measured at 60+1: it spent
+    // 337 ms against the relaunch's 1935 and came out 0.83 plies SHALLOWER,
+    // which is losing the argument on both counts at once.
+    //
+    // Half, because the relaunch it replaces spent about 0.6 of the optimum
+    // and that produced the clock profile the engine is measurably healthy
+    // with: it reaches every stage of a 60+1 game with more clock than
+    // opponents rated 2700-2900. Spending slightly less than that, while
+    // keeping the tree the relaunch threw away, is the only shape that can
+    // win on both.
+    private const double ConvertedBudgetShare = 0.5;
+
+    // Elapsed time at the moment a ponderhit converted this search, so the
+    // share above can be measured from there.
+    private long _convertedAtMs;
 
     private IPositionEvaluator _evaluator;
 
@@ -472,6 +553,18 @@ public sealed class AlphaBetaSearch
     // update in FindBestMove and the check in CheckStop).
     private long _maxTimeMs;
     private long _softTimeMs;
+    // True while a real clock governs this search. A FIELD rather than the
+    // local it used to be, because a ponderhit can install a clock on a search
+    // that started unlimited (see ApplyClockLimits) and the iterative-deepening
+    // loop has to read it fresh on every iteration.
+    private volatile bool _clockMode;
+    // True from the moment this search's budget fields are set until it
+    // returns. Read by ApplyClockLimits from the UCI thread: only a search
+    // that is genuinely running can be handed a clock.
+    private volatile bool _searching;
+    // True once a ponderhit converted this search in place; it selects the
+    // tighter mid-iteration guard above and is cleared at every search start.
+    private volatile bool _convertedPonder;
     private long _maxNodes;
     private CancellationToken _cancellation;
 
@@ -481,6 +574,89 @@ public sealed class AlphaBetaSearch
     // reference scheduler.
     private long _elapsedOffsetMs;
     private long ElapsedMs => _timer.ElapsedMilliseconds + _elapsedOffsetMs;
+
+    // MEASURED AND REJECTED, 2026-09-01. Kept inert behind PonderInPlace
+    // (default false) with its number, like every other arm that did not pay.
+    //
+    //   candidate         own clock   depth    forfeits   SPRT
+    //   convert in place    1.45x     +1.00    4 / 41     -
+    //   + overshoot 1.0     1.22x     +0.61    12 / 175   -20.0 at 60+1
+    //   + budget share      1.05x     +0.06    0 / 385    -23.7 [-41.2, -6.3]
+    //                                                     LLR -3.65, H0
+    //
+    // The last one had the clock problem SOLVED - zero time forfeits against
+    // the relaunch's three - and still lost by 24 Elo. So relaunching from
+    // depth one over the warm table is genuinely BETTER chess than continuing
+    // the pondered tree, whatever the depth counter says while it does it.
+    // Hypothesis, unmeasured and labelled as such: the relaunch re-walks every
+    // depth with a fresh aspiration window and the table's move first, which
+    // re-verifies the pondered answer, and it does not inherit a stability
+    // history built over a long unlimited search.
+    //
+    // Do not reopen on the strength of the depth numbers above. The 415
+    // absurd-looking depths this was meant to fix are mostly COSMETIC:
+    // PonderTrustMargin keeps the good move and only the REPORTED depth is
+    // short. See CHESSTEST/notas/PONDER_ACANTILADO_DISENO.md.
+    //
+    // What it does: installs a real clock on a search already running
+    // unlimited ("go ponder"), converting it in place instead of stopping it
+    // and starting over, which is what the reference scheduler does.
+    //
+    // A relaunch re-derives the answer from depth one over a warm
+    // transposition table - and a table that already knows the answer makes
+    // the first iteration reproduce it and never change its mind. The
+    // "obvious move" shortcut then reads settled-by-depth-4, zero best-move
+    // changes and a node share near 1.0, all three INHERITED from the ponder
+    // rather than earned, and cuts the budget to a fraction of the optimum.
+    // MEASURED on the published 5.3.0 build at 180+2, one position: a plain
+    // search reaches depth 17-19, and the relaunch after a 5 s ponder answered
+    // at DEPTH 13 in 20 ms with 175 s still on the clock (budget collapsed to
+    // 441 ms with share=0.986).
+    //
+    // Converting keeps the tree, the heuristics and the real stability
+    // history, and the timer has run since "go ponder", so elapsed time
+    // already spans the ponder exactly as the reference intends: no elapsed
+    // offset is needed and none is applied. A budget the ponder has already
+    // outspent simply ends the search at the next boundary WITH THE PONDERED
+    // DEPTH IN HAND, which is the whole point.
+    //
+    // Called from the UCI thread while this thread is deep in the search.
+    // Every field written here is a single aligned word and the volatile flag
+    // is written last, so a reader that sees clock mode sees the budget too.
+    // The caller serializes this against the search's own completion (UciLoop
+    // publishes it under the same gate) and falls back to a relaunch when this
+    // returns false.
+    internal bool ApplyClockLimits(SearchLimits limits)
+    {
+        if (!_searching || _clockMode || _hardTimeMs != long.MaxValue
+            || limits.SoftTimeMs >= limits.HardTimeMs)
+            return false;
+
+        long soft = limits.SoftTimeMs;
+        long hard = limits.HardTimeMs;
+
+        // A tablebase-resolved root deserves the same cut a fresh search gets.
+        if (_rootTbResolved)
+        {
+            soft = Math.Min(soft, TbResolvedBudgetMs);
+            hard = Math.Min(hard, TbResolvedBudgetMs * 4);
+        }
+
+        _softTimeMs = soft;
+        _hardTimeMs = hard;
+        _softDeadlineMs = soft;
+        // The mid-iteration guard is re-derived per iteration from the
+        // modulated budget; seeding it here bounds a conversion that lands in
+        // the middle of a long iteration instead of leaving it at the
+        // unlimited deadline until that iteration ends.
+        _convertedAtMs = ElapsedMs;
+        _maxTimeMs = Math.Min(hard, (long)(_convertedAtMs
+                                           + soft * ConvertedBudgetShare
+                                                  * ConvertedOvershootFactor));
+        _convertedPonder = true;
+        _clockMode = true;
+        return true;
+    }
 
     // ---- Adaptive time management state (v2.6.5) ----
     // The per-move budget from TimeManager is the OPTIMUM time; every
@@ -624,6 +800,76 @@ public sealed class AlphaBetaSearch
     // reopening must re-tune those consumers as part of the arm. Stays inert.
     public bool UseHistoryBonus;
 
+    // The NMP PACKAGE - the first arm shaped the way the campaign's
+    // structural conclusion demands: a coherent subsystem, not a piece.
+    // Three parts that the tombstones say only work TOGETHER: (1) quiet
+    // CHECKING moves generated at the first quiescence ply (direct checks;
+    // discovered checks are a documented divergence), which is what keeps
+    // deep null probes tactically honest - measured here as WAC 249 vs 257
+    // when the deep R ran into our checkless quiescence; (2) the
+    // reference's null reduction R = 7 + depth/3 against our validated
+    // 3 + depth/4; (3) the reference entry - cutNode only, static eval
+    // clearing beta by the ported margin - whose solo measurement grew the
+    // tree 32.7% and whose tombstone says "part of a package, do not
+    // measure alone". Measured 2026-09-01 as the package: H0, -23.2
+    // [-41.4, -5.2], LLR -3.33 over 614 fixed-node games (sprt_nmppkg.pgn).
+    // The +67% fixed-depth node toll is not paid back - the reference
+    // affords this shape only inside its whole tree, and ours is at a
+    // measured local optimum. Ninth burial of the campaign; the package
+    // question is now CLOSED with a number, which is what it was worth.
+    public bool UseNmpPackage;
+
+    // Extend LMR eligibility to CAPTURES (see the LMR gate): the reference
+    // reduces captures through the same pipeline and this engine never has -
+    // the whole block sits behind the quiet gate, which is also why the
+    // capture branch of statScore was found structurally dead on 2026-08-30.
+    // Measured 2026-08-31: H0, -8.2 [-21.2, +4.7], LLR -3.04 over 1,310
+    // fixed-node games (sprt_caplmr.pgn) - the eighth straight H0 of the
+    // campaign era, and the coverage class falls with the rest: this
+    // engine's soft curve wants no more reduction than it has. The capture
+    // statScore branch returns to documented dead code. Stays inert.
+    public bool UseCaptureLmr;
+
+    // The reference's PV handling for in-search tablebase LOSSES (see the
+    // probe block): at a PV node a non-exact loss bound becomes a CEILING
+    // and the search continues, instead of returning the flat band score.
+    // The Bothev2 case (iBC7gh3K, 2026-08-30): -TbWin+ply rewards delaying
+    // TB ENTRY, not the defeat, so a lost engine gave checks and let a pawn
+    // promote rather than capture it - more material means out of probe
+    // reach means a higher score. 108 of 367 bot games in four days sat in
+    // that flat band. BEHAVIORAL GATE FAILED ALONE (2026-08-30): the flat
+    // band also enters through the WIN-side cutoffs of the opponent's
+    // nodes, which the cap does not touch - on the move-74 position both
+    // arms still checked instead of killing the passer. Kept inert; the
+    // graded band below is the arm that carries the gradient.
+    public bool UseTbPvCap;
+
+    // TbResistance: restore a resistance gradient at the ROOT of a
+    // tablebase-lost position, entirely outside the score space. Two failed
+    // designs taught where it cannot live: grading the band scores breaks
+    // the TT's ply arithmetic (the band is exactly MaxPly wide and ToTT
+    // depends on it), and widening the band ply-shifts scores DERIVED from
+    // band values (singular margins), changing off-state node counts. So:
+    // once an iteration concludes the root is band-lost, the next iteration
+    // searches every root move with the full window and picks by a local
+    // key, score + clamp(1024 - childEval/8, 0, 2048) - the child's real
+    // evaluation as the tiebreak among flat-equal losses. The key is never
+    // returned and never stored; the extra cost only exists in positions
+    // that are already hopeless. Behavioral gate PASSED (move 74 of the
+    // Bothev2 game: off checks, on kills the passer). Measured 2026-08-30:
+    // H0, -3.1 [-11.6, +5.5], LLR -4.25 over 2,146 fixed-node games with
+    // tablebases on both arms (sprt_tbres.pgn) - a tight zero, which is
+    // what self-play CAN say here: against its own twin, the winning side
+    // converts regardless of resistance, so the instrument prices the cost
+    // (none) but cannot see the swindle value against imperfect opponents.
+    // ON by default since 2026-08-31, by explicit call: conduct provably
+    // better at measured zero cost. Off restores the published behavior.
+    public bool UseTbResistance = true;
+
+    // Set between iterations: the completed root score sat in the TB loss
+    // band, so the NEXT iteration runs SearchRoot in resistance mode.
+    private bool _rootLostTb;
+
     // Consumer gain when the package is on, holding the consumer's MEAN
     // torque constant: mean|statScore| measured 117 off vs 6825 on (30 bench
     // positions, depth 10, histstats command), 1568 * 117/6825 = 27. The
@@ -709,6 +955,81 @@ public sealed class AlphaBetaSearch
     // 2026-08-29: +20.9 [+7.2, +34.7], LLR +3.24, H1 over 1,099 fixed-node
     // games - on by default since 5.3.0.
     public bool UseStatScoreLmr = true;
+
+    // Steer the clock budget by how concentrated the tree is on the best move.
+    // Clock mode only, so fixed-depth and fixed-node searches are untouched.
+    public bool UseNodeTimeFactor = false;
+
+    // Steer the clock budget by how long the SCORE has stayed put, which is a
+    // separate question from how long the MOVE has. Clock mode only.
+    public bool UseEvalStabilityTime = false;
+
+    // How close to the running average a score must land to count as stable.
+    // Just above our measured median iteration-to-iteration movement of 10.
+    private const int EvalStabilityMargin = 12;
+
+    // Keep a completed iteration's answer when an interrupted one comes back
+    // losing, or without a mate the completed one had already proved.
+    public bool UseRootSafetyNet = false;
+
+    // Shrink the mid-iteration overshoot allowance as threads are added, so
+    // the licence matches the stop granularity. No effect at one thread.
+    public bool UseSmpOvershootTaper = false;
+
+    // ---- Lazy SMP worker diversification ----
+    //
+    // 0 is the main worker; helpers get 1, 2, 3... Until 2026-09-01 helpers
+    // carried NO index, and the consequence was measured that day: every
+    // worker searched the same root, with the same window, walking the same
+    // depths in the same order. The only thing separating them was the luck
+    // of transposition-table races.
+    //
+    // What that costs, time to depth 17 on one position, two machines:
+    //
+    //     hilos      Mac i5-8500B (ocioso)      Ryzen 2950X (con carga)
+    //       1        2111 ms                    2751 ms
+    //       2        1503 ms  (1.40x)           2164 ms  (1.27x)
+    //       4        1271 ms  (1.66x)           1668 ms  (1.65x)
+    //      6/8       1377 ms  (PEOR)            2025 ms  (PEOR)
+    //
+    // Identical shape on completely different hardware: a peak at four
+    // threads and regression beyond. That is not a machine, it is duplicated
+    // work - past four threads the extra workers add table traffic and no
+    // information. It also explains why an eight-year-old Mac Mini with six
+    // cores matches a sixteen-core Threadripper: neither uses more than about
+    // four threads' worth.
+    //
+    // The fix is the standard one: each helper SKIPS a pattern of iteration
+    // depths, so at any instant the workers sit at different depths and
+    // genuinely explore different trees. Index 0 never skips, so the
+    // single-threaded search stays byte-identical.
+    public int WorkerIndex;
+
+    // Skip pattern, indexed by (WorkerIndex - 1) % 20. A worker skips a depth
+    // when ((depth + phase) / size) is odd, which staggers the workers across
+    // depths instead of stacking them on the same one.
+    private static readonly int[] SkipSize =
+        [1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4];
+    private static readonly int[] SkipPhase =
+        [0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 6, 7];
+
+    private bool SkipDepth(int depth)
+    {
+        if (!UseSmpDiversify || WorkerIndex <= 0)
+            return false;
+        int i = (WorkerIndex - 1) % SkipSize.Length;
+        return ((depth + SkipPhase[i]) / SkipSize[i]) % 2 != 0;
+    }
+
+    // Diversify the helpers' iteration depths. No effect at one thread and no
+    // effect on the main worker, so node counts stay identical off AND on.
+    public bool UseSmpDiversify = false;
+
+    // Second SMP diversification axis, gated separately so each pays its own
+    // way: helpers aspire through progressively wider windows, so the pool
+    // stops failing low and high in lockstep and disagrees earlier about
+    // which root moves deserve a re-search. Worker 0 is untouched.
+    public bool UseSmpAspDiversify = false;
 
     public bool UseCorrectionBlend
     {
@@ -807,10 +1128,30 @@ public sealed class AlphaBetaSearch
     // newSearch: age the shared TT one generation at the start (true for a
     // standalone/main search). A Lazy SMP coordinator ages the shared table
     // once itself and passes false to every worker so it is not aged N times.
+    //
+    // The wrapper exists for ApplyClockLimits: it publishes "a search owns
+    // this object" and, crucially, RETRACTS it on every exit path. Without the
+    // finally a search that threw would leave the flag set and the next
+    // ponderhit would install a clock on nothing.
     public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
                                      IProgress<SearchProgress>? progress = null,
                                      bool newSearch = true)
+    {
+        try
+        {
+            return FindBestMoveCore(board, limits, cancellation, progress, newSearch);
+        }
+        finally
+        {
+            _searching = false;
+        }
+    }
+
+    private SearchResult FindBestMoveCore(Board board, SearchLimits limits,
+                                          CancellationToken cancellation,
+                                          IProgress<SearchProgress>? progress,
+                                          bool newSearch)
     {
         if (limits.MaxDepth < 1)
             throw new ArgumentOutOfRangeException(nameof(limits), "Minimum depth is 1.");
@@ -828,11 +1169,23 @@ public sealed class AlphaBetaSearch
         _softDeadlineMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
         _elapsedOffsetMs = limits.ElapsedOffsetMs;
+        _convertedPonder = false;
         _timer.Restart();
+
+        // Only now, with the budget fields holding THIS search's limits, may a
+        // ponderhit convert us. Publishing it any earlier reopens the hole it
+        // closes: a "go ponder" whose task has not started yet still carries
+        // the PREVIOUS ponder's unlimited budget, so a conversion would appear
+        // to succeed, be overwritten by the lines above, and leave a search
+        // with no clock that nobody is waiting to stop. That is a frozen game.
+        _searching = true;
 
         // Clock mode is recognizable by soft < hard; "movetime" sets them
         // equal and the budget must then be used in full, not predictively.
-        bool clockMode = limits.SoftTimeMs < limits.HardTimeMs;
+        // The local serves the two entry-time decisions below; everything
+        // inside the loop reads the field, which a ponderhit may flip.
+        _clockMode = limits.SoftTimeMs < limits.HardTimeMs;
+        bool clockMode = _clockMode;
 
         // Terminal root: checkmate or stalemate on the board. There is nothing
         // to search and, crucially, nothing to return - the iterative-deepening
@@ -942,6 +1295,8 @@ public sealed class AlphaBetaSearch
         int averageScore = ScoreNone;
         // Ring buffer index over the previous 4 iteration scores.
         int iterIdx = 0;
+        // Consecutive iterations whose score stayed near the running average.
+        int evalStability = 0;
         // Seed the iteration scores with the previous move's score so the
         // falling-eval factor reacts to drops ACROSS moves, not only within
         // this search. First move of the game: no history, seeded with 0 and
@@ -965,12 +1320,18 @@ public sealed class AlphaBetaSearch
         int maxIterationDepth = Math.Min(limits.MaxDepth, MaxPly);
         _rootSide = board.SideToMove;
         _rootAverageScore = ScoreNone;
+        _rootLostTb = false;
         _optimism = 0;
         for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
             CheckStop();
             if (_stopped)
                 break;
+
+            // Helper diversification: this worker sits out this depth so the
+            // pool spreads across depths instead of repeating one another.
+            if (SkipDepth(depth))
+                continue;
 
             // Age out the best-move variability metric and restart the
             // per-iteration change counter (SearchRoot increments it).
@@ -994,16 +1355,37 @@ public sealed class AlphaBetaSearch
             // window centers on the EWMA score rather than the last one.
             // Base 5 raw; the divisor is the reference's 10193 calibrated to
             // our centipawn scale (theirs is ~3.3x larger per pawn, and the
-            // term is quadratic in the score). Their per-thread diversification
-            // term has no equivalent here (helpers carry no index) and the
-            // SPRT runs single-threaded anyway. Widening below is untouched:
-            // that part of our loop won its own SPRT long ago.
+            // term is quadratic in the score). Their per-thread aspiration
+            // diversification now HAS a live path here: helpers carry a
+            // WorkerIndex (SmpDiversify staggers them across depths), so
+            // widening the window by worker index is the next candidate if
+            // depth skipping is not enough. An earlier version of this
+            // comment excused the gap with "the SPRT runs single-threaded
+            // anyway" - which is precisely how a helper pool that duplicated
+            // the main worker went unnoticed for months. Anything that only
+            // exists with threads gets measured with threads. Widening below
+            // is untouched: that part of our loop won its own SPRT long ago.
             if (UseDynamicAspiration && depth >= 3 && _rootAverageScore != ScoreNone)
             {
                 window = (int)Math.Min(5 + Math.Abs(_rootMeanSquaredScore) / 3000,
                                        Infinity);
                 alpha = Math.Max(_rootAverageScore - window, -Infinity);
                 beta = Math.Min(_rootAverageScore + window, Infinity);
+            }
+
+            // Helper aspiration diversification, at the REFERENCE's scale: its
+            // per-thread term is delta += threadIdx % 8, i.e. nought to seven
+            // RAW units of gentle decorrelation, not a rework of the window
+            // (a first cut here widened by a quarter per index and that is a
+            // cannon where the reference uses a pin). Their raw unit is ~2x
+            // our centipawn, so halve it. Applied to the bounds so it composes
+            // with either window mode above; worker 0 never enters, which
+            // keeps the single-threaded search byte-identical.
+            if (UseSmpAspDiversify && WorkerIndex > 0 && depth >= 3)
+            {
+                int extra = (WorkerIndex % 8 + 1) / 2;
+                alpha = Math.Max(alpha - extra, -Infinity);
+                beta = Math.Min(beta + extra, Infinity);
             }
 
             // Optimism follows the same guard as the aspiration window: it
@@ -1092,7 +1474,32 @@ public sealed class AlphaBetaSearch
                 // the vote and the report get the proved score, the scheduler
                 // still sees the drop, and at one thread - where there is no
                 // vote at all - the whole change is once again a no-op.
-                if (bestMove != Move.None && (_softStopped || best.BestMove == Move.None))
+                // Root safety net, from the 2026-09-01 audit. A partial
+                // iteration must not replace a COMPLETED one in two cases the
+                // fail-low guard below does not catch:
+                //
+                //   - it comes back LOSING while the completed answer was not.
+                //     A cut-off iteration has searched some root moves and not
+                //     others, so a loss it reports is a statement about the
+                //     moves it happened to reach, not about the position.
+                //   - it FORGOT a mate the completed answer had already proved.
+                //     Losing a proven mate to the clock is pure loss: the
+                //     completed line is still there and still mates.
+                //
+                // Our existing guard only rejects a partial result that failed
+                // low, which covers neither of these on its own.
+                bool rejectByNet = UseRootSafetyNet
+                    && best.BestMove != Move.None
+                    && ((score <= -MateBound && best.Score > -MateBound)
+                        || (best.Score >= MateBound && score < best.Score));
+
+                if (rejectByNet && TimeDebug)
+                    Console.Out.WriteLine(
+                        $"info string TM d={depth} reason=root-safety-net"
+                      + $" partial={score} kept={best.Score} move={best.BestMove}");
+
+                if (bestMove != Move.None && !rejectByNet
+                    && (_softStopped || best.BestMove == Move.None))
                 {
                     carryScore = score;
                     if (best.BestMove == Move.None || !failedLow)
@@ -1104,6 +1511,9 @@ public sealed class AlphaBetaSearch
             best = new SearchResult(bestMove, score, _nodes, depth);
             carryScore = score;
             previousScore = score;
+            // TbResistance: a completed iteration concluding in the loss band
+            // switches the NEXT iteration's root into resistance mode.
+            _rootLostTb = UseTbResistance && score <= -TbScoreBound && score > -MateBound;
             if (_rootAverageScore == ScoreNone)
             {
                 _rootAverageScore = score;
@@ -1152,7 +1562,24 @@ public sealed class AlphaBetaSearch
                 totBestMoveChanges = 0;
             averageScore = averageScore == ScoreNone ? score : (2 * score + averageScore) / 3;
 
-            if (clockMode)
+            // Eval stability: consecutive iterations whose score sits close to
+            // the running average. This is a DIFFERENT signal from best-move
+            // stability, and the audited engines all carry both: a move can
+            // hold for fifteen iterations while the score swings 80 cp, and
+            // that position deserves time even though the choice looks settled.
+            //
+            // Compared against the AVERAGE, not the previous iteration, which
+            // is what the reference does and what the measurement says matters:
+            // against the previous score our counter averages 1.34 and the
+            // factor spans only 9%, against the average it averages 5.72 and
+            // uses its range. Margin 12 sits just above our measured median
+            // iteration-to-iteration movement of 10.
+            if (Math.Abs(score - averageScore) < EvalStabilityMargin)
+                evalStability++;
+            else
+                evalStability = 0;
+
+            if (_clockMode)
             {
                 // Proven-short-mate stop: a mate in <= 3 for us cannot get
                 // shorter and a mate-in-2 loss has no longer defense, so the
@@ -1241,6 +1668,46 @@ public sealed class AlphaBetaSearch
                     : 1.077 + 2.229 * totBestMoveChanges / SearchThreadCount;
 
                 double totalTime = _softTimeMs * fallingEval * reduction * bestMoveInstability;
+
+                // Node share as a CONTINUOUS factor, not a switch.
+                //
+                // BestMoveNodeShare has been computed all along and thrown away
+                // on 91% of iterations: the easy/obvious-move rules are the only
+                // consumers and they need >= 0.90, which fires on 46 of 531
+                // measured iterations. The three engines audited on 2026-09-01
+                // all use this same quantity as a continuous multiplier on EVERY
+                // move instead - a tree concentrated on one move has already
+                // decided, whatever the score says.
+                //
+                // It is the same shape of mistake as the old timeReduction
+                // cliff, fixed in 4.4.0 for exactly this reason.
+                //
+                // The constants are OURS, not theirs. The reference slope is
+                // normalized and re-centred on our own measured median share
+                // (0.541 over 531 iterations at 60+1; p10 0.165, p90 0.890) so
+                // the AVERAGE budget is unchanged and the SPRT measures the
+                // steering rather than "more time". The clamp is deliberately
+                // narrower than the reference's, which would swing 0.31x-1.82x:
+                // this factor multiplies three others that already swing 5x
+                // between them.
+                if (UseNodeTimeFactor)
+                    totalTime *= Math.Clamp(1.822 - 1.520 * BestMoveNodeShare, 0.65, 1.35);
+
+                // Same discipline as the node factor: the reference slope is
+                // kept, the BASE is solved by bisection so the mean factor over
+                // our own measured counter distribution is exactly 1.000. The
+                // lower clamp truncates the tail and biases the mean upward, so
+                // the base cannot simply be derived - it has to be searched.
+                if (UseEvalStabilityTime)
+                    totalTime *= Math.Clamp(1.1735 - 0.0416 * evalStability, 0.86, 1.30);
+
+                // A converted search has already been paid for on the
+                // opponent's clock, so the marginal value of more of OUR clock
+                // is lower than on a fresh move. Capping it here is what the
+                // relaunch used to do by accident; see ConvertedBudgetShare.
+                if (_convertedPonder)
+                    totalTime = Math.Min(totalTime,
+                        _convertedAtMs + _softTimeMs * ConvertedBudgetShare);
 
                 // Multi-thread safety cap on the soft deadline. Under the
                 // shared-TT races the dynamic factors (falling-eval, reduction,
@@ -1338,7 +1805,13 @@ public sealed class AlphaBetaSearch
                 // Never above the hard maximum; applies to single-thread and SMP.
                 // Fixed-depth/analysis is unaffected (this whole block is clock
                 // mode only), so those node counts stay byte-identical.
-                _maxTimeMs = Math.Min(_hardTimeMs, (long)(totalTime * OvershootFactor));
+                double overshoot = _convertedPonder ? ConvertedOvershootFactor
+                                                    : OvershootFactor;
+                if (UseSmpOvershootTaper && !_convertedPonder && SearchThreadCount > 1)
+                    overshoot = Math.Max(OvershootFloor,
+                        OvershootFactor - OvershootTaperPerDoubling
+                                          * Math.Log2(SearchThreadCount));
+                _maxTimeMs = Math.Min(_hardTimeMs, (long)(totalTime * overshoot));
             }
 
             _iterValue[iterIdx] = score;
@@ -1346,7 +1819,7 @@ public sealed class AlphaBetaSearch
         }
 
         // Carry the scheduler state to the next move of the game.
-        if (clockMode)
+        if (_clockMode)
         {
             _previousTimeReduction = timeReduction;
             if (best.BestMove != Move.None)
@@ -1431,6 +1904,15 @@ public sealed class AlphaBetaSearch
         // needs the window this node actually started with.
         int originalAlpha = alpha;
 
+        // TbResistance root mode: the previous iteration proved the root is
+        // tablebase-lost, so every move comes back with the same flat band
+        // score and selection would fall to the entry-ply artifact - the one
+        // that lets pawns promote. Search every move with the full window
+        // and pick by a LOCAL key that adds the child's real evaluation as
+        // the tiebreak. The key never leaves this method.
+        bool lostMode = _rootLostTb;
+        long bestKey = long.MinValue;
+
         // Effort per root move. Best-move STABILITY alone cannot tell a forced
         // move from a merely quiet one - measured on 40 real positions, cutting
         // the clock on stability changed the move in middlegames where the
@@ -1453,9 +1935,11 @@ public sealed class AlphaBetaSearch
             _incremental?.CompleteThreatDelta(board);
 
             // PVS at the root: first move with the full window, the rest with
-            // a null window plus re-search when they surprise.
+            // a null window plus re-search when they surprise. In lostMode
+            // every move gets the full window: a scout would reject the
+            // resistant move for scoring a few band points under the leader.
             int score;
-            if (searched == 0)
+            if (searched == 0 || lostMode)
             {
                 // The root is a PV node; its first child stays on the PV.
                 score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
@@ -1470,6 +1954,14 @@ public sealed class AlphaBetaSearch
                     score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
                                      cutNode: false);
             }
+
+            // The resistance tiebreak, read off the child while it is still
+            // on the board: the opponent's view negated. Only lost-band
+            // scores get one; the 2048 cap keeps any graded loss below every
+            // non-band score by orders of magnitude.
+            int resistance = 0;
+            if (lostMode && score <= -TbScoreBound && score > -MateBound && !_stopped)
+                resistance = Math.Clamp(1024 - _evaluator.Evaluate(board) / 8, 0, 2048);
 
             board.UnmakeMove();
             _incremental?.Pop();
@@ -1489,8 +1981,13 @@ public sealed class AlphaBetaSearch
             // allowed to take the lead - otherwise a fail-low iteration can
             // hand back a move the search never actually endorsed, while the
             // reported PV still shows the previous (real) best.
-            if (score > bestScore && (searched == 1 || score > alpha))
+            // In lostMode every move was searched with the full window, so
+            // the scores ARE comparable and the key decides.
+            long key = (long)score + resistance;
+            if (lostMode ? key > bestKey
+                         : score > bestScore && (searched == 1 || score > alpha))
             {
+                bestKey = key;
                 bestScore = score;
                 bestMove = move;
                 bestMoveNodes = nodesSpent;
@@ -1923,6 +2420,10 @@ public sealed class AlphaBetaSearch
         // turning the probe off lets normal evaluation and mate distance pick
         // the fastest win among the moves the tables call equal.
         int pieceCount = System.Numerics.BitOperations.PopCount(board.AllOccupancy);
+        // Ceiling from a tablebase LOSS at a PV node (TbPvCap): the truth is
+        // "lost", but among lost moves the eval still knows which resists.
+        // Infinity means no cap.
+        int tbCeiling = Infinity;
         if (!_rootInTb
             && pieceCount <= _tbMaxMen
             && (pieceCount < _tbMaxMen || depth >= _tbMinProbeDepth)
@@ -1947,17 +2448,30 @@ public sealed class AlphaBetaSearch
                                   : wdl < 0 ? BoundType.UpperBound
                                   : BoundType.Exact;
 
+                // The reference's PV exception (TbPvCap): a LOSS at a PV node
+                // never hard-returns its flat band score - it becomes a
+                // ceiling and the search keeps ranking the lost moves by what
+                // the evaluation still sees. Without it the flat -TbWin+ply
+                // rewards delaying TB ENTRY rather than the defeat, which is
+                // how a lost engine lets a pawn promote instead of taking it.
+                bool capLoss = UseTbPvCap && beta - alpha != 1
+                               && tbBound == BoundType.UpperBound;
+
                 // Only cut when the bound actually resolves the window; an
                 // exact draw always does.
-                if (tbBound == BoundType.Exact
-                    || (tbBound == BoundType.LowerBound && tbScore >= beta)
-                    || (tbBound == BoundType.UpperBound && tbScore <= alpha))
+                if (!capLoss
+                    && (tbBound == BoundType.Exact
+                        || (tbBound == BoundType.LowerBound && tbScore >= beta)
+                        || (tbBound == BoundType.UpperBound && tbScore <= alpha)))
                 {
                     _tt.Store(board.ZobristKey, depth + 6, ToTT(tbScore, ply),
                               TTEntry.NoStaticEval, tbBound, Move.None,
                               isPv: beta - alpha != 1 || (ttHit && entry.IsPv));
                     return tbScore;
                 }
+
+                if (capLoss)
+                    tbCeiling = tbScore;
             }
         }
 
@@ -1972,7 +2486,7 @@ public sealed class AlphaBetaSearch
 
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
-            return Quiescence(board, alpha, beta, ply);
+            return Quiescence(board, alpha, beta, ply, genChecks: UseNmpPackage);
 
         // Only now, past every early return above. Same board, so the same
         // answer as computing it at the top - just not paid by the nodes that
@@ -2092,6 +2606,12 @@ public sealed class AlphaBetaSearch
             && (!UseNmpEvalGate
                 || (staticEval != NoEval
                     && staticEval >= beta - 13 * depth - 47 * (improving ? 1 : 0) + 365))
+            // Package entry: cutNode only, eval clearing beta by the ported
+            // margin - the reference shape, affordable only with the deep R
+            // and the quiescence checks that ride the same flag.
+            && (!UseNmpPackage
+                || (cutNode && staticEval != NoEval
+                    && staticEval >= beta - 13 * depth - 47 * (improving ? 1 : 0) + 365))
             && (ply >= _nmpMinPly || board.SideToMove != _nmpColor))
         {
             // Reduction: the previously validated shape (child depth
@@ -2103,7 +2623,7 @@ public sealed class AlphaBetaSearch
             // keeps its shallow null cutoffs tactically safe (measured here:
             // WAC 249-251/300 vs 257-259 with the old R, and verification
             // onset at 8 neither recovers the tactics nor keeps the nodes).
-            int r = 3 + depth / 4;
+            int r = UseNmpPackage ? 7 + depth / 3 : 3 + depth / 4;
 
             _stackPiece[ply] = -1; // No usable "previous move" for the child.
             _stackStatScore[ply] = 0;
@@ -2612,7 +3132,8 @@ public sealed class AlphaBetaSearch
                 // thresholds come from the active profile (Bullet reduces
                 // sooner); board.IsInCheck() here means "the move gives check".
                 int reduction = 0;
-                if (isQuiet && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
+                if ((isQuiet || (UseCaptureLmr && move.IsCapture && !move.IsPromotion))
+                    && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
                     // Everything below is in 1024ths. Every adjuster here is a
@@ -2944,6 +3465,13 @@ public sealed class AlphaBetaSearch
             return excluded != Move.None ? alpha
                  : inCheck ? -MateScore + ply : 0;
 
+        // TbPvCap: the node is a proven tablebase loss, so whatever the
+        // evaluation said below, the reported score may not exceed the loss
+        // band. Clamped before the store so the TT carries the capped truth;
+        // the move RANKING inside used the uncapped eval, which is the point.
+        if (tbCeiling != Infinity && bestScore > tbCeiling)
+            bestScore = tbCeiling;
+
         // Every move may have been SEE-pruned except the first; bestMove is
         // then still valid (the first move is never pruned).
 
@@ -3034,7 +3562,8 @@ public sealed class AlphaBetaSearch
     // own measured block. The TT probe/store at quiescence depth is also left
     // out: measured in the 5E campaign, depth-0 entries flooded the clusters
     // and evicted main-search entries (d15 nodes ROSE 1.35M -> 1.75M, nps -11%).
-    private int Quiescence(Board board, int alpha, int beta, int ply)
+    private int Quiescence(Board board, int alpha, int beta, int ply,
+                           bool genChecks = false)
     {
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
@@ -3189,6 +3718,42 @@ public sealed class AlphaBetaSearch
         else
             MovePicker.ScoreAndSortCapturesQs(moves, board, _captureHistory);
 
+        // NMP package: the FIRST quiescence ply also tries quiet moves that
+        // give DIRECT check, which is what keeps the deep null probes
+        // tactically honest (their subtree bottoms out here). Appended after
+        // the sorted captures so they run last; discovered checks are a
+        // documented divergence from the reference's generator. The scratch
+        // list is the child ply's, borrowed strictly BEFORE any recursion.
+        if (genChecks && !inCheck && ply + 1 < MaxPly)
+        {
+            MoveList quiets = _moveLists[ply + 1];
+            quiets.Clear();
+            MoveGenerator.AppendQuietMoves(board, quiets);
+            Color enemy = Board.OppositeColor(board.SideToMove);
+            int kSq = board.KingSquare(enemy);
+            ulong occNow = board.AllOccupancy;
+            ulong knightChk = Attacks.Knight(kSq);
+            ulong bishopChk = Attacks.Bishop(kSq, occNow);
+            ulong rookChk = Attacks.Rook(kSq, occNow);
+            ulong pawnChk = Attacks.Pawn(enemy, kSq);
+            for (int q = 0; q < quiets.Count; q++)
+            {
+                Move m = quiets[q];
+                ulong toBb = 1UL << m.To;
+                ulong mask = board.PieceTypeAt(m.From) switch
+                {
+                    PieceType.Pawn => pawnChk,
+                    PieceType.Knight => knightChk,
+                    PieceType.Bishop => bishopChk,
+                    PieceType.Rook => rookChk,
+                    PieceType.Queen => bishopChk | rookChk,
+                    _ => 0UL,
+                };
+                if ((mask & toBb) != 0)
+                    moves.Add(m);
+            }
+        }
+
         Color us = board.SideToMove;
         int moveCount = 0;
 
@@ -3208,7 +3773,12 @@ public sealed class AlphaBetaSearch
             // promotion pieces are searched (the reference does not drop the
             // minors either); the ordering ranks the queen first, so the
             // others only cost the tail of the list.
-            if (!inCheck && !move.IsPromotion)
+            // The capture test is what exempts the package's quiet checks:
+            // their destination square is empty, so the futility read below
+            // would price a non-existent victim, and the reference exempts
+            // checking moves from this pruning anyway. Without the package
+            // every move here IS a capture, so the test changes nothing.
+            if (!inCheck && !move.IsPromotion && move.IsCapture)
             {
                 // Futility: even winning the piece standing on the destination
                 // square, plus a generous margin, cannot reach alpha - the

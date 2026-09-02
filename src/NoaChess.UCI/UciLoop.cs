@@ -55,6 +55,15 @@ public sealed class UciLoop
     private string[]? _pendingPonderTokens;
     private readonly Stopwatch _ponderTimer = new();
 
+    // Handoff between "ponderhit" and the ponder search finishing on its own.
+    // Exactly one of the two decides how that search ends - converted in place
+    // (it answers) or relaunched (it is silenced) - and they race: the search
+    // can complete in the microsecond before the ponderhit is read. Both sides
+    // read and write these under the gate, so the decision is taken once.
+    private readonly object _ponderGate = new();
+    private bool _ponderSearchDone;
+    private bool _ponderConverted;
+
     // Deepest answer the CURRENT ponder search reached, kept so a ponderhit
     // relaunch that gets almost no clock cannot throw it away.
     //
@@ -371,6 +380,19 @@ public sealed class UciLoop
                     break;
                 }
 
+                case "threatcoarse":
+                {
+                    // Not UCI: prices the COARSE threat encoding (144
+                    // attacker-class x victim-class counts straight off the
+                    // bitboards) at evaluation time, with the engine's real
+                    // attack infrastructure. Gate 2 of the coarse-threats
+                    // design: the probe already said the signal is there
+                    // (+4.14%); this says what the engine would pay for it.
+                    WaitForSearchToFinish(suppressBestmove: true);
+                    HandleThreatCoarse(tokens);
+                    break;
+                }
+
                 case "histstats":
                 {
                     // Not UCI: "histstats on" arms raw statScore sampling on
@@ -427,18 +449,40 @@ public sealed class UciLoop
 
                 case "ponderhit":
                     // The opponent played the predicted move: everything the
-                    // ponder search stored in the TT is valid. Silently stop
-                    // it and relaunch as a normal timed search - the warm TT
-                    // makes the early iterations nearly free, and the time
-                    // already pondered is charged against the new budget so
-                    // a long ponder answers almost instantly.
+                    // ponder search has - its tree, its heuristics and its TT
+                    // entries - is valid for the position we must now answer.
                     if (_pendingPonderTokens is string[] goTokens)
                     {
                         long ponderedMs = _ponderTimer.ElapsedMilliseconds;
+                        string[] timedTokens = goTokens.Where(t => t != "ponder").ToArray();
                         _pendingPonderTokens = null;
-                        WaitForSearchToFinish(suppressBestmove: true);
-                        HandleGo(goTokens.Where(t => t != "ponder").ToArray(), ponderedMs,
-                                 fromPonderhit: true);
+
+                        // Preferred: hand the RUNNING search its clock and let
+                        // it answer. Its timer has been going since "go
+                        // ponder", so the elapsed time already spans the
+                        // ponder, which is what the reference does.
+                        bool converted = false;
+                        if (_options.PonderInPlace)
+                        {
+                            SearchLimits timedLimits = ParseLimits(timedTokens);
+                            lock (_ponderGate)
+                            {
+                                if (!_ponderSearchDone
+                                    && _engine.ApplyPonderhitClock(timedLimits))
+                                    converted = _ponderConverted = true;
+                            }
+                        }
+
+                        // Fallback: silently stop the ponder and search again
+                        // over its warm TT, the pondered time charged against
+                        // the new budget so a long ponder answers quickly.
+                        // Never inside the gate - this joins the search task,
+                        // which takes the gate itself when it finishes.
+                        if (!converted)
+                        {
+                            WaitForSearchToFinish(suppressBestmove: true);
+                            HandleGo(timedTokens, ponderedMs, fromPonderhit: true);
+                        }
                     }
                     break;
 
@@ -670,6 +714,123 @@ public sealed class UciLoop
     // matter; a rare type with large weights is cheap to keep. So this reports
     // the mean row weight AND the occurrences per position, and the product,
     // which is what ranks them.
+    // "threatcoarse <fens>" - not UCI. Times the coarse threat extraction the
+    // AMENAZAS_COMPACTAS design proposes: per piece, its attack set off the
+    // magics, AND-ed against the twelve piece-class occupancies, popcounts
+    // accumulated into 144 buckets, plus the pawn-stopped-by-pawn shift. The
+    // per-position cost is the whole question - the fine set died on per-node
+    // geometry, and this path is paid per EVALUATION only. Min-of-5 passes
+    // (paired-time lesson: totals measure the machine). Counts are NOT
+    // asserted against the fine enumerator: symmetric relations deduplicate
+    // there and count twice here, by design of each encoding.
+    private void HandleThreatCoarse(string[] tokens)
+    {
+        string[] positions = tokens.Length > 1 && File.Exists(tokens[1])
+            ? File.ReadAllLines(tokens[1]).Select(l => l.Trim())
+                  .Where(l => l.Length > 0 && !l.StartsWith('#')).ToArray()
+            : [];
+        if (positions.Length == 0)
+        {
+            _output.WriteLine("info string threatcoarse: needs a FEN file, one position per line");
+            return;
+        }
+
+        var boards = new List<Board>();
+        foreach (string fen in positions)
+        {
+            var b = new Board();
+            try { Fen.Load(b, fen); boards.Add(b); }
+            catch { }
+        }
+        if (boards.Count == 0)
+        {
+            _output.WriteLine("info string threatcoarse: no valid positions");
+            return;
+        }
+
+        var counts = new int[144];
+        var victims = new ulong[12];
+        long checksum = 0;
+
+        void ExtractCoarse(Board b)
+        {
+            Array.Clear(counts);
+            ulong occ = b.AllOccupancy;
+            for (int v = 0; v < 12; v++)
+                victims[v] = b.Pieces((Color)(v / 6), (PieceType)(v % 6));
+
+            for (int a = 0; a < 12; a++)
+            {
+                var color = (Color)(a / 6);
+                var type = (PieceType)(a % 6);
+                ulong pieces = victims[a];
+                int rowBase = a * 12;
+                while (pieces != 0)
+                {
+                    int sq = System.Numerics.BitOperations.TrailingZeroCount(pieces);
+                    pieces &= pieces - 1;
+                    ulong att = type switch
+                    {
+                        PieceType.Pawn => Attacks.Pawn(color, sq),
+                        PieceType.Knight => Attacks.Knight(sq),
+                        PieceType.Bishop => Attacks.Bishop(sq, occ),
+                        PieceType.Rook => Attacks.Rook(sq, occ),
+                        PieceType.Queen => Attacks.Queen(sq, occ),
+                        _ => Attacks.King(sq),
+                    };
+                    for (int v = 0; v < 12; v++)
+                        counts[rowBase + v] +=
+                            System.Numerics.BitOperations.PopCount(att & victims[v]);
+                }
+            }
+
+            // The one threat relation that is not an attack: a pawn stopped
+            // dead by the pawn in front of it.
+            ulong wp = victims[(int)Color.White * 6 + (int)PieceType.Pawn];
+            ulong bp = victims[(int)Color.Black * 6 + (int)PieceType.Pawn];
+            counts[0] += System.Numerics.BitOperations.PopCount((wp << 8) & bp);
+
+            for (int i = 0; i < 144; i++)
+                checksum += counts[i];
+        }
+
+        // Warmup pass, then min-of-5 timed passes with many repetitions.
+        foreach (var b in boards)
+            ExtractCoarse(b);
+
+        const int passes = 5;
+        const int reps = 200;
+        double bestNs = double.MaxValue;
+        var sw = new System.Diagnostics.Stopwatch();
+        for (int p = 0; p < passes; p++)
+        {
+            sw.Restart();
+            for (int r = 0; r < reps; r++)
+                foreach (var b in boards)
+                    ExtractCoarse(b);
+            sw.Stop();
+            double ns = sw.Elapsed.TotalMilliseconds * 1_000_000.0 / (reps * boards.Count);
+            if (ns < bestNs) bestNs = ns;
+        }
+
+        long relations = 0;
+        foreach (var b in boards)
+        {
+            Array.Clear(counts);
+            checksum = 0;
+            ExtractCoarse(b);
+            relations += checksum;
+        }
+
+        _output.WriteLine($"info string threatcoarse: {boards.Count} positions, "
+            + $"{relations / boards.Count} coarse relations/pos on average");
+        _output.WriteLine($"info string threatcoarse: {bestNs:F0} ns per extraction "
+            + $"(min of {passes} passes x {reps} reps), target < 500 ns");
+        _output.WriteLine(bestNs < 500
+            ? "info string threatcoarse: VERDICT under target - the eval-time path is affordable"
+            : "info string threatcoarse: VERDICT OVER target - price it against the 65 Elo/doubling constant before building");
+    }
+
     private void HandleThreatBands(string[] tokens)
     {
         var network = _engine.NnueNetwork;
@@ -838,6 +999,20 @@ public sealed class UciLoop
             _engine.UseCorrectionBlend = _options.CorrectionBlend;
         if (changed == "StatScoreLmr")
             _engine.UseStatScoreLmr = _options.StatScoreLmr;
+        if (changed == "NodeTimeFactor")
+            _engine.UseNodeTimeFactor = _options.NodeTimeFactor;
+        if (changed == "EvalStabilityTime")
+            _engine.UseEvalStabilityTime = _options.EvalStabilityTime;
+        if (changed == "RootSafetyNet")
+            _engine.UseRootSafetyNet = _options.RootSafetyNet;
+        if (changed == "SmpOvershootTaper")
+            _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
+        if (changed == "SmpDiversify")
+            _engine.UseSmpDiversify = _options.SmpDiversify;
+        if (changed == "SmpAspDiversify")
+            _engine.UseSmpAspDiversify = _options.SmpAspDiversify;
+        if (changed == "SmpVoteAll")
+            _engine.UseSmpVoteAll = _options.SmpVoteAll;
         if (changed == "CutNodeLmr")
             _engine.UseCutNodeLmr = _options.CutNodeLmr;
         if (changed == "FailLowCorrection")
@@ -852,6 +1027,14 @@ public sealed class UciLoop
             _engine.UseCorrectionLmr = _options.CorrectionLmr;
         if (changed == "KillerShallowing")
             _engine.UseKillerShallowing = _options.KillerShallowing;
+        if (changed == "TbPvCap")
+            _engine.UseTbPvCap = _options.TbPvCap;
+        if (changed == "TbResistance")
+            _engine.UseTbResistance = _options.TbResistance;
+        if (changed == "CaptureLmr")
+            _engine.UseCaptureLmr = _options.CaptureLmr;
+        if (changed == "NmpPackage")
+            _engine.UseNmpPackage = _options.NmpPackage;
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
@@ -979,7 +1162,14 @@ public sealed class UciLoop
         bool infinite = Array.IndexOf(tokens, "infinite") != -1;
         _pendingPonderTokens = ponder ? tokens : null;
         if (ponder)
+        {
             _ponderTimer.Restart();
+            lock (_ponderGate)
+            {
+                _ponderSearchDone = false;
+                _ponderConverted = false;
+            }
+        }
 
         SearchLimits limits = ponder
             ? SearchLimits.Unlimited()
@@ -1131,7 +1321,25 @@ public sealed class UciLoop
         // mate): park here until the GUI sends "stop" (-> answer below) or
         // "ponderhit"/new position (-> cancelled with bestmove suppressed).
         // Answering early violates UCI and desyncs the GUI.
-        if (waitForStop && !token.IsCancellationRequested)
+        bool park = waitForStop && !token.IsCancellationRequested;
+
+        // A ponder search that was CONVERTED by "ponderhit" is no longer a
+        // ponder search: it owns the clock and it owes the GUI the answer, so
+        // it must not park. Publishing completion under the same gate the
+        // conversion takes is what stops the two from both deciding - the
+        // search finishing one instruction before the ponderhit arrives would
+        // otherwise park forever on a converted search, or answer twice.
+        if (isPonder)
+        {
+            lock (_ponderGate)
+            {
+                _ponderSearchDone = true;
+                if (_ponderConverted)
+                    park = false;
+            }
+        }
+
+        if (park)
         {
             LogLine("--", "ponder/infinite search self-finished, parked until stop/ponderhit");
             token.WaitHandle.WaitOne();

@@ -230,6 +230,9 @@ def main():
                         help="psqt head buckets (two-headed net); 0 disables")
     parser.add_argument("--threats", action="store_true",
                         help="train the threat feature transformer as well (arch 4)")
+    parser.add_argument("--coarse", action="store_true",
+                        help="train the 144-bucket coarse threat lane (needs the "
+                             ".coarsedata companions from DataGen coarse-encode)")
     # Two jobs on one GPU end an eighteen-hour run with an out-of-memory hours
     # in, and the cost of finding out is the whole run. This already happened
     # to a smoke test launched while fqc120 was 89 epochs into 120: cuBLAS
@@ -273,6 +276,11 @@ def main():
 
     if args.streaming:
         return train_streaming(args, rng)
+
+    if args.coarse:
+        # The coarse companions ride the streaming shards; the in-RAM path
+        # never learned about them and would unpack the wrong tuple shape.
+        raise SystemExit("--coarse requires the streaming path (drop --no-streaming)")
 
     # Count records first so we can size a proportional subsample if (and only
     # if) the combined set exceeds the safety cap.
@@ -335,7 +343,7 @@ def train_streaming(args, rng):
     at all.
     """
     store = dataset.FeatureStore(args.data, val_fraction=args.val_fraction,
-                                threats=args.threats)
+                                threats=args.threats, coarse=args.coarse)
     print(f"train: {store.train_total:,}  val: {store.val_total:,} "
           f"from {len(args.data)} files (streaming, "
           f"chunk={args.chunk} buffer={args.buffer_chunks})")
@@ -356,19 +364,29 @@ def train_streaming(args, rng):
         store.train_total, store.val_total)
 
 
-def split_batch(batch):
-    """(stm, opp, scores, results, stm_t, opp_t) from a 4- or 6-array batch.
+def split_batch(batch, coarse=False):
+    """(stm, opp, scores, results, stm_t, opp_t, stm_c, opp_c).
 
     One function for both the training and the validation loop on purpose: two
     copies of this unpacking is how one of them ends up feeding threats and the
     other not, which would make the validation number measure a different model
     than the one being trained.
+
+    The coarse flag is explicit rather than inferred: a coarse batch and a
+    threat batch are both six arrays, and guessing by length is exactly the
+    silent mispairing this function exists to prevent. The perspective views
+    are derived here from the absolute ids and the stored side to move, so
+    both loops feed the model identically.
     """
+    if coarse:
+        stm, opp, scores, results, cabs, cstm = batch
+        stm_c, opp_c = dataset.coarse_perspectives(cabs, cstm)
+        return stm, opp, scores, results, None, None, stm_c, opp_c
     if len(batch) == 6:
         stm, opp, scores, results, stm_t, opp_t = batch
-        return stm, opp, scores, results, stm_t, opp_t
+        return stm, opp, scores, results, stm_t, opp_t, None, None
     stm, opp, scores, results = batch
-    return stm, opp, scores, results, None, None
+    return stm, opp, scores, results, None, None, None, None
 
 
 def run_training(args, make_train_batches, make_val_batches, train_total, val_total):
@@ -402,7 +420,8 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
 
     model = NoaNnue(args.ft_out, args.l1_out, args.out_buckets, args.factorized,
                     args.qat, args.qa, threats=args.threats,
-                    dual=args.dual, l2_out=args.l2_out, psqt_buckets=args.psqt_buckets).to(device)
+                    dual=args.dual, l2_out=args.l2_out, psqt_buckets=args.psqt_buckets,
+                    coarse=args.coarse).to(device)
     # The banner names the architecture this run will EXPORT as, and that is not
     # decoration. It said "export as arch 2/3" while training an arch 5 net on
     # the first --dual run: the shapes were right, the checkpoint was right, and
@@ -419,7 +438,7 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         target_arch = "2/3"
     print(f"net: ft_out={args.ft_out} l1_out={args.l1_out} out_buckets={args.out_buckets} "
           f"factorized={args.factorized} qat={args.qat} threats={args.threats} "
-          f"dual={args.dual}"
+          f"coarse={args.coarse} dual={args.dual}"
           + (f" l2_out={args.l2_out}" if args.dual else "")
           + (f" (QA={args.qa}, export as arch {target_arch})" if args.qat else ""))
     # Two parameter groups so the transformer can be decayed differently from
@@ -460,14 +479,17 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         losses = []
         with torch.no_grad():
             for batch in prefetch(make_val_batches(), args.prefetch):
-                stm, opp, scores, results, stm_t, opp_t = split_batch(batch)
+                stm, opp, scores, results, stm_t, opp_t, stm_c, opp_c = \
+                    split_batch(batch, coarse=args.coarse)
                 # Validation uses a FIXED lambda even when training schedules it.
                 # A moving objective would make each epoch's number measure a
                 # different thing, and "best epoch" would be picking the epoch
                 # whose objective happened to be easiest.
                 out = model(to_dev(stm), to_dev(opp),
                             to_dev(stm_t) if stm_t is not None else None,
-                            to_dev(opp_t) if opp_t is not None else None)
+                            to_dev(opp_t) if opp_t is not None else None,
+                            to_dev(stm_c) if stm_c is not None else None,
+                            to_dev(opp_c) if opp_c is not None else None)
                 losses.append(loss_fn(out, to_dev(scores), to_dev(results),
                                       val_lambda).item())
         model.train()
@@ -493,12 +515,15 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
         epoch_losses = []
         for step, batch in enumerate(
                 prefetch(make_train_batches(), args.prefetch)):
-            stm, opp, scores, results, stm_t, opp_t = split_batch(batch)
+            stm, opp, scores, results, stm_t, opp_t, stm_c, opp_c = \
+                split_batch(batch, coarse=args.coarse)
             ratio = min(1.0, ((epoch - 1) * steps_per_epoch + step) / max(1, total_steps))
             lam = start_lambda + (end_lambda - start_lambda) * ratio
             out = model(to_dev(stm), to_dev(opp),
                         to_dev(stm_t) if stm_t is not None else None,
-                        to_dev(opp_t) if opp_t is not None else None)
+                        to_dev(opp_t) if opp_t is not None else None,
+                        to_dev(stm_c) if stm_c is not None else None,
+                        to_dev(opp_c) if opp_c is not None else None)
             loss = loss_fn(out, to_dev(scores), to_dev(results), lam)
 
             optimizer.zero_grad()
@@ -523,6 +548,17 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_epoch = epoch
             marker = " *"
+            # Land the best weights on DISK as they are found, not only when
+            # the whole run ends. The runs this pipeline does now are 40 hours
+            # and 60 epochs, and until this line the only copy of the best
+            # weights lived in RAM: a reboot at epoch 55 lost everything, with
+            # no way to tell from outside how far it had got. The partial file
+            # is a recovery point and a progress signal; the final save below
+            # is unchanged, so nothing downstream has to know about it.
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"model": best_state, "args": vars(args),
+                        "dataset": args.data, "epoch": epoch,
+                        "val_loss": best_val_loss}, args.out + ".partial")
         print(f"epoch {epoch}: train {np.mean(epoch_losses):.6f}  val {val_loss:.6f}  lr {current_lr:.2e}{marker}", flush=True)
         scheduler.step()
 

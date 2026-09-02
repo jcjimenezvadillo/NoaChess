@@ -5,6 +5,37 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## 2026-08-31 - the coarse-threat pipeline closes end to end; fqhuman in flight
+
+Two training-side builds between releases, neither an Elo claim yet.
+
+**The coarse-threat lane (gate 2b) is complete and parity-proven at every
+joint.** The probe had already said the 144-bucket aggregate encoding
+carries as much signal as the fine set (+4.14% of validation loss vs
+3.96%) at 1/400th the dimensionality; what was missing was everything
+between the probe and a playing engine. Now built: a C# shard encoder
+(7 s per 5M-position shard, 3000/3000 record parity against the probe's
+own enumeration - the fine set's target filters, the blocked-pawn
+relation, multiplicity kept), 191 CSR companions (16 GB - the companion
+format IS the CSR cache, the same trick that saved the fine cache from
+1.24 TB), a trainer lane mirroring the threat transformer (same
+accumulator, same QAT grid, smoke-trained green), the export block
+(payload flag 1<<2, 144 x ft_out int16 appended last), the engine loader
+and an evaluation-time lane that sums the relation rows into LOCAL copies
+of the accumulators - per evaluation, never per node, which is exactly
+the cost mechanism that killed the fine set at the clock. The chain ends
+with exact integer parity: verify_export and the engine agree to the
+centipawn on both contract positions. The real net trains as soon as the
+GPU frees; its fixed-node SPRT against the champion decides whether the
+banked +60.4 of threat content finally converts.
+
+**fqhuman is training**: the champion recipe verbatim on the full ~924M
+corpus - the 594M fq594 saw plus the human opening and middlegame
+segments the corpus program just finished. It answers the oldest open
+question of the campaign (does human-position seeding pay?), never
+actually measured because of the gen7-era provenance bug. SPRT against
+fq594 on export.
+
 ## 2026-08-30 - fq594 ships as v5.3.0: volume, measured alone, wins
 
 **+29.7 Elo [+12.2, +47.3], LLR +3.13, H1 over 763 fixed-node games against
@@ -807,4 +838,49 @@ the next NNUE lever**; if this axis reopens it will be from the data side.
 Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
+
+## The headroom guard that cried wolf (2026-09-02)
+
+After 40 hours of training, `fqhuman` failed the exporter's accumulator
+headroom check by three units: worst int16 lane 32,770 against the 32,767
+limit. The first instinct - tighten the clipping, or worse, retrain - would
+have been wrong both ways, because **the guard's bound was loose, not the
+net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over
+the whole feature table, freely mixing combinations the schema cannot
+produce. Two exact properties tighten it:
+
+1. A feature index is `bucket * 704 + plane * 64 + square`, and one
+   accumulator belongs to one perspective whose king square fixes ONE
+   bucket - rows from different king buckets never share an accumulator.
+2. Inside a bucket the layout is plane-major over 64 squares, and a square
+   holds at most one piece, so at most one plane can be active per square.
+
+| bound | fqhuman | verdict |
+|---|---|---|
+| global tail (the old guard) | 32,770 | false positive |
+| per king bucket | 31,052 | passes |
+| per bucket and per square (now) | 30,995 | passes |
+| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
+
+The control that justifies trusting the change: re-exporting the shipping
+champion under the new guard produces a **byte-identical** file, so the fix
+touches only the check, never the payload. The lesson generalizes the
+negative-control rule: **a guard that aborts is also a measurement, and its
+bound must be interrogated for reachability before it is obeyed.** Asked
+against the corpus, this one overstated reality by 2.4x. The limit itself
+was never raised - a silent int16 accumulator overflow does not error, it
+just plays worse, which is exactly why the guard exists.
+
+## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
+
+**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
+fq594.** The champion recipe verbatim; the single variable is the corpus,
+extended ~594M -> ~924M by adding the human game segments from datascale2
+(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
+closes the provenance-bug debt: the human datagen had silently never run,
+so every earlier belief about human seeding was untested. The honest
+confounder, recorded as ever: volume also rose, like every corpus decision
+in the series. Fourth consecutive net promotion by the same protocol
+(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
+fixed-node SPRTs whose verdicts carry to the clock by construction.
 

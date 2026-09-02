@@ -1,4 +1,95 @@
 # CHANGELOG
+## 2026-09-02 (v5.4.0) - the human corpus pays, and the RyzenGate case closes
+
+**The net: fqhuman, +18.7 Elo [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
+the reigning fq594.** The recipe is the champion's verbatim; the one variable is the corpus,
+extended from ~594M to ~924M positions by finally adding the HUMAN game segments (openings plies
+12-20 and middlegames 20-40 from datascale2) - the debt left by the provenance bug, under which
+the human datagen had silently never run and every earlier "human-seeded" claim was untested.
+Same architecture, same per-node cost by construction, so the fixed-node verdict carries to the
+clock as is. The training itself nearly died at the finish line: after 40 hours the exporter's
+accumulator headroom guard rejected the net at 32,770 against the 32,767 int16 limit - and the
+guard was wrong, not the net. It summed the 32 largest rows over the whole feature table, mixing
+king buckets that can never share an accumulator and squares that cannot hold two pieces; the
+schema-exact bound is 30,995 and the worst lane over 4,000,000 real corpus positions reaches
+12,948. The guard is now schema-exact, re-exporting the previous champion under it is
+byte-identical, and the limit itself was never touched - a silent int16 overflow does not error,
+it just plays worse, which is why the guard exists at all.
+
+**Also in this release**: the transposition-table rewrite and the whole SMP investigation below;
+`TbPvCap` ON by default (tablebase-LOST positions no longer shed material to delay TB entry - the
+flat -TbWin+ply score rewarded postponing the *entry*, not the defeat, and 108 of 367 audited bot
+games sat in that band); the ponder freeze hole closed unconditionally (a ponderhit racing the
+search task start could convert stale budget fields and leave a clockless search); and the
+in-place ponder conversion kept as a default-off option with its measured tombstone (H0 after
+three candidates - the relaunch inherits the TT's confidence and wins). Inert default-off options
+document the campaign's other verdicts in place: the depth skip, the widened vote, the aspiration
+pin, and the unresolved time factors.
+
+### The SMP campaign, in full
+
+**The largest defect the project has found: the Lazy SMP helpers were never diversified.** Every
+helper searched the same root over the same depths in the same order as the main worker, differing
+only by transposition-table races, so extra threads bought contention instead of search. It was
+found only because the bot played a day on the 16-core machine and matched a 2018 Mac Mini:
+production games gave the Threadripper not one ply of median depth over the Mac at any time
+control, and the direct measurement (60 positions to depth 12) put 24 threads at **1.05x the speed
+of ONE thread**. The enabling failure was written into the code itself, a comment excusing the
+missing diversification with "the SPRT runs single-threaded anyway" - which is precisely why
+twelve search SPRTs could never see it. The rule that replaces the old comment is now protocol:
+anything that only exists with threads is measured with threads.
+
+**The first repair attempt taught more than it gained.** Classical per-worker depth skipping
+(worker index plus the old skip tables, main worker never skips so single-thread search stays
+byte-identical at 14,436,670 bench nodes) measured 1.45x better time-to-depth at 24 threads - and
+then **tied at the game: +1.8 [-17.9, +21.5] over 195 games** in the project's first
+multi-threaded clock SPRT (24 threads per side, 60+1). Reading the strong open engines explained
+why: none of them skip depths. Their lazy SMP diversifies through the shared table plus exactly
+one per-thread term - the initial aspiration delta varies by `threadIdx % 8`, nought to seven raw
+units - their move vote counts every thread (guarding against unproved scores by provenance, not
+by a depth gate), and their table probe is a pure read. Depth skipping had been masking the real
+disease - cache-coherence storms in the TT and a vote gate that disenfranchised every helper
+caught mid-iteration - by desynchronising the probes, which is why it repaired the stopwatch and
+not the Elo. The skip is retired; the reference-faithful candidates (a widened vote franchise,
+`SmpVoteAll`, and the aspiration pin at the reference's scale) were measured at deployment
+thread counts on a validated fast bench: 20+0.3, one game at a time, no tablebases, GC heaps
+capped - the 10+0.1 first try produced 60% time forfeits on both arms and its games were thrown
+away.
+
+**And then the control that should have come first closed the case.** The widened vote also tied
+(+2.4 [-12.7, +17.4] over 438), and a clean-machine scaling run of the untouched BASE engine -
+never measured before, because every prior number had been taken while a training run held ~15
+uncapped threads - showed **no collapse at all**: 2.13x at 8 threads, 2.14x at 16, 1.97x at 24.
+The famous 1.05x was 39 threads fighting over 32 logical processors. The disease was
+oversubscription; the repairs measured zero because there was little left to repair. What the
+campaign banks: the rewritten table, the retired depth skip (aligned with what the strong engines
+actually do), two tied options kept with their numbers, a validated fast SMP bench recipe, and the
+operational rule that is the real fix - **an engine at deployment thread counts never shares its
+machine with an uncapped training run** (capped at four low-priority threads, the same machine
+scales at 2x while training). The remaining genuine headroom - 2.1x against the 2.5-3.5x of
+mature implementations - is long-term work on shared cutoffs, not a defect.
+
+**The transposition table gets the same treatment** - two defects invisible to any single-threaded
+measurement, both fixed node-identically (position-by-position bench equality plus 378 tests):
+clusters now live 64-byte aligned in a pinned buffer, where before the managed array's arbitrary
+base could make every probe of every cluster straddle two cache lines (two coherence units per
+probe on the hottest shared structure in the engine); and the probe's generation refresh only
+writes when the generation actually changed, where before every single hit dirtied the cache line
+and invalidated it in every other worker's cache. Priced: single-thread neutral (+0.8% pooled,
+[-0.1, +1.7], the two pairs disagreeing in sign - machine drift, not effect) and mildly positive
+at 24 threads; it ships on design, verified equivalence, and zero measured cost.
+
+**The exporter's accumulator headroom guard was rejecting legal nets.** It bounded the worst int16
+accumulator lane by summing the 32 largest rows anywhere in the table - mixing king buckets that
+can never share an accumulator and board squares that cannot hold two pieces. The fqhuman net
+"failed" at 32,770 against the 32,767 limit while its real worst lane over 4,000,000 corpus
+positions is 12,948. The bound is now schema-exact (per king bucket, at most one plane per
+square): 30,995 for the same net, passing honestly. Re-exporting the shipping champion under the
+new guard is byte-identical, and fqhuman went on to win the version's headline SPRT.
+
+378 tests. Both bots run 5.4.0, hash-verified on both platforms (the Mac redeployed and playing
+from 21:11 CEST on release day); rollbacks live in the engines archive. The single-thread gauntlet on field 2 anchors **50.4% over 277 games: 3337 +-41 CCRL** (weighted field mean 3333), +20 over v5.3.0's 3317 +-44 on the same field - the series is comparable from 5.3.0 on, and the field rotates only when a version leaves the 40-60% band. The run was interrupted by a host restart at 37 games and resumed on the same pgn; recorded, not hidden.
+
 ## 2026-08-30 (v5.3.0) - the volume axis pays, and statScore ships
 
 **Volume, finally measured alone, wins: +29.7 Elo [+12.2, +47.3], LLR +3.13, H1 over 763

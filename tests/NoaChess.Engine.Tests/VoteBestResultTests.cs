@@ -15,11 +15,14 @@ namespace NoaChess.Engine.Tests;
 // its visibility for a test.
 public class VoteBestResultTests
 {
+    // An instance method since SmpVoteAll (the gate depends on engine state);
+    // a fresh engine leaves the option at its default, so these tests keep
+    // exercising the strict gate they were written against.
     private static SearchResult Vote(params SearchResult[] results)
     {
         MethodInfo method = typeof(ChessEngine).GetMethod(
-            "VoteBestResult", BindingFlags.NonPublic | BindingFlags.Static)!;
-        return (SearchResult)method.Invoke(null, [results])!;
+            "VoteBestResult", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        return (SearchResult)method.Invoke(new ChessEngine(), [results])!;
     }
 
     // The squares are arbitrary: the vote only ever compares moves for equality.
