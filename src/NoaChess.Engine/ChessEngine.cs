@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.3.0";
+    public const string Version = "5.4.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -88,6 +88,17 @@ public sealed class ChessEngine
         => _threads <= 1
             ? _search.FindBestMove(board, limits, cancellation, progress)
             : FindBestMoveParallel(board, limits, cancellation, progress);
+
+    // Hands a running "go ponder" search its real clock instead of stopping it
+    // and starting again (see AlphaBetaSearch.ApplyClockLimits). Returns false
+    // when the search cannot take one, and the caller must then relaunch.
+    //
+    // Only the MAIN worker owns time management under Lazy SMP - the helpers
+    // run until the token stops them - so converting it is the whole job: when
+    // it returns, the normal end-of-search path stops and gathers the pool
+    // exactly as it does for any other search.
+    public bool ApplyPonderhitClock(SearchLimits limits) =>
+        _search.ApplyClockLimits(limits);
 
     // Lazy SMP search: main worker (this thread) plus Threads-1 helpers on
     // dedicated threads, all sharing one transposition table. The main worker
@@ -231,8 +242,15 @@ public sealed class ChessEngine
         if (_pool.Length != need)
             RebuildPool(need);
 
+        // Helpers are numbered from 1; the main worker keeps 0 and never skips
+        // a depth, which is what preserves the single-threaded node counts.
+        for (int i = 0; i < _helpers.Length; i++)
+            _helpers[i].WorkerIndex = i + 1;
+
         foreach (AlphaBetaSearch h in _helpers)
         {
+            h.UseSmpDiversify = _search.UseSmpDiversify;
+            h.UseSmpAspDiversify = _search.UseSmpAspDiversify;
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
             h.UseNmpEvalGate = _search.UseNmpEvalGate;
@@ -242,8 +260,16 @@ public sealed class ChessEngine
             h.UseHistoryBonus = _search.UseHistoryBonus;
             h.UseCorrectionLmr = _search.UseCorrectionLmr;
             h.UseKillerShallowing = _search.UseKillerShallowing;
+            h.UseTbPvCap = _search.UseTbPvCap;
+            h.UseTbResistance = _search.UseTbResistance;
+            h.UseCaptureLmr = _search.UseCaptureLmr;
+            h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
             h.UseStatScoreLmr = _search.UseStatScoreLmr;
+            h.UseNodeTimeFactor = _search.UseNodeTimeFactor;
+            h.UseEvalStabilityTime = _search.UseEvalStabilityTime;
+            h.UseRootSafetyNet = _search.UseRootSafetyNet;
+            h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
@@ -345,7 +371,7 @@ public sealed class ChessEngine
 
     // Move voting across the workers (score-weighted, decisive-aware). Each
     // worker contributes its last completed iteration's best move and score.
-    private static SearchResult VoteBestResult(SearchResult[] results)
+    private SearchResult VoteBestResult(SearchResult[] results)
     {
         const int decisiveBound = AlphaBetaSearch.MateScore - 1000;
 
@@ -361,7 +387,16 @@ public sealed class ChessEngine
         // happened twice in four minutes once the helpers started fast enough to
         // return a depth-1 result at all. The deeper helpers still vote, which
         // is the whole point of the vote; the blind ones no longer do.
+        //
+        // SmpVoteAll relaxes the gate by ONE ply. The reference gates by score
+        // provenance, not depth, and counts every thread; our hard gate
+        // disenfranchises every helper caught mid-iteration when the stop
+        // lands, which at 24 workers is roughly half the pool at the moment
+        // the vote is what the thread count is paying for. One ply below the
+        // main is a completed iteration of essentially current information;
+        // depth-1 rosiness stays excluded by the distance to mainDepth.
         int mainDepth = results[0].Depth;
+        int voteDepth = UseSmpVoteAll ? Math.Max(1, mainDepth - 1) : mainDepth;
         if (results[0].BestMove == Move.None)
             return results[0]; // no legal move: nothing to vote on
 
@@ -370,13 +405,13 @@ public sealed class ChessEngine
 
         int minScore = int.MaxValue;
         foreach (SearchResult r in results)
-            if (Eligible(r, mainDepth) && r.Score < minScore)
+            if (Eligible(r, voteDepth) && r.Score < minScore)
                 minScore = r.Score;
 
         var votes = new Dictionary<Move, long>();
         foreach (SearchResult r in results)
         {
-            if (!Eligible(r, mainDepth))
+            if (!Eligible(r, voteDepth))
                 continue;
             votes.TryGetValue(r.BestMove, out long v);
             votes[r.BestMove] = v + (r.Score - minScore) + 14;
@@ -385,7 +420,7 @@ public sealed class ChessEngine
         int bestIdx = 0; // worker 0 (main) always has a valid completed result
         for (int i = 1; i < results.Length; i++)
         {
-            if (!Eligible(results[i], mainDepth))
+            if (!Eligible(results[i], voteDepth))
                 continue;
 
             SearchResult best = results[bestIdx];
@@ -498,6 +533,30 @@ public sealed class ChessEngine
         set => _search.UseHistoryBonus = value;
     }
 
+    public bool UseTbPvCap
+    {
+        get => _search.UseTbPvCap;
+        set => _search.UseTbPvCap = value;
+    }
+
+    public bool UseTbResistance
+    {
+        get => _search.UseTbResistance;
+        set => _search.UseTbResistance = value;
+    }
+
+    public bool UseCaptureLmr
+    {
+        get => _search.UseCaptureLmr;
+        set => _search.UseCaptureLmr = value;
+    }
+
+    public bool UseNmpPackage
+    {
+        get => _search.UseNmpPackage;
+        set => _search.UseNmpPackage = value;
+    }
+
     public bool UseCorrectionLmr
     {
         get => _search.UseCorrectionLmr;
@@ -520,6 +579,47 @@ public sealed class ChessEngine
         get => _search.UseCutNodeLmr;
         set => _search.UseCutNodeLmr = value;
     }
+
+    public bool UseNodeTimeFactor
+    {
+        get => _search.UseNodeTimeFactor;
+        set => _search.UseNodeTimeFactor = value;
+    }
+
+    public bool UseEvalStabilityTime
+    {
+        get => _search.UseEvalStabilityTime;
+        set => _search.UseEvalStabilityTime = value;
+    }
+
+    public bool UseRootSafetyNet
+    {
+        get => _search.UseRootSafetyNet;
+        set => _search.UseRootSafetyNet = value;
+    }
+
+    public bool UseSmpOvershootTaper
+    {
+        get => _search.UseSmpOvershootTaper;
+        set => _search.UseSmpOvershootTaper = value;
+    }
+
+    public bool UseSmpDiversify
+    {
+        get => _search.UseSmpDiversify;
+        set => _search.UseSmpDiversify = value;
+    }
+
+    public bool UseSmpAspDiversify
+    {
+        get => _search.UseSmpAspDiversify;
+        set => _search.UseSmpAspDiversify = value;
+    }
+
+    // Widens the vote to helpers one completed iteration behind the main
+    // worker (see VoteBestResult). Engine-level state because the vote is the
+    // engine's, not any single worker's.
+    public bool UseSmpVoteAll { get; set; }
 
     public bool UseStatScoreLmr
     {

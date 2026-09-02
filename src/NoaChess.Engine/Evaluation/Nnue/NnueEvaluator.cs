@@ -103,11 +103,24 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // time the primitives in isolation. Read-only after load.
     public NnueNetwork Network => _network;
 
+    // Scratch for the coarse lane: accumulator + lane land here so the
+    // incremental accumulator stays untouched. Lazily sized to FtOutputs.
+    private short[]? _coarseStm, _coarseOpp;
+
     public int Evaluate(Board board)
     {
         Color stm = board.SideToMove;
         short[] stmAcc = _accumulators.GetPerspective(board, stm);
         short[] oppAcc = _accumulators.GetPerspective(board, Board.OppositeColor(stm));
+
+        if (_network.UsesCoarse)
+        {
+            _coarseStm ??= new short[_network.FtOutputs];
+            _coarseOpp ??= new short[_network.FtOutputs];
+            NnueCoarse.AddLanes(_network, board, stmAcc, oppAcc, _coarseStm, _coarseOpp);
+            stmAcc = _coarseStm;
+            oppAcc = _coarseOpp;
+        }
 
         // Output bucket by piece count (arch 3). A one-bucket net short-circuits
         // to 0 without touching the popcount, so the older architectures pay

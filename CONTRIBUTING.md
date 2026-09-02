@@ -12,6 +12,6 @@ Please follow these steps for efficient collaboration:
 4. **Write clear, well-documented commits.**
 5. **Submit a pull request** against the main branch (`main`), explaining the changes and your motivation.
 6. **Always include tests** for new features or fixes.
-7. **Respect the license**: contributions must be yours to license and are accepted under the [MIT License](LICENSE).
+7. **Respect the license**: contributions must be yours to license and are accepted under the [GNU General Public License v3 or later](LICENSE).
 
 For suggestions, questions, or bug reports, use the [Issues](../../issues) tab.

@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using NoaChess.Core;
 
 namespace NoaChess.Engine.Transposition;
@@ -29,10 +31,21 @@ public sealed class TranspositionTable
     // prevents a generation-wrap eval-only non-PV entry from encoding exactly
     // like an empty slot, while preserving TTEntry's 16-byte size.
     private const int GenerationCycle = 31;
+    private const int EntryBytes = 16;
+    private const int LineBytes = 64;
 
+    // The table lives in a PINNED ulong buffer instead of a TTEntry[] so the
+    // clusters can be 64-byte aligned. A managed array starts wherever the GC
+    // puts it (8-aligned, nothing more), and since every cluster shares the
+    // array's misalignment, one unlucky allocation makes EVERY probe straddle
+    // two cache lines: two memory accesses single-threaded, and under SMP two
+    // coherence units per probe on the hottest shared structure in the engine.
+    // Pinning keeps the computed alignment valid for the buffer's lifetime;
+    // one spare cache line of slack pays for sliding the base to a boundary.
     // Assigned by Resize (called from the constructor); the initializer only
     // silences the compiler, which cannot see through the method call.
-    private TTEntry[] _entries = [];
+    private ulong[] _buffer = [];
+    private int _byteBase;
     private ulong _clusterMask;
     private int _generation;
 
@@ -41,17 +54,34 @@ public sealed class TranspositionTable
         Resize(sizeMb);
     }
 
+    // The entry at 'index', addressed through the aligned base. The pattern
+    // (data reference plus byte offset) compiles to a single lea; going
+    // through a Span slice-and-cast per probe would not.
+    private ref TTEntry EntryAt(int index)
+        => ref Unsafe.As<byte, TTEntry>(ref Unsafe.AddByteOffset(
+               ref Unsafe.As<ulong, byte>(ref MemoryMarshal.GetArrayDataReference(_buffer)),
+               _byteBase + index * EntryBytes));
+
     // Allocates the table. The cluster count is rounded down to a power of
     // two so "key % clusters" becomes "key & mask".
     public void Resize(int sizeMb)
     {
-        long targetEntries = (long)sizeMb * 1024 * 1024 / 16; // 16 bytes/entry
+        if (Unsafe.SizeOf<TTEntry>() != EntryBytes)
+            throw new InvalidOperationException(
+                $"TTEntry is {Unsafe.SizeOf<TTEntry>()} bytes, not {EntryBytes}: " +
+                "the cluster-per-cache-line layout is broken.");
+
+        long targetEntries = (long)sizeMb * 1024 * 1024 / EntryBytes;
 
         int clusters = 1;
         while ((long)clusters * 2 * ClusterSize <= targetEntries)
             clusters *= 2;
 
-        _entries = new TTEntry[clusters * ClusterSize];
+        // Cluster bytes, plus one line of slack for alignment, in ulongs.
+        long bytes = (long)clusters * ClusterSize * EntryBytes + LineBytes;
+        _buffer = GC.AllocateArray<ulong>((int)(bytes / sizeof(ulong)), pinned: true);
+        nint addr = Marshal.UnsafeAddrOfPinnedArrayElement(_buffer, 0);
+        _byteBase = (int)(-addr & (LineBytes - 1));
         _clusterMask = (ulong)(clusters - 1);
         _generation = 1;
     }
@@ -59,7 +89,7 @@ public sealed class TranspositionTable
     // Wipes all entries (new game).
     public void Clear()
     {
-        Array.Clear(_entries);
+        Array.Clear(_buffer);
         _generation = 1;
     }
 
@@ -81,10 +111,17 @@ public sealed class TranspositionTable
 
         for (int i = 0; i < ClusterSize; i++)
         {
-            ref TTEntry slot = ref _entries[baseIdx + i];
+            ref TTEntry slot = ref EntryAt(baseIdx + i);
             if (slot.Key32 == key32 && slot.GenBound != 0)
             {
-                slot.GenBound = TTEntry.PackGenBound(_generation, slot.IsPv, slot.Bound);
+                // Refresh the generation so an entry still in use does not
+                // age out - but only when it actually changed. Most hits are
+                // re-hits within the same search, where the unconditional
+                // write dirtied the cache line for nothing; under SMP that
+                // invalidated it in every other worker's cache on every hit.
+                byte packed = TTEntry.PackGenBound(_generation, slot.IsPv, slot.Bound);
+                if (slot.GenBound != packed)
+                    slot.GenBound = packed;
                 entry = slot;
                 return true;
             }
@@ -110,7 +147,7 @@ public sealed class TranspositionTable
         bool sameKey = false;
         for (int i = 0; i < ClusterSize; i++)
         {
-            ref TTEntry slot = ref _entries[baseIdx + i];
+            ref TTEntry slot = ref EntryAt(baseIdx + i);
             if (slot.Key32 == key32 || slot.GenBound == 0)
             {
                 replaceIdx = baseIdx + i;
@@ -118,13 +155,13 @@ public sealed class TranspositionTable
                 break;
             }
 
-            ref TTEntry victim = ref _entries[replaceIdx];
+            ref TTEntry victim = ref EntryAt(replaceIdx);
             if (slot.Depth - 8 * RelativeAge(in slot)
                 < victim.Depth - 8 * RelativeAge(in victim))
                 replaceIdx = baseIdx + i;
         }
 
-        ref TTEntry target = ref _entries[replaceIdx];
+        ref TTEntry target = ref EntryAt(replaceIdx);
 
         // Do not throw away a known best move when the new result has none
         // (e.g. an all-node where nothing improved alpha, or an eval-only

@@ -158,7 +158,7 @@ class NoaNnue(nn.Module):
     # - only a retrain and an export.
     def __init__(self, ft_out=FT_OUT, l1_out=L1_OUT, out_buckets=OUT_BUCKETS,
                  factorized=FACTORIZED, qat=False, qa=QA, threats=False,
-                 dual=DUAL, l2_out=L2_OUT, psqt_buckets=0):
+                 dual=DUAL, l2_out=L2_OUT, psqt_buckets=0, coarse=False):
         super().__init__()
         self.ft_out = ft_out
         self.l1_out = l1_out
@@ -213,6 +213,24 @@ class NoaNnue(nn.Module):
         # that suffer most without shared rows. The probe measured that
         # directly - unfactorized it reported threats LOSING 5.43%, factorized
         # and converged it reported them gaining 3.96%.
+        # COARSE THREATS: 144 side-relative (attacker class, victim class)
+        # buckets summed into the SAME accumulator, exactly the threat lane
+        # below with the geometry collapsed. The probe measured +4.14% of
+        # validation loss for this encoding - as much as the fine set - and
+        # the engine pays it per EVALUATION (popcounts off the bitboards,
+        # 1.3 us measured), not per node, which is what killed the fine set
+        # at the clock. Not factorized: 144 dense rows need no sharing.
+        self.coarse = bool(coarse)
+        if self.coarse:
+            if threats or dual or psqt_buckets:
+                raise ValueError("coarse lane expects the plain single-head recipe")
+            self.coarse_pad = 144
+            self.coarse_ft = nn.EmbeddingBag(self.coarse_pad + 1, ft_out, mode="sum",
+                                             padding_idx=self.coarse_pad)
+            nn.init.uniform_(self.coarse_ft.weight, -0.05, 0.05)
+            with torch.no_grad():
+                self.coarse_ft.weight[self.coarse_pad].zero_()
+
         self.threats = bool(threats)
         if self.threats:
             self.threat_virtual_base = threats_mod.THREAT_INPUT_SIZE
@@ -244,7 +262,8 @@ class NoaNnue(nn.Module):
         with torch.no_grad():
             self.ft.weight[self.pad_index].zero_()
 
-    def forward(self, stm_feats, opp_feats, stm_threats=None, opp_threats=None):
+    def forward(self, stm_feats, opp_feats, stm_threats=None, opp_threats=None,
+                stm_coarse=None, opp_coarse=None):
         # The piece count is read off the FEATURES, not carried as a separate
         # column: in HalfKA every piece is exactly one feature, so the number of
         # non-padding entries IS the piece count. That keeps the dataset format
@@ -270,7 +289,12 @@ class NoaNnue(nn.Module):
             # sum lands off the grid the engine holds.
             threat_weight = fake_quantize_weights(threat_weight, self.qa)
 
-        def transform(feats, threat_feats):
+        coarse_weight = self.coarse_ft.weight if self.coarse else None
+        if self.coarse and self.qat:
+            # Same argument as the threat lane: one accumulator, one grid.
+            coarse_weight = fake_quantize_weights(coarse_weight, self.qa)
+
+        def transform(feats, threat_feats, coarse_feats):
             # The accumulator needs no activation quantization of its own: with
             # the weights and the bias on the 1/qa grid, an integer number of
             # them sums to a grid point exactly, which is what the engine's
@@ -292,10 +316,18 @@ class NoaNnue(nn.Module):
                                   threat_feats).long()
                 acc = acc + F.embedding_bag(idx, threat_weight, mode="sum",
                                             padding_idx=self.threat_pad)
+            if self.coarse:
+                # Same shape as the threat sum: BEFORE the clamp, into the
+                # same accumulator, padding converted for the same reason.
+                cidx = torch.where(coarse_feats < 0,
+                                   torch.full_like(coarse_feats, self.coarse_pad),
+                                   coarse_feats).long()
+                acc = acc + F.embedding_bag(cidx, coarse_weight, mode="sum",
+                                            padding_idx=self.coarse_pad)
             return torch.clamp(acc, 0.0, 1.0)
 
-        stm = transform(stm_feats, stm_threats)
-        opp = transform(opp_feats, opp_threats)
+        stm = transform(stm_feats, stm_threats, stm_coarse)
+        opp = transform(opp_feats, opp_threats, opp_coarse)
 
         if self.dual:
             return self._forward_dual(stm, opp, piece_count,

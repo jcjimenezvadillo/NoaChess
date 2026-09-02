@@ -43,6 +43,11 @@ if (args.Length >= 1 && args[0] == "pgnbook")
 if (args.Length >= 1 && args[0] == "corpus")
     return Corpus.Run(args[1..]);
 
+// `coarse-encode`: write the coarse-threat companion for a shard (gate 2b
+// of the coarse-threats design; parity-checked against probe_coarse).
+if (args.Length >= 1 && args[0] == "coarse-encode")
+    return NoaChess.DataGen.CoarseEncode.Run(args[1..]);
+
 // A mistyped subcommand used to fall straight through into the datagen and
 // start a 500-game run against the DEFAULT output path - which is exactly what
 // happened when `nnueprobe` was typed instead of `--nnueprobe`. Options always

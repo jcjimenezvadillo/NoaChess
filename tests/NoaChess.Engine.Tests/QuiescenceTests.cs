@@ -30,7 +30,9 @@ public class QuiescenceTests
         MethodInfo? method = typeof(AlphaBetaSearch).GetMethod(
             "Quiescence", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply])!;
+        // The trailing argument is the NMP package's first-ply check flag;
+        // reflection does not fill optional parameters, so it is explicit.
+        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply, false])!;
     }
 
     private sealed class ConstantEvaluator(int value) : IPositionEvaluator
