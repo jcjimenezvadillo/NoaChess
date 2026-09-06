@@ -7,6 +7,26 @@ touches play is either node-identical or provably incapable of changing a result
 counts and test counts, which is what this kind of release can honestly offer. The gauntlet follows for the
 record, not as a gate.
 
+**Late addition, and the reason this release was rebuilt: the engine could hand a rook over for
+nothing, and the guard meant to stop it could never fire.** Three bot games sent in by the user showed
+material being given away in positions the engine had already decided were lost. Reproduced and traced: a
+tablebase-lost score is `-TbWin + ply`, so it records how many plies separate the line from the tablebase
+and nothing about how well the side resists. Inside that band material is free, and the search happily
+picks a rook sacrifice. `TbResistance` exists to restore a gradient at the root and it is on by default,
+but it could never act, for two independent reasons. Its selection key was `score * 4096 + resistance`, so
+the band's own score outranked the tie-break by four thousand to one and the tie-break could only separate
+moves scoring EXACTLY the same, which the band never produces: two lost moves differ by a few band units,
+never by zero. And the key it used was the child's static evaluation, which cannot see the capture the move
+walks into: after a rook interposition it still reads the rook as present and scored the sacrifice as
+resistant. The band is now flattened to its own boundary inside the key, so resistance decides among lost
+moves while any move that ESCAPES the band still wins on score alone and mate scores keep their full
+weight; and the key became material, the same one the draw tie-break already uses for the same reason.
+Measured on 23 positions taken from the bot's own games whose search lands in the band, one thread at a
+fixed depth so the comparison is exact rather than sampled: **material handed to the opponent fell from
+2,440 to 420, and the positions where a whole piece or more was given away fell from 4 to 1**. Seven
+positions improved and none got worse. The 60-position bench returns 14,994,140 nodes either way, so
+ordinary play is untouched to the node.
+
 **Mate distance pruning, missing since the engine was born, ships ON.** The reference clamps the window at
 every node to the mate scores that ply can still produce: no line can score better than mating on the next
 ply, and none worse than being mated on this one. This engine never had it, so a node could keep hunting a

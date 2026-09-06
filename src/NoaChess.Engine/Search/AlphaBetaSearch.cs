@@ -2191,7 +2191,29 @@ public sealed class AlphaBetaSearch
             // non-band score by orders of magnitude.
             int resistance = 0;
             if (lostMode && score <= -TbScoreBound && score > -MateBound && !_stopped)
-                resistance = Math.Clamp(1024 - _evaluator.Evaluate(board) / 8, 0, 2048);
+            {
+                // The key is MATERIAL, not the evaluation (changed 2026-09-07).
+                // The static evaluation is blind to the capture the move walks
+                // into: after a rook interposition it still reads the rook as
+                // present, so it scored the sacrifice as resistant and the
+                // engine handed the rook over. That is the same trap the draw
+                // tie-break below documents and already avoids, and it is the
+                // reason it uses this key instead. What the opponent can win
+                // by capture right now is exactly what "throwing a piece"
+                // means, and it is the one thing the flat band cannot see.
+                int worst = 0;
+                MoveGenerator.GenerateLegalMoves(board, _tieMoves);
+                for (int t = 0; t < _tieMoves.Count; t++)
+                {
+                    Move reply = _tieMoves[t];
+                    if (!reply.IsCapture)
+                        continue;
+                    int gain = StaticExchangeEvaluator.Evaluate(board, reply);
+                    if (gain > worst)
+                        worst = gain;
+                }
+                resistance = Math.Clamp(1024 - worst, 0, 2048);
+            }
             // Draw tie-break: what the opponent can WIN BY CAPTURE after this
             // move, and nothing else. MEASURED, and the two obvious keys were
             // both wrong before this one: the child's static evaluation does
@@ -2242,7 +2264,24 @@ public sealed class AlphaBetaSearch
             // Scores are multiplied out so the tie-break can only separate moves
             // whose search scores are EQUAL: one centipawn of score outweighs
             // the whole 2048-point key range.
-            long key = (long)score * 4096 + resistance;
+            //
+            // Inside the LOST BAND that rule defeated the whole mode (found
+            // 2026-09-07 from three bot games). A band score is -TbWin + ply:
+            // its differences encode only how many plies separate the line
+            // from the tablebase, never how well it resists - the entry-ply
+            // artifact this mode exists to defeat. Two lost moves therefore
+            // differ by a few band units, never by zero, and at 4096 per unit
+            // those few units outrank the entire resistance range, so the
+            // tie-break waited for an exact tie the band never produces. On
+            // the game position the engine threw a rook in 3 runs of 8.
+            // Flattening the band to its own boundary lets resistance decide
+            // among lost moves, while any move that ESCAPES the band still
+            // scores above the boundary and wins on score alone, and mate
+            // scores stay outside the band and keep their full weight.
+            long scoreKey = lostMode && score <= -TbScoreBound && score > -MateBound
+                ? -TbScoreBound
+                : score;
+            long key = scoreKey * 4096 + resistance;
             if (fullWindowMode ? key > bestKey
                                : score > bestScore && (searched == 1 || score > alpha))
             {
