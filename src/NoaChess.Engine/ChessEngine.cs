@@ -271,6 +271,9 @@ public sealed class ChessEngine
             h.UseRootSafetyNet = _search.UseRootSafetyNet;
             h.UsePonderMinThink = _search.UsePonderMinThink;
             h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
+            h.UseRootStaticEval = _search.UseRootStaticEval;
+            h.UseQsStackMove = _search.UseQsStackMove;
+            h.UseCheckExemptFutility = _search.UseCheckExemptFutility;
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
@@ -612,6 +615,24 @@ public sealed class ChessEngine
     {
         get => _search.UseEasyMoveWinOnly;
         set => _search.UseEasyMoveWinOnly = value;
+    }
+
+    public bool UseRootStaticEval
+    {
+        get => _search.UseRootStaticEval;
+        set => _search.UseRootStaticEval = value;
+    }
+
+    public bool UseQsStackMove
+    {
+        get => _search.UseQsStackMove;
+        set => _search.UseQsStackMove = value;
+    }
+
+    public bool UseCheckExemptFutility
+    {
+        get => _search.UseCheckExemptFutility;
+        set => _search.UseCheckExemptFutility = value;
     }
 
     public bool UseEasyMoveFiftyGuard

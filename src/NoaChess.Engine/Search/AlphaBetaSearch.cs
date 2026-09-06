@@ -348,11 +348,18 @@ public sealed class AlphaBetaSearch
     // whole point: a single shared table cost -26 Elo when 5G first tried this,
     // because every distance writes the same entry and the levels destroy each
     // other. Index i holds the table keyed on the move (i + 1) plies back.
-    private readonly ContinuationHistory[] _contHist =
-    [
-        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
-        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
-    ];
+    //
+    // ONE LEVEL IS ALLOCATED, and the audit of 2026-09-06 is why. The 5G revert
+    // took the multi-level WRITE out (only _contHist[0] receives a bonus or a
+    // malus anywhere in this file; AddWeighted has no caller) and left the
+    // READ side summing five levels in the quiet ordering and two in the LMR
+    // statScore. Four of those five reads, and the second statScore term, were
+    // therefore reading tables that had been zero since the day they were
+    // allocated: four random lookups into 1.15 MB arrays per quiet move
+    // scored, for a value of exactly nought. Removing the reads is
+    // node-identical by construction; the multi-level write stays a separate,
+    // measured arm and gets its tables back the day it is tried again.
+    private readonly ContinuationHistory[] _contHist = [new ContinuationHistory()];
 
     // The reference's per-distance write weights, out of 1024. A move one ply
     // back explains a reply far better than one six plies back, so the bonuses
@@ -369,11 +376,12 @@ public sealed class AlphaBetaSearch
 
     // One continuation level read for the move about to be searched, or 0 when
     // that distance has no usable previous move (root, after a null move, or not
-    // yet deep enough). 'distance' is 0-based: 0 is one ply back.
+    // yet deep enough). 'distance' is 0-based: 0 is one ply back, and it is the
+    // only distance with a table behind it (see _contHist).
     private int ContLevel(int distance, int ply, int piece, int to)
     {
         int back = ply - 1 - distance;
-        return back >= 0 && _stackPiece[back] >= 0
+        return distance < _contHist.Length && back >= 0 && _stackPiece[back] >= 0
             ? _contHist[distance].Get(_stackPiece[back], _stackTo[back], piece, to)
             : 0;
     }
@@ -1047,6 +1055,38 @@ public sealed class AlphaBetaSearch
     // production games that measured why). Clock mode only; fixed-depth and
     // fixed-node searches are untouched, so node counts stay identical.
     public bool UseEasyMoveWinOnly = true;
+
+    // Record the root's static evaluation on the search stack (audit find,
+    // 2026-09-06). SearchRoot never wrote _stackEval[0], so a node at ply 2
+    // compared its evaluation against a permanent ZERO instead of against the
+    // root's: "improving" there meant "better than equal", which is not what
+    // any consumer of the flag (reverse futility, late move pruning, the LMR
+    // extra ply, the ProbCut margin) was tuned to read. The reference stores
+    // ss->staticEval at the root like at any other node. Off until measured at
+    // fixed nodes: it changes node counts.
+    public bool UseRootStaticEval = false;
+
+    // Record each quiescence move on the search stack (audit find, 2026-09-06).
+    // Quiescence made its captures without writing _stackPiece/_stackTo, so
+    // every quiescence node below the first ply keyed its continuation
+    // correction on whatever move a MAIN-search node had last left in that
+    // slot, in some other branch: a random entry read as if it were this
+    // line's. The reference sets ss->currentMove in qsearch. Off until
+    // measured at fixed nodes: it changes node counts.
+    public bool UseQsStackMove = false;
+
+    // Exempt quiet moves that give DIRECT check from futility pruning (audit
+    // find, 2026-09-06). The reference prunes quiets on the static eval only
+    // when they do not give check; this engine had no gives-check test before
+    // the make, so at depth 4 and below a checking move was pruned like any
+    // other quiet whenever the eval sat under alpha - which is precisely the
+    // node where the check is the move that matters. The masks are built
+    // lazily, once per node that actually reaches the prune, from the enemy
+    // king's square on the current occupancy: exact for the moved piece's own
+    // check (a piece already on the line to the king would be checking now,
+    // so no legal move crosses its own square). Discovered checks are not
+    // seen and stay prunable, as before. Off until measured at fixed nodes.
+    public bool UseCheckExemptFutility = false;
 
     // ---- Lazy SMP worker diversification ----
     //
@@ -2027,6 +2067,16 @@ public sealed class AlphaBetaSearch
         MovePicker.Order(moves, board, entry.BestMove, _killers, _history, ply: 0,
             contHist: default, counterMove: Move.None,
             captureHistory: _captureHistory);
+
+        // The root's own static evaluation, corrected exactly as an inner node
+        // corrects its own, so a ply-2 node's "improving" compares like with
+        // like. One evaluation per iteration. See UseRootStaticEval.
+        if (UseRootStaticEval)
+        {
+            _stackEval[0] = board.IsInCheck()
+                ? NoEval
+                : _corrections.Correct(board, _evaluator.Evaluate(board) + OptimismTerm(board), 0);
+        }
 
         int bestScore = -Infinity;
         int searched = 0;
@@ -3033,22 +3083,11 @@ public sealed class AlphaBetaSearch
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
         Move counterMove = prevPiece >= 0 ? _counterMoves[(prevPiece * 64) + prevTo] : Move.None;
 
-        // Distances 1, 2, 3, 4 and 6 are read; distance 5 is maintained and not
-        // consulted here, exactly as the reference has it.
-        ContinuationHistory? Level(int distance)
-        {
-            int back = ply - distance;
-            return back >= 0 && _stackPiece[back] >= 0 ? _contHist[distance - 1] : null;
-        }
-        int PieceAt(int distance) => ply - distance >= 0 ? _stackPiece[ply - distance] : -1;
-        int ToAt(int distance) => ply - distance >= 0 ? _stackTo[ply - distance] : 0;
-
+        // The reference reads distances 1, 2, 3, 4 and 6 here. This engine
+        // WRITES distance 1 only (see _contHist), so that is the one distance
+        // read: the other four were lookups into tables that are always zero.
         var contHist = new ContinuationContext(
-            Level(1), PieceAt(1), ToAt(1),
-            Level(2), PieceAt(2), ToAt(2),
-            Level(3), PieceAt(3), ToAt(3),
-            Level(4), PieceAt(4), ToAt(4),
-            Level(6), PieceAt(6), ToAt(6));
+            prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
 
         Color stm = board.SideToMove;
         int originalAlpha = alpha;
@@ -3058,6 +3097,9 @@ public sealed class AlphaBetaSearch
         int quietsSearched = 0;
         bool skipQuiets = false; // pruning ladder: LMP at every depth
         int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
+        // Direct-check masks for the futility exemption, built on first use.
+        bool checkMasksReady = false;
+        ulong pawnCheck = 0, knightCheck = 0, bishopCheck = 0, rookCheck = 0;
 
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
@@ -3218,7 +3260,32 @@ public sealed class AlphaBetaSearch
                 // invisible (WAC.001 mate-in-4: found at d13 before, hidden
                 // past d17 / 100M nodes with the reshape in either scale).
                 if (depth <= 4 && staticEval + 100 * depth <= alpha)
-                    continue;
+                {
+                    if (!UseCheckExemptFutility)
+                        continue;
+                    if (!checkMasksReady)
+                    {
+                        int theirKing = board.KingSquare(Board.OppositeColor(stm));
+                        ulong occNow = board.AllOccupancy;
+                        pawnCheck = Attacks.Pawn(Board.OppositeColor(stm), theirKing);
+                        knightCheck = Attacks.Knight(theirKing);
+                        bishopCheck = Attacks.Bishop(theirKing, occNow);
+                        rookCheck = Attacks.Rook(theirKing, occNow);
+                        checkMasksReady = true;
+                    }
+                    ulong toBit = 1UL << move.To;
+                    ulong checkMask = board.PieceTypeAt(move.From) switch
+                    {
+                        PieceType.Pawn => pawnCheck,
+                        PieceType.Knight => knightCheck,
+                        PieceType.Bishop => bishopCheck,
+                        PieceType.Rook => rookCheck,
+                        PieceType.Queen => bishopCheck | rookCheck,
+                        _ => 0UL,
+                    };
+                    if ((checkMask & toBit) == 0)
+                        continue;
+                }
             }
 
             // ---- Shallow capture pruning (non-PV, not in check) ----
@@ -3338,9 +3405,13 @@ public sealed class AlphaBetaSearch
                         int statScore = move.IsCapture
                             ? 873 * StatScoreVictimValue(victimIdx) / 128
                               + _captureHistory.Get(movePieceIdx, move.To, victimIdx)
+                            // The reference adds 1093 * contHist[1] here. That
+                            // level is never written in this engine (see
+                            // _contHist), so the term was always zero and is not
+                            // read; the +20.9 that shipped this consumer was
+                            // measured with exactly this arithmetic.
                             : (2252 * _history.Get(stm, move)
-                               + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
-                               + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
+                               + 1126 * ContLevel(0, ply, movePieceIdx, move.To)) / 1024;
                         if (_ssQuiet != null)
                             RecordStatScore(move.IsCapture, statScore);
                         r -= statScore
@@ -3977,6 +4048,16 @@ public sealed class AlphaBetaSearch
                     continue;
             }
 
+            // The move that reaches the child, so its correction-history key
+            // names THIS capture and not a stale main-search move. The mover
+            // is read before the make, exactly as the main search reads it, so
+            // a promotion files under the pawn on both paths.
+            if (UseQsStackMove)
+            {
+                _stackPiece[ply] = ContinuationHistory.PieceIndex(us, board.PieceTypeAt(move.From));
+                _stackTo[ply] = move.To;
+            }
+
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
@@ -4022,7 +4103,16 @@ public sealed class AlphaBetaSearch
             // stalemates with a pinned minor. HasLegalMove generates into the
             // already-owned ply buffer and stops at the first legal quiet, so
             // correctness does not require allocating or filtering a full list.
-            if (!MoveGenerator.HasLegalMove(board, moves))
+            //
+            // But it is asked at nearly every quiescence leaf, and generating a
+            // whole move list to learn that a knight can move is most of what
+            // those leaves cost. The evident-move probe settles almost all of
+            // them from the bitboards without generating anything and is exact
+            // in one direction only (true means a legal move exists), so the
+            // full generator still answers whatever it could not prove. Same
+            // answers at every node, so node counts are untouched.
+            if (!MoveGenerator.HasEvidentLegalMove(board)
+                && !MoveGenerator.HasLegalMove(board, moves))
                 return 0;
         }
 

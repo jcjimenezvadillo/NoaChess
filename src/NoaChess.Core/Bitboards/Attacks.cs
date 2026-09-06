@@ -56,6 +56,42 @@ public static class Attacks
     public static ulong King(int square) => KingAttacks[square];
     public static ulong Pawn(Color color, int square) => PawnAttacksTable[(int)color][square];
 
+    // Squares STRICTLY between two squares on a common rank, file or diagonal;
+    // zero for any other pair (knight geometry, adjacent squares, the square
+    // itself). One table read, built once: the pin test in the move generator
+    // and the repetition cuckoo both need exactly this set.
+    private static readonly ulong[] BetweenTable = BuildBetween();
+
+    public static ulong Between(int from, int to) => BetweenTable[(from * 64) + to];
+
+    private static ulong[] BuildBetween()
+    {
+        var table = new ulong[64 * 64];
+        for (int from = 0; from < 64; from++)
+        {
+            for (int to = 0; to < 64; to++)
+            {
+                int fileDelta = Squares.FileOf(to) - Squares.FileOf(from);
+                int rankDelta = Squares.RankOf(to) - Squares.RankOf(from);
+                if (fileDelta != 0 && rankDelta != 0
+                    && Math.Abs(fileDelta) != Math.Abs(rankDelta))
+                    continue;
+
+                int df = Math.Sign(fileDelta);
+                int dr = Math.Sign(rankDelta);
+                ulong mask = 0;
+                for (int file = Squares.FileOf(from) + df, rank = Squares.RankOf(from) + dr;
+                     file != Squares.FileOf(to) || rank != Squares.RankOf(to);
+                     file += df, rank += dr)
+                {
+                    mask |= Bitboard.SquareBB(Squares.FromFileRank(file, rank));
+                }
+                table[(from * 64) + to] = mask;
+            }
+        }
+        return table;
+    }
+
     // ---- Raw tables, for generators that index them inside a loop ----
     //
     // The accessors above are the right API everywhere except the move

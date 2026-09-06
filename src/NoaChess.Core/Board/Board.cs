@@ -193,33 +193,9 @@ public sealed class Board
     private static int RepetitionHash2(ulong key) => (int)((key >> 16) & 0x1FFF);
 
     // Squares strictly between two aligned endpoints. Knights return an empty
-    // mask; adjacent kings and adjacent sliders naturally do too.
-    private static ulong StrictBetweenMask(int from, int to)
-    {
-        int fromFile = Squares.FileOf(from);
-        int fromRank = Squares.RankOf(from);
-        int toFile = Squares.FileOf(to);
-        int toRank = Squares.RankOf(to);
-        int fileDelta = toFile - fromFile;
-        int rankDelta = toRank - fromRank;
-
-        if (fileDelta != 0 && rankDelta != 0
-            && Math.Abs(fileDelta) != Math.Abs(rankDelta))
-            return 0;
-
-        int df = Math.Sign(fileDelta);
-        int dr = Math.Sign(rankDelta);
-        ulong mask = 0;
-
-        for (int file = fromFile + df, rank = fromRank + dr;
-             file != toFile || rank != toRank;
-             file += df, rank += dr)
-        {
-            mask |= Bitboard.SquareBB(Squares.FromFileRank(file, rank));
-        }
-
-        return mask;
-    }
+    // mask; adjacent kings and adjacent sliders naturally do too. The table
+    // lives in Attacks so the move generator's pin test reads the same set.
+    private static ulong StrictBetweenMask(int from, int to) => Attacks.Between(from, to);
 
     // Creates a board with the standard starting position.
     public Board() => Fen.Load(this, StartFen);
