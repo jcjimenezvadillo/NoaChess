@@ -274,6 +274,8 @@ public sealed class ChessEngine
             h.UseRootStaticEval = _search.UseRootStaticEval;
             h.UseQsStackMove = _search.UseQsStackMove;
             h.UseCheckExemptFutility = _search.UseCheckExemptFutility;
+            h.UseMateDistancePruning = _search.UseMateDistancePruning;
+            h.UseTtNoPvCutoff = _search.UseTtNoPvCutoff;
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
@@ -633,6 +635,18 @@ public sealed class ChessEngine
     {
         get => _search.UseCheckExemptFutility;
         set => _search.UseCheckExemptFutility = value;
+    }
+
+    public bool UseMateDistancePruning
+    {
+        get => _search.UseMateDistancePruning;
+        set => _search.UseMateDistancePruning = value;
+    }
+
+    public bool UseTtNoPvCutoff
+    {
+        get => _search.UseTtNoPvCutoff;
+        set => _search.UseTtNoPvCutoff = value;
     }
 
     public bool UseEasyMoveFiftyGuard
