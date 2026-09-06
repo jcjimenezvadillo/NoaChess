@@ -35,8 +35,11 @@ import numpy as np
 import torch
 
 from model import (NoaNnue, INPUT_SIZE, MAX_ACTIVE, FT_OUT, L1_OUT, L2_OUT,
-                   OUT_BUCKETS, QA, QB, OUTPUT_SCALE)
+                   OUT_BUCKETS, QA, QB, OUTPUT_SCALE, PS_NB, KING_BUCKET_COUNT)
 from threats import THREAT_INPUT_SIZE, MAX_ACTIVE_THREATS as THREAT_MAX_ACTIVE
+
+SQUARES = 64
+PLANES = PS_NB // SQUARES
 
 MAGIC = b"NOANNUE1"
 FORMAT_VERSION = 1
@@ -53,6 +56,9 @@ HEADER_BYTES_V2 = 88
 
 ARCH_FLAG_PAIRWISE_FT = 1 << 0
 ARCH_FLAG_THREATS = 1 << 1
+# Coarse threat lane: 144 x ft_out int16 rows on the qa grid, appended LAST.
+ARCH_FLAG_COARSE = 1 << 2
+COARSE_ROWS = 144
 
 ARCH_INT16_L1 = 1
 ARCH_INT8_L1 = 2
@@ -83,6 +89,35 @@ def quantize(tensor, scale, dtype, limit, name):
         print(f"  warning: {name}: {n_clipped:,} of {q.size:,} weights clipped "
               f"to +/-{limit} ({pct:.3f}%)")
     return clipped.astype(dtype)
+
+
+def halfka_tail(ft_w):
+    """Largest sum of active HalfKA rows any legal position can put in a lane.
+
+    Returns one value per lane, to be added to |ftBias| for the accumulator
+    bound. The obvious version - the MAX_ACTIVE largest magnitudes anywhere in
+    the table - is a valid bound but a very loose one, because it happily adds
+    up rows that cannot fire together. Two properties of the schema rule most
+    of those combinations out, and both are exact, not heuristic:
+
+      1. A feature index is bucket * PS_NB + plane * 64 + square, and ONE
+         accumulator belongs to one perspective, whose king square fixes the
+         bucket. Rows from two different buckets never share an accumulator.
+      2. Inside a bucket the index is plane-major over 64 squares, and a square
+         holds at most one piece, so at most one plane can be active per
+         square. Taking the max over planes is therefore still an upper bound.
+
+    What is left is the MAX_ACTIVE largest squares within one bucket, which is
+    reachable only in the limit and still overstates real positions by about
+    2.4x - measured over 4,000,000 corpus positions, where the worst lane came
+    to 12,948 against a bound of 30,995. That gap is the point: the guard has to
+    stay a guard, so it is tightened by removing impossible combinations rather
+    than by raising the limit.
+    """
+    a = np.abs(ft_w.astype(np.int32))
+    per_square = a.reshape(KING_BUCKET_COUNT, PLANES, SQUARES, -1).max(axis=1)
+    tail = np.partition(per_square, -MAX_ACTIVE, axis=1)[:, -MAX_ACTIVE:, :]
+    return tail.sum(axis=1).max(axis=0)
 
 
 def main():
@@ -120,6 +155,13 @@ def main():
     trained_dual = bool(ckpt_args.get("dual", False))
     psqt_buckets = int(ckpt_args.get("psqt_buckets", 0) or 0)
     l2_out = ckpt_args.get("l2_out", L2_OUT) if trained_dual else 0
+    # The coarse lane rides the plain recipe only, exactly as the trainer
+    # enforces; a checkpoint that carries it must export it or the engine
+    # evaluates with a lane missing - the fqpsqt failure class.
+    trained_coarse = bool(ckpt_args.get("coarse", False))
+    if trained_coarse and (trained_threats or trained_dual or psqt_buckets):
+        raise SystemExit("coarse checkpoint mixed with threats/dual/psqt - "
+                         "no payload shape exists for that combination")
 
     # The architecture follows the checkpoint unless overridden: exporting a
     # bucketed net as arch 1/2 would silently drop every bucket but the first.
@@ -159,7 +201,7 @@ def main():
 
     model = NoaNnue(ft_out, l1_out, buckets, factorized, qa=QA_FOR_ARCH[arch],
                     threats=trained_threats, dual=trained_dual, l2_out=l2_out,
-                    psqt_buckets=psqt_buckets)
+                    psqt_buckets=psqt_buckets, coarse=trained_coarse)
     model.load_state_dict(checkpoint["model"])
     model.clip_weights()
 
@@ -210,18 +252,18 @@ def main():
     # int16: ftBias plus one row per active feature, at most MAX_ACTIVE of them.
     # Folding a factorized net adds two learned rows into every real row, so the
     # magnitudes it exports are larger than the ones the trainer clipped. Bound
-    # it from the ACTUAL exported values instead of trusting clip_weights: take
-    # the MAX_ACTIVE largest magnitudes per lane, which is an upper bound on any
-    # reachable position.
-    biggest = np.partition(np.abs(ft_w.astype(np.int32)), -MAX_ACTIVE, axis=0)[-MAX_ACTIVE:]
-    acc_worst = int((np.abs(ft_b.astype(np.int32)) + biggest.sum(axis=0)).max())
+    # it from the ACTUAL exported values instead of trusting clip_weights - see
+    # halfka_tail for why the bound is taken per king bucket and per square.
+    biggest = halfka_tail(ft_w)
+    acc_worst = int((np.abs(ft_b.astype(np.int32)) + biggest).max())
     if acc_worst > 32767:
         raise SystemExit(
             f"accumulator headroom check FAILED: worst int16 accumulator lane = "
             f"{acc_worst:,} > 32,767. The engine's accumulator would overflow. "
             f"Tighten clip_weights (model.py) and retrain or re-export.")
     print(f"  accumulator headroom OK: worst lane = {acc_worst:,} / 32,767 "
-          f"({100.0 * acc_worst / 32767:.1f}% used, bound over {MAX_ACTIVE} active features)")
+          f"({100.0 * acc_worst / 32767:.1f}% used, bound over {MAX_ACTIVE} active "
+          f"features in one king bucket, one per square)")
 
     # How much of the transformer survives quantization. 89.8% of ds1e60's
     # weights rounded to zero, which is what motivated factorization in the
@@ -252,7 +294,7 @@ def main():
         # from the clipping, exactly as the HalfKA bound above is.
         th_top = np.partition(np.abs(th_w.astype(np.int32)),
                               -THREAT_MAX_ACTIVE, axis=0)[-THREAT_MAX_ACTIVE:]
-        both = int((np.abs(ft_b.astype(np.int32)) + biggest.sum(axis=0)
+        both = int((np.abs(ft_b.astype(np.int32)) + biggest
                     + th_top.sum(axis=0)).max())
         if both > 32767:
             raise SystemExit(
@@ -289,6 +331,33 @@ def main():
         print("  on this export before any SPRT, as with every net.")
         blocks.append(ps_w.tobytes())
 
+    if trained_coarse:
+        # Appended LAST like the psqt lane. Rows 0..143 only: the trainer's
+        # row 144 is torch's padding artifact and the engine never indexes
+        # it. Same qa grid as the transformer - they sum into one int16
+        # accumulator, so a different grid would land the sum off it.
+        co_w = quantize(model.coarse_ft.weight[:COARSE_ROWS], qa,
+                        np.int16, 32767, "coarseWeights")
+        print(f"  coarse lane: {COARSE_ROWS} rows, "
+              f"{100.0 * float((co_w == 0).mean()):.1f}% zero, "
+              f"max |q| = {int(np.abs(co_w.astype(np.int32)).max())}")
+        # Headroom with the lane included, mirroring the threat check: both
+        # sum into the one int16 accumulator, so the bound is HalfKA's tail
+        # plus the coarse tail over a generous 96 simultaneous relations
+        # (the real average is ~19; the loader caps records at 96 columns).
+        co_active = min(96, COARSE_ROWS)
+        co_top = np.partition(np.abs(co_w.astype(np.int32)), -co_active,
+                              axis=0)[-co_active:]
+        both = int((np.abs(ft_b.astype(np.int32)) + biggest
+                    + co_top.sum(axis=0)).max())
+        if both > 32767:
+            raise SystemExit(
+                f"accumulator headroom check FAILED with the coarse lane: worst "
+                f"int16 lane = {both:,} > 32,767. Tighten clipping and re-export.")
+        print(f"  accumulator headroom with coarse lane OK: worst lane = "
+              f"{both:,} / 32,767 ({100.0 * both / 32767:.1f}% used)")
+        blocks.append(co_w.tobytes())
+
     payload = b"".join(blocks)
     sha = hashlib.sha256(payload).digest()
 
@@ -302,16 +371,16 @@ def main():
             l2_out, 0, flags,
             len(payload), sha)
         assert len(header) == HEADER_BYTES_V2
-    elif psqt_buckets > 0:
-        # A psqt head needs the version 2 header for its bucket count at
-        # offset 44. l2 stays 0 and no flags are set: this is arch 1/2/3 plus
-        # a lane, not arch 5.
+    elif psqt_buckets > 0 or trained_coarse:
+        # A psqt head or a coarse lane needs the version 2 header - the
+        # bucket count at offset 44 or the flag word at 46. l2 stays 0:
+        # this is arch 1/2/3 plus a lane, not arch 5.
         header = struct.pack(
             "<8s I I I i i i H H H H i H H Q 32s",
             MAGIC, FORMAT_VERSION_2, FEATURE_SCHEMA_ID, arch,
             INPUT_SIZE, ft_out, l1_out,
             qa, QB, int(OUTPUT_SCALE), buckets if bucket_capable else 0,
-            0, psqt_buckets, 0,
+            0, psqt_buckets, ARCH_FLAG_COARSE if trained_coarse else 0,
             len(payload), sha)
         assert len(header) == HEADER_BYTES_V2
     else:

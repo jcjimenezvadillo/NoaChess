@@ -77,6 +77,12 @@ public sealed class NnueNetwork
     // quantized nonlinear path, which is where this engine's measured
     // quantization error lives. Null when the net has no psqt head.
     public int[]? PsqtWeights { get; init; }   // [FtInputs * PsqtBuckets]
+
+    // Coarse threat lane: [144 * FtOutputs] int16 on the qa grid, row per
+    // side-relative (attacker class, victim class) bucket. Summed into a
+    // LOCAL copy of the accumulator at evaluation time - the incremental
+    // accumulator itself never learns about it, which is the whole design.
+    public short[]? CoarseWeights { get; init; }
     public int PsqtBuckets { get; init; }
 
     // Arch 4 belongs here, and leaving it out cost a NullReferenceException in
@@ -133,6 +139,8 @@ public sealed class NnueNetwork
     // the weights rather than the architecture id, so a net that claims arch 4
     // without carrying them can never be silently treated as if it did.
     public bool UsesThreats => ThreatWeights is not null;
+
+    public bool UsesCoarse => CoarseWeights is not null;
 
     // Identifies the loaded model (payload hash) for logging/reproducibility.
     public required string Sha256 { get; init; }
