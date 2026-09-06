@@ -1,4 +1,5 @@
-﻿using NoaChess.Core;
+﻿using System.Runtime.CompilerServices;
+using NoaChess.Core;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -55,6 +56,10 @@ public static class StaticExchangeEvaluator
 
     // Net material gain (in centipawns, from the mover's point of view) of
     // playing 'move' and resolving all recaptures on the destination square.
+    // [SkipLocalsInit]: the gain list is written at index 0 and then at each
+    // depth before the fold reads it, so its zeroing bought nothing and cost a
+    // 128-byte memset on one of the search's most frequent calls.
+    [SkipLocalsInit]
     public static int Evaluate(Board board, Move move)
     {
         // Promotions change the piece mid-sequence, which the plain swap
