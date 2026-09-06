@@ -42,9 +42,13 @@ full before they are read; (4) the tablebase prober allocated a 3 KB move list p
 thread-static pool; and (5) the board's undo history moves from `Stack<UndoInfo>` to an array with the
 Zobrist keys packed in their own array and the null-move boundary held as an index, so the repetition scans
 that run at nearly every node with a non-zero fifty-move clock touch 8 bytes per ply instead of a 32-byte
-frame, with no enumerator and no version checks. Measured together on a loaded machine: **+6.7% to +9.4%
-NPS**, consistent in sign across every pairing. The clean idle number is still pending and will be recorded
-when the machine is free.
+frame, with no enumerator and no version checks. Measured on a quiet machine, paired position by
+position over ten alternating runs of each binary: **+4.3% [+3.1%, +5.2%], faster on 382 of 590 positions,
+sign test p below 0.00001**. The control, the same binary against itself, reads -0.3% with 55 of 118
+positions (p = 0.52), so the harness is not inventing the difference. The figure first taken while an SPRT
+and a training run shared the machine was +6.7% to +9.4%, and it was too high: contention inflates what
+pairing can cancel. Four percent is the number, and at this project's calibration of roughly 65 Elo per
+doubling of speed it is worth about 4 Elo.
 
 **Four more findings ship as options, measured off, each with its node cost.** `RootStaticEval`: the root
 never wrote its own static evaluation to the search stack, so a node at ply 2 compared itself against a
