@@ -2,6 +2,7 @@ using System.Linq;
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
+// v1.0 set, per the roadmap:
 // - Hash: transposition table size in MB.
 // - Threads: number of parallel search threads (Lazy SMP). 1 keeps the exact
 //   single-threaded search; more threads share the transposition table.
