@@ -19,7 +19,7 @@ MORE cushion, not less. The behavioural gain is not a matter of opinion: on the 
 moves in lost positions fell from **41.9% to 9.0%** and their depth rose from 15 to 19, and over 91
 games the release candidate gained 53 rating points where its rating expected 0.426. The rapid
 rating went from 2606 to 2664 in three days. This ships under the tie rule: zero measured cost plus
-an improvement proven by another route.
+an improvement proven by another route. Gauntlet on field 2 the same night, with the coarse training sharing the machine: **48.8% over 240 games, 3328 CCRL +/- 44**, against v5.4.0's 3337 +/- 41 on the same field - the same number inside the error bars, which is what a clock-neutral release should read.
 
 **Also measured and NOT shipped**: `PonderMinThink`, which bounds the fresh thinking after a
 ponderhit (the relaunch was answering in 1 ms, inheriting the transposition table's confidence, and
