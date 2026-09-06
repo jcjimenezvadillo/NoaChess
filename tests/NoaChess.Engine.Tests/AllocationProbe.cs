@@ -51,6 +51,10 @@ public class AllocationProbe(ITestOutputHelper output)
         // per-node cost, so none of it may count.
         search.FindBestMove(board, SearchLimits.Depth(14));
 
+        // A cleared table, so the measured search is a real one and not a
+        // few hundred transposition hits over the warm-up's answers.
+        search.Reset();
+
         long before = GC.GetAllocatedBytesForCurrentThread();
         SearchResult result = search.FindBestMove(board, SearchLimits.Depth(14));
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
