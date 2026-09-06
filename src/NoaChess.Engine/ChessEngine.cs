@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.4.0";
+    public const string Version = "5.5.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -269,6 +269,9 @@ public sealed class ChessEngine
             h.UseNodeTimeFactor = _search.UseNodeTimeFactor;
             h.UseEvalStabilityTime = _search.UseEvalStabilityTime;
             h.UseRootSafetyNet = _search.UseRootSafetyNet;
+            h.UsePonderMinThink = _search.UsePonderMinThink;
+            h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
+            h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
@@ -596,6 +599,24 @@ public sealed class ChessEngine
     {
         get => _search.UseRootSafetyNet;
         set => _search.UseRootSafetyNet = value;
+    }
+
+    public bool UsePonderMinThink
+    {
+        get => _search.UsePonderMinThink;
+        set => _search.UsePonderMinThink = value;
+    }
+
+    public bool UseEasyMoveWinOnly
+    {
+        get => _search.UseEasyMoveWinOnly;
+        set => _search.UseEasyMoveWinOnly = value;
+    }
+
+    public bool UseEasyMoveFiftyGuard
+    {
+        get => _search.UseEasyMoveFiftyGuard;
+        set => _search.UseEasyMoveFiftyGuard = value;
     }
 
     public bool UseSmpOvershootTaper

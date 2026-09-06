@@ -5,6 +5,22 @@ promoted net as teacher; the training data accumulates across generations.
 
 ---
 
+## fqcoarse (2026-09-05): the coarse threat features win their attribution
+
+The champion recipe with the 144-bucket coarse threat lane (12 attacker classes by 12 victim
+classes, multiplicity counted, one histogram per evaluation), trained on the fq594 corpus so the
+only variable is the features. **+17.7 Elo [+4.7, +30.7], LLR +2.90, H1 over 1,339 games at
+100,000 fixed nodes** against fq594, and **neutral at the clock: +2.6 [-14.8, +20.0] over 406 games**
+at 60+1 with four threads. The second number is the one that matters historically: the fine threat
+features scored +60.4 at fixed nodes and died at the clock at -14.9 because they ran at 0.48x, while
+this lane runs at 0.73x and its content is delivered intact. The incremental lane pays for itself.
+
+The net is NOT promoted: fq594 is not the reigning champion, and the comparison that decides is
+against fqhuman. `fqcohuman` (this recipe plus the human corpus segments, the two proven axes
+together for the first time) is training; every one of the champion's 190 shards already has its
+coarse companion, so no data generation was needed.
+
+
 ## 2026-08-31 - the coarse-threat pipeline closes end to end; fqhuman in flight
 
 Two training-side builds between releases, neither an Elo claim yet.

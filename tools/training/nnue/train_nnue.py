@@ -379,15 +379,52 @@ def split_batch(batch, coarse=False):
     both loops feed the model identically.
     """
     if coarse:
+        # The absolute ids and the side to move travel as they are; the
+        # per-perspective views are built ON THE DEVICE by coarse_views (a
+        # 145-entry gather), because the numpy flip measured 48-53 ms per
+        # batch on the training thread - 96% of the loader and serialized
+        # with the GPU step - which is what held the coarse epoch at 92 min.
         stm, opp, scores, results, cabs, cstm = batch
-        stm_c, opp_c = dataset.coarse_perspectives(cabs, cstm)
-        return stm, opp, scores, results, None, None, stm_c, opp_c
+        return stm, opp, scores, results, None, None, cabs, cstm
     if len(batch) == 6:
         stm, opp, scores, results, stm_t, opp_t = batch
         return stm, opp, scores, results, stm_t, opp_t, None, None
     stm, opp, scores, results = batch
     return stm, opp, scores, results, None, None, None, None
 
+
+
+# Device-side twin of dataset.coarse_perspectives. Table entry k+1 holds the
+# black view of absolute id k and entry 0 holds the pad (-1), so the gather
+# never sees a negative index. Checked once per run against the numpy
+# reference on real data, so the two definitions cannot drift apart silently.
+_coarse_flip_cache = {}
+
+
+def coarse_flip_table(device):
+    key = str(device)
+    if key not in _coarse_flip_cache:
+        ids = np.arange(144)
+        att, vic = ids // 12, ids % 12
+        flip = ((att + 6) % 12) * 12 + (vic + 6) % 12
+        table = np.concatenate([np.array([-1], np.int32), flip.astype(np.int32)])
+        _coarse_flip_cache[key] = torch.from_numpy(table).to(device)
+    return _coarse_flip_cache[key]
+
+
+def coarse_views(cabs_t, cstm_t):
+    black = coarse_flip_table(cabs_t.device)[cabs_t + 1]
+    is_black = (cstm_t != 0).unsqueeze(1)
+    return torch.where(is_black, black, cabs_t), torch.where(is_black, cabs_t, black)
+
+
+def check_coarse_views_once(cabs, cstm, stm_c_t, opp_c_t):
+    ref_stm, ref_opp = dataset.coarse_perspectives(cabs, cstm)
+    got_stm = stm_c_t.detach().cpu().numpy()
+    got_opp = opp_c_t.detach().cpu().numpy()
+    if not (np.array_equal(ref_stm, got_stm) and np.array_equal(ref_opp, got_opp)):
+        raise SystemExit("coarse_views on the device disagrees with dataset.coarse_perspectives")
+    print("coarse views: device flip verified identical to the numpy reference")
 
 def run_training(args, make_train_batches, make_val_batches, train_total, val_total):
     """Shared training loop. Both data paths feed it the same batch tuples."""
@@ -485,11 +522,13 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
                 # A moving objective would make each epoch's number measure a
                 # different thing, and "best epoch" would be picking the epoch
                 # whose objective happened to be easiest.
+                stm_cd = opp_cd = None
+                if stm_c is not None:
+                    stm_cd, opp_cd = coarse_views(to_dev(stm_c), to_dev(opp_c))
                 out = model(to_dev(stm), to_dev(opp),
                             to_dev(stm_t) if stm_t is not None else None,
                             to_dev(opp_t) if opp_t is not None else None,
-                            to_dev(stm_c) if stm_c is not None else None,
-                            to_dev(opp_c) if opp_c is not None else None)
+                            stm_cd, opp_cd)
                 losses.append(loss_fn(out, to_dev(scores), to_dev(results),
                                       val_lambda).item())
         model.train()
@@ -519,11 +558,15 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
                 split_batch(batch, coarse=args.coarse)
             ratio = min(1.0, ((epoch - 1) * steps_per_epoch + step) / max(1, total_steps))
             lam = start_lambda + (end_lambda - start_lambda) * ratio
+            stm_cd = opp_cd = None
+            if stm_c is not None:
+                stm_cd, opp_cd = coarse_views(to_dev(stm_c), to_dev(opp_c))
+                if epoch == 1 and step == 0:
+                    check_coarse_views_once(stm_c, opp_c, stm_cd, opp_cd)
             out = model(to_dev(stm), to_dev(opp),
                         to_dev(stm_t) if stm_t is not None else None,
                         to_dev(opp_t) if opp_t is not None else None,
-                        to_dev(stm_c) if stm_c is not None else None,
-                        to_dev(opp_c) if opp_c is not None else None)
+                        stm_cd, opp_cd)
             loss = loss_fn(out, to_dev(scores), to_dev(results), lam)
 
             optimizer.zero_grad()

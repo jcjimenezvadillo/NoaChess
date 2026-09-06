@@ -522,11 +522,20 @@ def expand_csr(values, offsets, begin, end, columns=None):
         raise ValueError(
             f"expand_csr: offsets incoherentes para [{begin},{end}) - "
             f"empiezan en {starts[0]}, acaban en {starts[-1]}, tramo de {len(span)}")
-    for i in range(rows):
-        a, b = int(starts[i]), int(starts[i + 1])
-        n = min(b - a, columns)
-        if n > 0:
-            out[i, :n] = span[a:a + n]
+    # Vectorized scatter (2026-09-03): the per-row Python loop this replaced
+    # cost 14.8 ms per 8192-row chunk on the coarse companions, the producer
+    # thread's largest remaining item once the perspective flip moved to the
+    # device. Same rows, same truncation at 'columns', same padding; proved
+    # identical on real chunks, a shard tail and synthetic edge cases.
+    lengths = np.minimum(np.diff(starts), columns)
+    total = int(lengths.sum())
+    if total == 0:
+        return out
+    row_idx = np.repeat(np.arange(rows), lengths)
+    first = np.cumsum(lengths) - lengths
+    col_idx = np.arange(total) - np.repeat(first, lengths)
+    src_idx = np.repeat(starts[:-1], lengths) + col_idx
+    out[row_idx, col_idx] = span[src_idx]
     return out
 
 
