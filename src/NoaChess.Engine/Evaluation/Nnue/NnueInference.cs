@@ -24,6 +24,14 @@ namespace NoaChess.Engine.Evaluation.Nnue;
 // the `nnueprofile` command; do not re-derive it from intuition.
 public static class NnueInference
 {
+    // [SkipLocalsInit] on the evaluation kernels below (audit, 2026-09-06).
+    // C# zeroes every stackalloc'd buffer on entry, and the profile charged
+    // 1.4% of search time to that memset: 'act' plus 'hidden' is 640 bytes per
+    // evaluation at the shipped width. Every span in these methods is written
+    // in full before it is read - the packers cover [0, inputs), the row loops
+    // cover every hidden unit - so skipping the zeroing changes no value and
+    // the parity tests keep asserting that.
+
     // Chosen once at startup: Vector<short> maps to AVX2 (16 lanes) or SSE2
     // (8 lanes) on x64, AdvSimd on ARM64.
     public static readonly bool SimdAvailable =
@@ -312,6 +320,7 @@ public static class NnueInference
     // construction instead of merely by test. The layers themselves - 32 and 32
     // wide - are far too small for a vector version of the activation to be
     // worth a second copy of the arithmetic.
+    [SkipLocalsInit]
     private static int EvaluateArchFive(NnueNetwork net, short[] stmAccumulator,
                                         short[] oppAccumulator, int bucket)
     {
@@ -410,6 +419,7 @@ public static class NnueInference
         return (int)(output * net.OutputScale / ((long)qa * net.QB));
     }
 
+    [SkipLocalsInit]
     public static int EvaluateScalar(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
                                      int bucket = 0)
     {
@@ -486,6 +496,7 @@ public static class NnueInference
     // at most 2*127*127 = 32,258 against an int16 limit of 32,767. The loader
     // refuses any arch-2 model with QA > 127, which is what makes that bound
     // hold for every possible position rather than for the ones we tested.
+    [SkipLocalsInit]
     private static int EvaluateInt8(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
                                     int bucket)
     {
@@ -590,6 +601,7 @@ public static class NnueInference
     }
 
     // ---- ARCH 1: int16 L1, VPMADDWD ----
+    [SkipLocalsInit]
     private static int EvaluateInt16(NnueNetwork net, short[] stmAccumulator, short[] oppAccumulator,
                                      int bucket)
     {

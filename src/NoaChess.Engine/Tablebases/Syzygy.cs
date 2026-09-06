@@ -37,6 +37,23 @@ public static class Syzygy
     // Counts probes that actually hit a table; used by the UCI "info" line.
     public static long Hits;
 
+    // Move lists for the capture recursion in Search, one per recursion level
+    // and per thread. Search used to allocate a fresh 3 KB MoveList on every
+    // call, and it is called at every clock-zero node of a probed endgame, so
+    // a rook ending with tablebases on was allocating megabytes per second
+    // and paying the collector for it (the search profile showed 4% of its
+    // time in GC polls with nothing else allocating). The recursion follows a
+    // capture chain and a table holds at most seven men, so its depth is
+    // bounded by the pieces that can be taken; sixteen levels is generous.
+    [ThreadStatic]
+    private static MoveList[]? _searchLists;
+
+    private static MoveList SearchList(int level)
+    {
+        MoveList[] lists = _searchLists ??= new MoveList[16];
+        return lists[level] ??= new MoveList();
+    }
+
     // ---- Initialisation ----
 
     // (Re)loads the tablebase index from a semicolon-separated path list.
@@ -261,10 +278,11 @@ public static class Syzygy
     // Reference search(): resolves captures (and, for DTZ, pawn moves) before
     // consulting a table, because the tables do not store positions with an
     // en-passant right and a capture may leave the covered material set.
-    private static WdlScore Search(Board board, bool checkZeroing, ref ProbeState state)
+    private static WdlScore Search(Board board, bool checkZeroing, ref ProbeState state,
+                                   int level = 0)
     {
         WdlScore bestValue = WdlScore.Loss;
-        var moves = new MoveList();
+        MoveList moves = SearchList(level);
         MoveGenerator.GenerateLegalMoves(board, moves);
         int totalCount = moves.Count, moveCount = 0;
 
@@ -276,7 +294,7 @@ public static class Syzygy
 
             moveCount++;
             board.MakeMove(m);
-            WdlScore v = (WdlScore)(-(int)Search(board, false, ref state));
+            WdlScore v = (WdlScore)(-(int)Search(board, false, ref state, level + 1));
             board.UnmakeMove();
 
             if (state == ProbeState.Fail)
