@@ -41,7 +41,7 @@ public sealed class UciOptions
     // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
     public bool CheckExemptFutility { get; private set; }
     // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
-    public bool MateDistancePruning { get; private set; }
+    public bool MateDistancePruning { get; private set; } = true;
     // Transposition cutoff refused at PV nodes (see AlphaBetaSearch.UseTtNoPvCutoff).
     public bool TtNoPvCutoff { get; private set; }
     // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
@@ -147,7 +147,7 @@ public sealed class UciOptions
         output.WriteLine("option name RootStaticEval type check default false");
         output.WriteLine("option name QsStackMove type check default false");
         output.WriteLine("option name CheckExemptFutility type check default false");
-        output.WriteLine("option name MateDistancePruning type check default false");
+        output.WriteLine("option name MateDistancePruning type check default true");
         output.WriteLine("option name TtNoPvCutoff type check default false");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
         output.WriteLine("option name DrawTieBreak type check default false");

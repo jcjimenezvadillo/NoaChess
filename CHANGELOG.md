@@ -1,4 +1,90 @@
 # CHANGELOG
+## 2026-09-06 (v5.6.0) - the audit release: a crash nobody had seen, and the mate the engine kept re-proving
+
+**The release, in one line: the whole hot path was read line by line, and it gave up one crash, one missing
+theorem and five exact speedups.** No SPRT gates this version, and that is deliberate: every change that
+touches play is either node-identical or provably incapable of changing a result. The numbers below are node
+counts and test counts, which is what this kind of release can honestly offer. The gauntlet follows for the
+record, not as a gate.
+
+**Mate distance pruning, missing since the engine was born, ships ON.** The reference clamps the window at
+every node to the mate scores that ply can still produce: no line can score better than mating on the next
+ply, and none worse than being mated on this one. This engine never had it, so a node could keep hunting a
+mate in 9 with a mate in 3 already known above it, with no way to notice the answer could not matter. Both
+clamps are theorems, not heuristics, so the nodes they remove are exactly the ones whose result cannot
+change anything. The 60-position bench at depth 12 returns **14,994,140 nodes with it on or off, to the
+node**. Over a suite of mating positions at depth 14 it finds **the same move with the same mate distance**
+for 239 nodes instead of 308,528 (mate in 1), 2,319 instead of 748,527 (mate in 2) and 16,282 instead of
+183,934 (mate in 3). That is clock the engine used to spend confirming a mate it had already found, in
+exactly the positions it is trying to convert. It ships under the tie rule: zero measured cost plus an
+improvement proven by another route. `MateDistancePruning` defaults ON and can be turned off.
+
+**"bestmove 0000" was an exception, and it was in every release ever published.** A probe over mating
+positions turned up one that answered with the UCI code for "no move". Reproduced, it is an
+`IndexOutOfRangeException` raised in the attack tables, reached from the check test in quiescence. The cause:
+in an ILLEGAL position, one where the side that is NOT to move stands in check, the search captures the
+enemy king on the first ply; from there that side has no king, the king-square lookup answers 64, and the
+first attack lookup reads past its table. The UCI layer catches it and prints `bestmove 0000`, which a GUI
+reads as "no move at all". This cannot happen in a game: from a legal position no legal move captures a
+king, and the FEN parser already demands exactly one king per side. A sweep of every stored log and PGN for
+the error string found **zero occurrences**, so no game was ever affected. It is fixed anyway, with a guard
+at the root that costs one attack test per search and never runs per node, answering with the king capture
+instead of throwing.
+
+**Five exact speedups, node-identical to the last node.** All five were found by reading, and all five leave
+the 60-position bench at exactly 14,994,140 nodes: (1) quiescence answered "is there a legal move?" at nearly
+every leaf by generating every pseudo-legal move and making them; it now proves the common case without
+generating anything, and falls back to the full test only when the cheap one cannot decide; (2) the
+continuation-history read four dead levels per quiet move and carried an always-zero term in the LMR stat
+score, both left behind when the multi-level experiment was reverted, and that also returns 5.75 MB per
+thread; (3) `SkipLocalsInit` on the network inference and the exchange evaluator, whose spans are written in
+full before they are read; (4) the tablebase prober allocated a 3 KB move list per probe, now a per-level
+thread-static pool; and (5) the board's undo history moves from `Stack<UndoInfo>` to an array with the
+Zobrist keys packed in their own array and the null-move boundary held as an index, so the repetition scans
+that run at nearly every node with a non-zero fifty-move clock touch 8 bytes per ply instead of a 32-byte
+frame, with no enumerator and no version checks. Measured together on a loaded machine: **+6.7% to +9.4%
+NPS**, consistent in sign across every pairing. The clean idle number is still pending and will be recorded
+when the machine is free.
+
+**Four more findings ship as options, measured off, each with its node cost.** `RootStaticEval`: the root
+never wrote its own static evaluation to the search stack, so a node at ply 2 compared itself against a
+permanent zero instead of against the root, which is not what any consumer of the improving flag was tuned
+to read (+2.0% nodes at fixed depth). `QsStackMove`: quiescence never recorded its moves on the stack, so
+every quiescence node below the first ply keyed its continuation correction on whatever a main-search node
+had last left in that slot, in another branch (+10.8%). `CheckExemptFutility`: quiet moves that give direct
+check are prunable here and are not in the reference, which had no gives-check test before the make
+(+16.9%). `TtNoPvCutoff`: the reference takes the transposition cutoff only at non-PV nodes, and this
+engine's quiescence already did, but the main search did not, so a stored bound could end a PV node early
+and report whatever the table held (+0.16%). Each has its fixed-node SPRT prepared and none is enabled until
+it has been measured.
+
+**Closed by reading, with no change.** The ProbCut gate was suspected of skipping on any transposition entry
+below its beta regardless of depth; the current reference does exactly the same, and the depth condition
+belongs to an older version, so our port is faithful. The partial sort of quiet moves is 4.3% of the profile
+but has no exact lever worth taking: its output order has to be reproduced move for move, and the only
+faithful saving is bounds-check elimination worth a tenth of a percent. The real lever there is lazy
+selection, which changes move order and needs its own measurement.
+
+**What the invariants now guarantee.** 425 tests, up from 378. The search allocates **zero bytes per node**
+on a warm depth-14 search, measured rather than asserted, which retires the profile's 4.2% garbage-collector
+poll as anything to do with the search. The four repetition scans are checked against a naive
+re-implementation over random games with null moves interleaved. Every legal root, including dead material,
+the fifty-move edge and forced replies, must return a legal move. And the network scores a position and its
+vertical mirror identically across ten positions, including a king crossing the mirror boundary and a live
+en passant square, which is the end-to-end check the feature indexing never had.
+
+**Also probed, and clean.** Fourteen awkward UCI sequences, with one thread and with four: go followed
+immediately by stop, go infinite then stop, stop with no search running, ponderhit with no search running,
+go ponder then stop, go ponder then ponderhit, isready and quit during a search, a malformed go, an unknown
+command, zero nodes, zero movetime, one millisecond of clock, and a go on an already-mated root. All answer,
+and answer once. The stop is honoured even when it is sent in the same instant as the go. Six self-play
+games, 656 plies, checking after every move that the move is legal, that the ponder hint is legal in the
+position it names, and that no error line ever appears: nothing broken.
+
+**Not in this release.** `PonderMinThink` is still under its 180+2 SPRT with pondering on both sides and is
+sitting on equality after 166 games, so it stays off with its numbers, as it did in v5.5.0. The coarse
+threat net trained on the human corpus is still training and belongs to the next version.
+
 ## 2026-09-06 (v5.5.0) - the engine stops giving pieces away when it is losing
 
 **The release, in one line: the clock rules stopped treating a lost position as a decided one.** The
