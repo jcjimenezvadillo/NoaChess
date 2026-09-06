@@ -1011,6 +1011,8 @@ public sealed class UciLoop
             _engine.UseEasyMoveWinOnly = _options.EasyMoveWinOnly;
         if (changed == "EasyMoveFiftyGuard")
             _engine.UseEasyMoveFiftyGuard = _options.EasyMoveFiftyGuard;
+        if (changed == "DrawTieBreak")
+            _engine.UseDrawTieBreak = _options.DrawTieBreak;
         if (changed == "SmpOvershootTaper")
             _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
         if (changed == "SmpDiversify")

@@ -36,6 +36,8 @@ public sealed class UciOptions
     public bool EasyMoveWinOnly { get; private set; } = true;
     // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
     public bool EasyMoveFiftyGuard { get; private set; } = true;
+    // Break ties between equal-scored root moves in drawn positions (see AlphaBetaSearch).
+    public bool DrawTieBreak { get; private set; }
     public bool SmpOvershootTaper { get; private set; }
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
@@ -133,6 +135,7 @@ public sealed class UciOptions
         output.WriteLine("option name PonderMinThink type check default false");
         output.WriteLine("option name EasyMoveWinOnly type check default true");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
+        output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
@@ -239,6 +242,9 @@ public sealed class UciOptions
             case "easymovefiftyguard" when bool.TryParse(value, out bool emf):
                 EasyMoveFiftyGuard = emf;
                 return "EasyMoveFiftyGuard";
+            case "drawtiebreak" when bool.TryParse(value, out bool dtb):
+                DrawTieBreak = dtb;
+                return "DrawTieBreak";
             case "smpovershoottaper" when bool.TryParse(value, out bool sot):
                 SmpOvershootTaper = sot;
                 return "SmpOvershootTaper";
