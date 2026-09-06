@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.5.0";
+    public const string Version = "5.6.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -271,7 +271,13 @@ public sealed class ChessEngine
             h.UseRootSafetyNet = _search.UseRootSafetyNet;
             h.UsePonderMinThink = _search.UsePonderMinThink;
             h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
+            h.UseRootStaticEval = _search.UseRootStaticEval;
+            h.UseQsStackMove = _search.UseQsStackMove;
+            h.UseCheckExemptFutility = _search.UseCheckExemptFutility;
+            h.UseMateDistancePruning = _search.UseMateDistancePruning;
+            h.UseTtNoPvCutoff = _search.UseTtNoPvCutoff;
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
+            h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
@@ -613,10 +619,46 @@ public sealed class ChessEngine
         set => _search.UseEasyMoveWinOnly = value;
     }
 
+    public bool UseRootStaticEval
+    {
+        get => _search.UseRootStaticEval;
+        set => _search.UseRootStaticEval = value;
+    }
+
+    public bool UseQsStackMove
+    {
+        get => _search.UseQsStackMove;
+        set => _search.UseQsStackMove = value;
+    }
+
+    public bool UseCheckExemptFutility
+    {
+        get => _search.UseCheckExemptFutility;
+        set => _search.UseCheckExemptFutility = value;
+    }
+
+    public bool UseMateDistancePruning
+    {
+        get => _search.UseMateDistancePruning;
+        set => _search.UseMateDistancePruning = value;
+    }
+
+    public bool UseTtNoPvCutoff
+    {
+        get => _search.UseTtNoPvCutoff;
+        set => _search.UseTtNoPvCutoff = value;
+    }
+
     public bool UseEasyMoveFiftyGuard
     {
         get => _search.UseEasyMoveFiftyGuard;
         set => _search.UseEasyMoveFiftyGuard = value;
+    }
+
+    public bool UseDrawTieBreak
+    {
+        get => _search.UseDrawTieBreak;
+        set => _search.UseDrawTieBreak = value;
     }
 
     public bool UseSmpOvershootTaper

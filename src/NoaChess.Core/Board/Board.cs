@@ -39,7 +39,29 @@ public sealed class Board
 
     // Undo stack for UnmakeMove. Each entry stores everything MakeMove cannot
     // reconstruct on its own (captured piece, previous rights...).
-    private readonly Stack<UndoInfo> _history = new();
+    //
+    // An array and a count, not a Stack<UndoInfo>: the repetition scans walk
+    // this history at nearly every search node with a non-zero fifty-move
+    // clock, and Stack<T>'s enumerator copies the whole frame and re-checks its
+    // version on every step. Indexing reads only the field the scan asks for.
+    // The capacity holds a long game plus the deepest search without growing.
+    private UndoInfo[] _history = new UndoInfo[512];
+    private int _historyCount;
+
+    // The Zobrist keys of the same frames, kept in their own array. The
+    // repetition scan reads nothing else, and packing the keys makes it touch
+    // 8 bytes per ply instead of a whole 32-byte frame.
+    private ulong[] _historyKeys = new ulong[512];
+
+    // Index of the newest null-move frame, or -1 when the reversible history
+    // holds none. A null move is not part of the legal game, so no repetition
+    // scan may cross it; the index turns that boundary into a loop bound
+    // instead of a per-frame test. Nested null moves save the previous value.
+    private int _lastNullIndex = -1;
+    private int[] _nullFrames = new int[MaxNestedNullMoves];
+    private int _nullFrameCount;
+
+    private const int MaxNestedNullMoves = 64;
 
     public Color SideToMove { get; private set; }
     public CastlingRights CastlingRights { get; private set; }
@@ -87,6 +109,43 @@ public sealed class Board
         public readonly int EnPassantSquare = enPassant;
         public readonly int HalfmoveClock = halfmove;
         public readonly ulong ZobristKey = zobrist;
+    }
+
+    // Pushes one frame. A null move (Move.None) also becomes the new boundary
+    // for the repetition scans, remembering the boundary it hides.
+    private void PushHistory(Move move, PieceType captured, CastlingRights castling,
+                             int enPassant, int halfmove, ulong zobrist)
+    {
+        if (_historyCount == _history.Length)
+            GrowHistory();
+
+        if (move == Move.None)
+        {
+            if (_nullFrameCount == _nullFrames.Length)
+                Array.Resize(ref _nullFrames, _nullFrames.Length * 2);
+            _nullFrames[_nullFrameCount++] = _lastNullIndex;
+            _lastNullIndex = _historyCount;
+        }
+
+        _historyKeys[_historyCount] = zobrist;
+        _history[_historyCount++] = new UndoInfo(move, captured, castling,
+                                                 enPassant, halfmove, zobrist);
+    }
+
+    private void GrowHistory()
+    {
+        Array.Resize(ref _history, _history.Length * 2);
+        Array.Resize(ref _historyKeys, _historyKeys.Length * 2);
+    }
+
+    // Pops the newest frame. Restoring the null-move boundary is the mirror of
+    // pushing it: a null frame is always the newest one when it is undone.
+    private ref UndoInfo PopHistory()
+    {
+        int index = --_historyCount;
+        if (index == _lastNullIndex)
+            _lastNullIndex = _nullFrames[--_nullFrameCount];
+        return ref _history[index];
     }
 
     // Cuckoo-hash entry for a reversible non-pawn move. The key is the exact
@@ -193,33 +252,9 @@ public sealed class Board
     private static int RepetitionHash2(ulong key) => (int)((key >> 16) & 0x1FFF);
 
     // Squares strictly between two aligned endpoints. Knights return an empty
-    // mask; adjacent kings and adjacent sliders naturally do too.
-    private static ulong StrictBetweenMask(int from, int to)
-    {
-        int fromFile = Squares.FileOf(from);
-        int fromRank = Squares.RankOf(from);
-        int toFile = Squares.FileOf(to);
-        int toRank = Squares.RankOf(to);
-        int fileDelta = toFile - fromFile;
-        int rankDelta = toRank - fromRank;
-
-        if (fileDelta != 0 && rankDelta != 0
-            && Math.Abs(fileDelta) != Math.Abs(rankDelta))
-            return 0;
-
-        int df = Math.Sign(fileDelta);
-        int dr = Math.Sign(rankDelta);
-        ulong mask = 0;
-
-        for (int file = fromFile + df, rank = fromRank + dr;
-             file != toFile || rank != toRank;
-             file += df, rank += dr)
-        {
-            mask |= Bitboard.SquareBB(Squares.FromFileRank(file, rank));
-        }
-
-        return mask;
-    }
+    // mask; adjacent kings and adjacent sliders naturally do too. The table
+    // lives in Attacks so the move generator's pin test reads the same set.
+    private static ulong StrictBetweenMask(int from, int to) => Attacks.Between(from, to);
 
     // Creates a board with the standard starting position.
     public Board() => Fen.Load(this, StartFen);
@@ -345,12 +380,22 @@ public sealed class Board
         Array.Copy(_occupancy, copy._occupancy, _occupancy.Length);
         Array.Copy(_mailbox, copy._mailbox, _mailbox.Length);
 
-        // Rebuild the undo/repetition history preserving bottom-to-top order:
-        // ToArray() yields top-first, so push from the bottom back up.
-        copy._history.Clear();
-        UndoInfo[] frames = _history.ToArray();
-        for (int i = frames.Length - 1; i >= 0; i--)
-            copy._history.Push(frames[i]);
+        // Rebuild the undo/repetition history. The arrays are already in
+        // bottom-to-top order, so a straight copy preserves it; the null-move
+        // boundary is part of that state and travels with it.
+        if (copy._history.Length < _history.Length)
+        {
+            copy._history = new UndoInfo[_history.Length];
+            copy._historyKeys = new ulong[_historyKeys.Length];
+        }
+        Array.Copy(_history, copy._history, _historyCount);
+        Array.Copy(_historyKeys, copy._historyKeys, _historyCount);
+        copy._historyCount = _historyCount;
+        copy._lastNullIndex = _lastNullIndex;
+        if (copy._nullFrames.Length < _nullFrames.Length)
+            copy._nullFrames = new int[_nullFrames.Length];
+        Array.Copy(_nullFrames, copy._nullFrames, _nullFrameCount);
+        copy._nullFrameCount = _nullFrameCount;
 
         copy.SideToMove = SideToMove;
         copy.CastlingRights = CastlingRights;
@@ -384,7 +429,7 @@ public sealed class Board
         PieceType captured = move.Flag == MoveFlag.EnPassant ? PieceType.Pawn : _mailbox[to];
 
         // Store everything needed to undo BEFORE touching anything.
-        _history.Push(new UndoInfo(move, captured, CastlingRights, EnPassantSquare, HalfmoveClock, ZobristKey));
+        PushHistory(move, captured, CastlingRights, EnPassantSquare, HalfmoveClock, ZobristKey);
 
         // Remove the current "variable" state (en passant and castling) from
         // the hash; it will be re-added with its new values at the end.
@@ -467,7 +512,7 @@ public sealed class Board
     // Undoes the last move, restoring exactly the previous state.
     public void UnmakeMove()
     {
-        UndoInfo undo = _history.Pop();
+        ref UndoInfo undo = ref PopHistory();
         Move move = undo.Move;
 
         // The side that made the move is the opposite of the current one.
@@ -537,8 +582,8 @@ public sealed class Board
     // NOTHING and my position is still winning, this branch can be pruned".
     public void MakeNullMove()
     {
-        _history.Push(new UndoInfo(Move.None, PieceType.None, CastlingRights,
-                                   EnPassantSquare, HalfmoveClock, ZobristKey));
+        PushHistory(Move.None, PieceType.None, CastlingRights,
+                    EnPassantSquare, HalfmoveClock, ZobristKey);
 
         if (EnPassantSquare != Squares.None)
         {
@@ -556,7 +601,7 @@ public sealed class Board
     // Undoes a MakeNullMove (and nothing else - the two calls must pair up).
     public void UnmakeNullMove()
     {
-        UndoInfo undo = _history.Pop();
+        ref UndoInfo undo = ref PopHistory();
         SideToMove = OppositeColor(SideToMove);
         EnPassantSquare = undo.EnPassantSquare;
         HalfmoveClock = undo.HalfmoveClock;
@@ -572,20 +617,28 @@ public sealed class Board
     // engine, which treats even a single repetition as a draw score.
     public int CountRepetitions()
     {
+        // Both bounds of the scan are known before it starts: the fifty-move
+        // clock limits how far back a repetition can reach, and a null move is
+        // not part of the legal game history, so no repetition may cross it
+        // even though its piece placement is unchanged.
+        int oldest = OldestRepetitionFrame();
+        ulong key = ZobristKey;
+        ulong[] keys = _historyKeys;
+
         int count = 0;
-        int distance = 0;
-        foreach (UndoInfo undo in _history) // Newest to oldest.
-        {
-            // A null move is not part of the legal game history. No repetition
-            // may cross it, even though its piece placement is unchanged.
-            if (undo.Move == Move.None)
-                break;
-            if (++distance > HalfmoveClock)
-                break;
-            if (undo.ZobristKey == ZobristKey)
+        for (int i = _historyCount - 1; i >= oldest; i--)
+            if (keys[i] == key)
                 count++;
-        }
         return count;
+    }
+
+    // First frame index a repetition scan may look at. Frames below it are
+    // either older than the fifty-move clock or behind a null move.
+    private int OldestRepetitionFrame()
+    {
+        int clockBound = _historyCount - HalfmoveClock;
+        int nullBound = _lastNullIndex + 1;
+        return clockBound > nullBound ? clockBound : nullBound;
     }
 
     // True if ANY position in the reversible history since the last pawn
@@ -595,26 +648,19 @@ public sealed class Board
     // artificially long game continuing past 128 reversible plies allocates.
     public bool HasRepeated()
     {
-        if (HalfmoveClock < 4 || _history.Count < 4)
+        if (HalfmoveClock < 4 || _historyCount < 4)
             return false;
 
-        int capacity = Math.Min(HalfmoveClock, _history.Count) + 1;
+        int oldest = OldestRepetitionFrame();
+        int capacity = _historyCount - oldest + 1;
         Span<ulong> keys = capacity <= 128
             ? stackalloc ulong[capacity]
             : new ulong[capacity];
 
-        int count = 0;
-        keys[count++] = ZobristKey;
-        int distance = 0;
+        keys[0] = ZobristKey;
+        _historyKeys.AsSpan(oldest, capacity - 1).CopyTo(keys[1..]);
 
-        foreach (UndoInfo state in _history)
-        {
-            if (state.Move == Move.None || ++distance > HalfmoveClock)
-                break;
-            keys[count++] = state.ZobristKey;
-        }
-
-        Span<ulong> visited = keys[..count];
+        Span<ulong> visited = keys;
         visited.Sort();
         for (int i = 1; i < visited.Length; i++)
             if (visited[i] == visited[i - 1])
@@ -631,37 +677,39 @@ public sealed class Board
     {
         if (ply < 0)
             throw new ArgumentOutOfRangeException(nameof(ply));
-        if (HalfmoveClock < 3 || _history.Count < 3)
+        if (HalfmoveClock < 3 || _historyCount < 3)
             return false;
 
-        var states = _history.GetEnumerator();
-        if (!states.MoveNext() || states.Current.Move == Move.None)
+        // Frame at distance d back from the current position is at index
+        // _historyCount - d. The scan may not reach past the oldest frame the
+        // clock and the newest null move allow.
+        int oldest = OldestRepetitionFrame();
+        int top = _historyCount - 1;
+        if (top < oldest)
             return false;
 
         ulong originalKey = ZobristKey;
-        ulong other = originalKey ^ states.Current.ZobristKey ^ Zobrist.SideToMoveKey;
+        ulong other = originalKey ^ _historyKeys[top] ^ Zobrist.SideToMoveKey;
 
         for (int distance = 3; distance <= HalfmoveClock; distance += 2)
         {
-            if (!states.MoveNext() || states.Current.Move == Move.None)
+            int middleIndex = _historyCount - (distance - 1);
+            int earlierIndex = _historyCount - distance;
+            if (earlierIndex < oldest)
                 break;
-            UndoInfo middle = states.Current;
 
-            if (!states.MoveNext() || states.Current.Move == Move.None)
-                break;
-            UndoInfo earlier = states.Current;
-
-            other ^= middle.ZobristKey ^ earlier.ZobristKey ^ Zobrist.SideToMoveKey;
+            other ^= _historyKeys[middleIndex] ^ _historyKeys[earlierIndex] ^ Zobrist.SideToMoveKey;
             if (other != 0)
                 continue;
 
-            ulong moveKey = originalKey ^ earlier.ZobristKey;
+            ulong earlierKey = _historyKeys[earlierIndex];
+            ulong moveKey = originalKey ^ earlierKey;
             if (!TryGetRepetitionMove(moveKey, out RepetitionMove move)
                 || (move.Between & AllOccupancy) != 0)
                 continue;
 
             if (ply > distance
-                || WasRepeatedBefore(earlier.ZobristKey, distance, earlier.HalfmoveClock))
+                || WasRepeatedBefore(earlierKey, distance, _history[earlierIndex].HalfmoveClock))
                 return true;
         }
 
@@ -683,17 +731,15 @@ public sealed class Board
         if (reversiblePlies < 4)
             return false;
 
-        int distance = 0;
-        foreach (UndoInfo state in _history)
+        // Walk on from the frame the caller stopped at, keeping its own
+        // reversible window; the null-move boundary still applies.
+        int nullBound = _lastNullIndex + 1;
+        for (int delta = 1; delta <= reversiblePlies; delta++)
         {
-            distance++;
-            if (distance <= targetDistance)
-                continue;
-
-            int delta = distance - targetDistance;
-            if (delta > reversiblePlies || state.Move == Move.None)
+            int index = _historyCount - (targetDistance + delta);
+            if (index < nullBound)
                 break;
-            if (delta >= 4 && (delta & 1) == 0 && state.ZobristKey == key)
+            if (delta >= 4 && (delta & 1) == 0 && _historyKeys[index] == key)
                 return true;
         }
 
@@ -719,7 +765,9 @@ public sealed class Board
         Array.Clear(_pieces);
         Array.Clear(_occupancy);
         Array.Fill(_mailbox, PieceType.None);
-        _history.Clear();
+        _historyCount = 0;
+        _lastNullIndex = -1;
+        _nullFrameCount = 0;
         SideToMove = Color.White;
         CastlingRights = CastlingRights.None;
         EnPassantSquare = Squares.None;

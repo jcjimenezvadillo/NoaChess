@@ -348,11 +348,18 @@ public sealed class AlphaBetaSearch
     // whole point: a single shared table cost -26 Elo when 5G first tried this,
     // because every distance writes the same entry and the levels destroy each
     // other. Index i holds the table keyed on the move (i + 1) plies back.
-    private readonly ContinuationHistory[] _contHist =
-    [
-        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
-        new ContinuationHistory(), new ContinuationHistory(), new ContinuationHistory(),
-    ];
+    //
+    // ONE LEVEL IS ALLOCATED, and the audit of 2026-09-06 is why. The 5G revert
+    // took the multi-level WRITE out (only _contHist[0] receives a bonus or a
+    // malus anywhere in this file; AddWeighted has no caller) and left the
+    // READ side summing five levels in the quiet ordering and two in the LMR
+    // statScore. Four of those five reads, and the second statScore term, were
+    // therefore reading tables that had been zero since the day they were
+    // allocated: four random lookups into 1.15 MB arrays per quiet move
+    // scored, for a value of exactly nought. Removing the reads is
+    // node-identical by construction; the multi-level write stays a separate,
+    // measured arm and gets its tables back the day it is tried again.
+    private readonly ContinuationHistory[] _contHist = [new ContinuationHistory()];
 
     // The reference's per-distance write weights, out of 1024. A move one ply
     // back explains a reply far better than one six plies back, so the bonuses
@@ -369,11 +376,12 @@ public sealed class AlphaBetaSearch
 
     // One continuation level read for the move about to be searched, or 0 when
     // that distance has no usable previous move (root, after a null move, or not
-    // yet deep enough). 'distance' is 0-based: 0 is one ply back.
+    // yet deep enough). 'distance' is 0-based: 0 is one ply back, and it is the
+    // only distance with a table behind it (see _contHist).
     private int ContLevel(int distance, int ply, int piece, int to)
     {
         int back = ply - 1 - distance;
-        return back >= 0 && _stackPiece[back] >= 0
+        return distance < _contHist.Length && back >= 0 && _stackPiece[back] >= 0
             ? _contHist[distance].Get(_stackPiece[back], _stackTo[back], piece, to)
             : 0;
     }
@@ -870,6 +878,41 @@ public sealed class AlphaBetaSearch
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
     private bool _rootLostTb;
 
+    // DrawTieBreak: the same idea one band up. When the root score is exactly
+    // zero, every move the search considers is worth the same and the engine
+    // keeps whichever the move ordering put first - which is the previous
+    // iteration's best, not the most natural move. Reported from a real game
+    // (lichess qrVwTTzH, move 50, king and knight with a passed b-pawn against
+    // king, knight and three pawns): our evaluation read 0.00 at depth 36 for
+    // every legal move, and the engine pushed a pawn straight into a capture.
+    // The arbiter scores that move 0.00 as well, so nothing was thrown away -
+    // but nothing tells the engine to prefer the move that keeps the pawn
+    // either, and a spectator reads it as a blunder.
+    //
+    // The mechanism is the one TbResistance already uses one band below: when
+    // the previous completed iteration returned a dead draw, search every root
+    // move with the full window and pick among score-EQUAL moves by the child's
+    // static evaluation. The key never leaves this method and cannot change a
+    // move that is genuinely better, only one that is genuinely equal.
+    //
+    // Cost is bounded to positions the search itself calls drawn, where the
+    // scout window saves the least. Off by default.
+    //
+    // MEASURED, 2026-09-06, and the honest summary is "it helps a little".
+    // Deterministic gate over 40 positions mined from the bot's own games
+    // (our evaluation exactly 0.00 and the move actually played handed the
+    // opponent a capture), one thread, fixed depth 18: the engine gives
+    // material away in 32 of the 40 with the tie-break off and 29 with it on,
+    // 5,800 against 5,650 centipawns handed over. The two keys tried before
+    // this one were worse and both failed for the same instructive reason: a
+    // static evaluation cannot see the capture, and a quiescence score sees it
+    // and still returns zero, because the position IS drawn and the network is
+    // right about that. Only material tells these moves apart, which is why
+    // the key is material and why the whole rule is cosmetic by construction.
+    public bool UseDrawTieBreak = false;
+    private bool _rootDrawn;
+    private readonly MoveList _tieMoves = new();
+
     // Consumer gain when the package is on, holding the consumer's MEAN
     // torque constant: mean|statScore| measured 117 off vs 6825 on (30 bench
     // positions, depth 10, histstats command), 1568 * 117/6825 = 27. The
@@ -1012,6 +1055,66 @@ public sealed class AlphaBetaSearch
     // production games that measured why). Clock mode only; fixed-depth and
     // fixed-node searches are untouched, so node counts stay identical.
     public bool UseEasyMoveWinOnly = true;
+
+    // Record the root's static evaluation on the search stack (audit find,
+    // 2026-09-06). SearchRoot never wrote _stackEval[0], so a node at ply 2
+    // compared its evaluation against a permanent ZERO instead of against the
+    // root's: "improving" there meant "better than equal", which is not what
+    // any consumer of the flag (reverse futility, late move pruning, the LMR
+    // extra ply, the ProbCut margin) was tuned to read. The reference stores
+    // ss->staticEval at the root like at any other node. Off until measured at
+    // fixed nodes: it changes node counts.
+    public bool UseRootStaticEval = false;
+
+    // Record each quiescence move on the search stack (audit find, 2026-09-06).
+    // Quiescence made its captures without writing _stackPiece/_stackTo, so
+    // every quiescence node below the first ply keyed its continuation
+    // correction on whatever move a MAIN-search node had last left in that
+    // slot, in some other branch: a random entry read as if it were this
+    // line's. The reference sets ss->currentMove in qsearch. Off until
+    // measured at fixed nodes: it changes node counts.
+    public bool UseQsStackMove = false;
+
+    // Exempt quiet moves that give DIRECT check from futility pruning (audit
+    // find, 2026-09-06). The reference prunes quiets on the static eval only
+    // when they do not give check; this engine had no gives-check test before
+    // the make, so at depth 4 and below a checking move was pruned like any
+    // other quiet whenever the eval sat under alpha - which is precisely the
+    // node where the check is the move that matters. The masks are built
+    // lazily, once per node that actually reaches the prune, from the enemy
+    // king's square on the current occupancy: exact for the moved piece's own
+    // check (a piece already on the line to the king would be checking now,
+    // so no legal move crosses its own square). Discovered checks are not
+    // seen and stay prunable, as before. Off until measured at fixed nodes.
+    public bool UseCheckExemptFutility = false;
+
+    // Clamp the window to the mate scores this ply can still produce (audit
+    // find, 2026-09-06). This engine had never had the reference's step 3: a
+    // node could keep searching for a mate in 9 with a mate in 3 already known
+    // above it, and the deeper node had no way to notice the answer could not
+    // matter. Two compares per node, and they cut the node outright whenever a
+    // shorter mate is already in hand.
+    //
+    // ON since v5.6.0, and the only option of this audit that ships enabled.
+    // Both clamps are theorems, not heuristics - no line can score better than
+    // mating on the next ply, nor worse than being mated on this one - so the
+    // nodes they remove are exactly the ones whose result cannot matter.
+    // Measured: the 60-position bench at depth 12 returns 14,994,140 nodes with
+    // it on or off, to the node; over a suite of mating positions at depth 14 it
+    // finds the same move with the same mate distance for 239 nodes instead of
+    // 308,528 (mate in 1), 2,319 instead of 748,527 (mate in 2) and 16,282
+    // instead of 183,934 (mate in 3). That is clock this engine used to spend
+    // confirming a mate it had already found.
+    public bool UseMateDistancePruning = true;
+
+    // Take the transposition cutoff only at non-PV nodes (audit find,
+    // 2026-09-06). Our quiescence already gates its cutoff on the window;
+    // Negamax did not, so a stored bound could end a PV node early. The line
+    // reported then comes from whatever the table holds rather than from a
+    // search of this window, which both costs PV accuracy and can truncate it.
+    // The reference has never cut at PV nodes. Off until measured at fixed
+    // nodes: it changes node counts.
+    public bool UseTtNoPvCutoff = false;
 
     // ---- Lazy SMP worker diversification ----
     //
@@ -1230,6 +1333,26 @@ public sealed class AlphaBetaSearch
             return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
         int legalRootMoveCount = _rootMoves.Count;
 
+        // ---- Illegal root: the side NOT to move is in check ----
+        // No game reaches this, but a GUI can set such a position up by hand
+        // and press go. Searching it captures the enemy king within a ply, and
+        // from there the board has no king for one side: KingSquare answers 64
+        // and the first attack lookup reads past its table. The UCI layer turns
+        // the resulting exception into "bestmove 0000", which a GUI reads as
+        // "no move at all" (found 2026-09-06 by an audit probe, present in
+        // every release). Answer with the capture instead: it is what the
+        // search would return if it could finish, and it costs one attack test
+        // per search - never per node.
+        Color them = Board.OppositeColor(board.SideToMove);
+        int theirKing = board.KingSquare(them);
+        if (theirKing < 64 && board.IsSquareAttacked(theirKing, board.SideToMove))
+        {
+            for (int i = 0; i < _rootMoves.Count; i++)
+                if (_rootMoves[i].To == theirKing)
+                    return new SearchResult(_rootMoves[i], MateScore, 1);
+            return new SearchResult(_rootMoves[0], 0, 1);
+        }
+
         // ---- Syzygy root filtering ----
         // Knowing the position is won is not enough to WIN it: with no distance
         // to steer by the engine shuffles and draws by the fifty-move rule. DTZ
@@ -1351,6 +1474,7 @@ public sealed class AlphaBetaSearch
         _rootSide = board.SideToMove;
         _rootAverageScore = ScoreNone;
         _rootLostTb = false;
+        _rootDrawn = false;
         _optimism = 0;
         for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
@@ -1544,6 +1668,9 @@ public sealed class AlphaBetaSearch
             // TbResistance: a completed iteration concluding in the loss band
             // switches the NEXT iteration's root into resistance mode.
             _rootLostTb = UseTbResistance && score <= -TbScoreBound && score > -MateBound;
+            // A completed iteration that ended in a dead draw switches the next
+            // one into tie-break mode (see UseDrawTieBreak).
+            _rootDrawn = UseDrawTieBreak && score == 0;
             if (_rootAverageScore == ScoreNone)
             {
                 _rootAverageScore = score;
@@ -1981,6 +2108,16 @@ public sealed class AlphaBetaSearch
             contHist: default, counterMove: Move.None,
             captureHistory: _captureHistory);
 
+        // The root's own static evaluation, corrected exactly as an inner node
+        // corrects its own, so a ply-2 node's "improving" compares like with
+        // like. One evaluation per iteration. See UseRootStaticEval.
+        if (UseRootStaticEval)
+        {
+            _stackEval[0] = board.IsInCheck()
+                ? NoEval
+                : _corrections.Correct(board, _evaluator.Evaluate(board) + OptimismTerm(board), 0);
+        }
+
         int bestScore = -Infinity;
         int searched = 0;
         // alpha is raised in the loop below, so the bound test at the store
@@ -1994,6 +2131,8 @@ public sealed class AlphaBetaSearch
         // and pick by a LOCAL key that adds the child's real evaluation as
         // the tiebreak. The key never leaves this method.
         bool lostMode = _rootLostTb;
+        bool drawMode = _rootDrawn && !lostMode;
+        bool fullWindowMode = lostMode || drawMode;
         long bestKey = long.MinValue;
 
         // Effort per root move. Best-move STABILITY alone cannot tell a forced
@@ -2022,7 +2161,7 @@ public sealed class AlphaBetaSearch
             // every move gets the full window: a scout would reject the
             // resistant move for scoring a few band points under the leader.
             int score;
-            if (searched == 0 || lostMode)
+            if (searched == 0 || fullWindowMode)
             {
                 // The root is a PV node; its first child stays on the PV.
                 score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
@@ -2045,6 +2184,32 @@ public sealed class AlphaBetaSearch
             int resistance = 0;
             if (lostMode && score <= -TbScoreBound && score > -MateBound && !_stopped)
                 resistance = Math.Clamp(1024 - _evaluator.Evaluate(board) / 8, 0, 2048);
+            // Draw tie-break: what the opponent can WIN BY CAPTURE after this
+            // move, and nothing else. MEASURED, and the two obvious keys were
+            // both wrong before this one: the child's static evaluation does
+            // not see the capture it walks into, and the child's quiescence
+            // score does see it but reports zero anyway - because the position
+            // IS a dead draw and the evaluation is right about that. A drawn
+            // position cannot be told apart by an evaluation function; only by
+            // what it looks like. So the key is material: among moves the
+            // search scores identically, prefer the one that does not hand the
+            // opponent a free capture. This is cosmetic by construction and it
+            // is meant to be: it can never override a real score difference.
+            else if (drawMode && score == 0 && !_stopped)
+            {
+                int worst = 0;
+                MoveGenerator.GenerateLegalMoves(board, _tieMoves);
+                for (int t = 0; t < _tieMoves.Count; t++)
+                {
+                    Move reply = _tieMoves[t];
+                    if (!reply.IsCapture)
+                        continue;
+                    int gain = StaticExchangeEvaluator.Evaluate(board, reply);
+                    if (gain > worst)
+                        worst = gain;
+                }
+                resistance = Math.Clamp(1024 - worst, 0, 2048);
+            }
 
             board.UnmakeMove();
             searched++;
@@ -2065,9 +2230,12 @@ public sealed class AlphaBetaSearch
             // reported PV still shows the previous (real) best.
             // In lostMode every move was searched with the full window, so
             // the scores ARE comparable and the key decides.
-            long key = (long)score + resistance;
-            if (lostMode ? key > bestKey
-                         : score > bestScore && (searched == 1 || score > alpha))
+            // Scores are multiplied out so the tie-break can only separate moves
+            // whose search scores are EQUAL: one centipawn of score outweighs
+            // the whole 2048-point key range.
+            long key = (long)score * 4096 + resistance;
+            if (fullWindowMode ? key > bestKey
+                               : score > bestScore && (searched == 1 || score > alpha))
             {
                 bestKey = key;
                 bestScore = score;
@@ -2450,7 +2618,31 @@ public sealed class AlphaBetaSearch
                 return alpha;
         }
 
+        // ---- Mate distance pruning ----
+        // The best this node can possibly return is a mate delivered on the
+        // very next ply, and the worst is being mated right here. Clamping the
+        // window to that range costs two compares and cuts the whole node
+        // whenever a shorter mate is already known higher up the tree, which
+        // also stops the search from wandering off after longer mates once it
+        // has found a short one. Reference step 3, applied at every non-root
+        // node (this function is never called with ply 0).
+        if (UseMateDistancePruning)
+        {
+            int mated = -MateScore + ply;
+            if (mated > alpha)
+                alpha = mated;
+            int mating = MateScore - (ply + 1);
+            if (mating < beta)
+                beta = mating;
+            if (alpha >= beta)
+                return alpha;
+        }
+
         // ---- Transposition table probe ----
+        // Whether this node owns a real window, decided before anything below
+        // narrows it. The reference carries the same fact as a template
+        // parameter, so it never changes inside the node.
+        bool pvWindow = beta - alpha != 1;
         Move ttMove = Move.None;
         bool ttHit = _tt.Probe(board.ZobristKey, out TTEntry entry);
         if (ttHit)
@@ -2462,7 +2654,13 @@ public sealed class AlphaBetaSearch
             // allows a conclusion within the current window (None = eval-only
             // entry, no score). Never in singular verification mode: the
             // entry describes the search WITH the excluded move available.
+            //
+            // The reference takes this cutoff only at non-PV nodes: on the
+            // principal variation a stored bound ends the node early and the
+            // line it reports is whatever the table happens to hold, so the PV
+            // both loses accuracy and can come back truncated.
             if (entry.Depth >= depth && excluded == Move.None
+                && (!UseTtNoPvCutoff || !pvWindow)
                 && CanReuseTtScore(entry.Score, board.HalfmoveClock)
                 && entry.Bound != BoundType.None)
             {
@@ -2953,22 +3151,11 @@ public sealed class AlphaBetaSearch
         int prevTo = prevPiece >= 0 ? _stackTo[ply - 1] : 0;
         Move counterMove = prevPiece >= 0 ? _counterMoves[(prevPiece * 64) + prevTo] : Move.None;
 
-        // Distances 1, 2, 3, 4 and 6 are read; distance 5 is maintained and not
-        // consulted here, exactly as the reference has it.
-        ContinuationHistory? Level(int distance)
-        {
-            int back = ply - distance;
-            return back >= 0 && _stackPiece[back] >= 0 ? _contHist[distance - 1] : null;
-        }
-        int PieceAt(int distance) => ply - distance >= 0 ? _stackPiece[ply - distance] : -1;
-        int ToAt(int distance) => ply - distance >= 0 ? _stackTo[ply - distance] : 0;
-
+        // The reference reads distances 1, 2, 3, 4 and 6 here. This engine
+        // WRITES distance 1 only (see _contHist), so that is the one distance
+        // read: the other four were lookups into tables that are always zero.
         var contHist = new ContinuationContext(
-            Level(1), PieceAt(1), ToAt(1),
-            Level(2), PieceAt(2), ToAt(2),
-            Level(3), PieceAt(3), ToAt(3),
-            Level(4), PieceAt(4), ToAt(4),
-            Level(6), PieceAt(6), ToAt(6));
+            prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
 
         Color stm = board.SideToMove;
         int originalAlpha = alpha;
@@ -2978,6 +3165,9 @@ public sealed class AlphaBetaSearch
         int quietsSearched = 0;
         bool skipQuiets = false; // pruning ladder: LMP at every depth
         int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
+        // Direct-check masks for the futility exemption, built on first use.
+        bool checkMasksReady = false;
+        ulong pawnCheck = 0, knightCheck = 0, bishopCheck = 0, rookCheck = 0;
 
         // Quiet moves actually searched at this node, kept so that a later
         // beta cutoff can punish them (history malus): they had their chance
@@ -3138,7 +3328,32 @@ public sealed class AlphaBetaSearch
                 // invisible (WAC.001 mate-in-4: found at d13 before, hidden
                 // past d17 / 100M nodes with the reshape in either scale).
                 if (depth <= 4 && staticEval + 100 * depth <= alpha)
-                    continue;
+                {
+                    if (!UseCheckExemptFutility)
+                        continue;
+                    if (!checkMasksReady)
+                    {
+                        int theirKing = board.KingSquare(Board.OppositeColor(stm));
+                        ulong occNow = board.AllOccupancy;
+                        pawnCheck = Attacks.Pawn(Board.OppositeColor(stm), theirKing);
+                        knightCheck = Attacks.Knight(theirKing);
+                        bishopCheck = Attacks.Bishop(theirKing, occNow);
+                        rookCheck = Attacks.Rook(theirKing, occNow);
+                        checkMasksReady = true;
+                    }
+                    ulong toBit = 1UL << move.To;
+                    ulong checkMask = board.PieceTypeAt(move.From) switch
+                    {
+                        PieceType.Pawn => pawnCheck,
+                        PieceType.Knight => knightCheck,
+                        PieceType.Bishop => bishopCheck,
+                        PieceType.Rook => rookCheck,
+                        PieceType.Queen => bishopCheck | rookCheck,
+                        _ => 0UL,
+                    };
+                    if ((checkMask & toBit) == 0)
+                        continue;
+                }
             }
 
             // ---- Shallow capture pruning (non-PV, not in check) ----
@@ -3258,9 +3473,13 @@ public sealed class AlphaBetaSearch
                         int statScore = move.IsCapture
                             ? 873 * StatScoreVictimValue(victimIdx) / 128
                               + _captureHistory.Get(movePieceIdx, move.To, victimIdx)
+                            // The reference adds 1093 * contHist[1] here. That
+                            // level is never written in this engine (see
+                            // _contHist), so the term was always zero and is not
+                            // read; the +20.9 that shipped this consumer was
+                            // measured with exactly this arithmetic.
                             : (2252 * _history.Get(stm, move)
-                               + 1126 * ContLevel(0, ply, movePieceIdx, move.To)
-                               + 1093 * ContLevel(1, ply, movePieceIdx, move.To)) / 1024;
+                               + 1126 * ContLevel(0, ply, movePieceIdx, move.To)) / 1024;
                         if (_ssQuiet != null)
                             RecordStatScore(move.IsCapture, statScore);
                         r -= statScore
@@ -3897,6 +4116,17 @@ public sealed class AlphaBetaSearch
                     continue;
             }
 
+            // The move that reaches the child, so its correction-history key
+            // names THIS capture and not a stale main-search move. The mover
+            // is read before the make, exactly as the main search reads it, so
+            // a promotion files under the pawn on both paths.
+            if (UseQsStackMove)
+            {
+                _stackPiece[ply] = ContinuationHistory.PieceIndex(us, board.PieceTypeAt(move.From));
+                _stackTo[ply] = move.To;
+            }
+
+            _incremental?.PushMove(board, move);
             board.MakeMove(move);
 
             // Discard moves that leave our own king in check.
@@ -3941,7 +4171,16 @@ public sealed class AlphaBetaSearch
             // stalemates with a pinned minor. HasLegalMove generates into the
             // already-owned ply buffer and stops at the first legal quiet, so
             // correctness does not require allocating or filtering a full list.
-            if (!MoveGenerator.HasLegalMove(board, moves))
+            //
+            // But it is asked at nearly every quiescence leaf, and generating a
+            // whole move list to learn that a knight can move is most of what
+            // those leaves cost. The evident-move probe settles almost all of
+            // them from the bitboards without generating anything and is exact
+            // in one direction only (true means a legal move exists), so the
+            // full generator still answers whatever it could not prove. Same
+            // answers at every node, so node counts are untouched.
+            if (!MoveGenerator.HasEvidentLegalMove(board)
+                && !MoveGenerator.HasLegalMove(board, moves))
                 return 0;
         }
 

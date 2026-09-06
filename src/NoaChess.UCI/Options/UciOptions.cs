@@ -35,8 +35,20 @@ public sealed class UciOptions
     public bool PonderMinThink { get; private set; }
     // Easy-move cut only when winning (see AlphaBetaSearch.UseEasyMoveWinOnly).
     public bool EasyMoveWinOnly { get; private set; } = true;
+    // Root static eval on the search stack (see AlphaBetaSearch.UseRootStaticEval).
+    public bool RootStaticEval { get; private set; }
+    // Quiescence moves recorded on the search stack (see AlphaBetaSearch.UseQsStackMove).
+    public bool QsStackMove { get; private set; }
+    // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
+    public bool CheckExemptFutility { get; private set; }
+    // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
+    public bool MateDistancePruning { get; private set; } = true;
+    // Transposition cutoff refused at PV nodes (see AlphaBetaSearch.UseTtNoPvCutoff).
+    public bool TtNoPvCutoff { get; private set; }
     // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
     public bool EasyMoveFiftyGuard { get; private set; } = true;
+    // Break ties between equal-scored root moves in drawn positions (see AlphaBetaSearch).
+    public bool DrawTieBreak { get; private set; }
     public bool SmpOvershootTaper { get; private set; }
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
@@ -133,7 +145,13 @@ public sealed class UciOptions
         output.WriteLine("option name RootSafetyNet type check default false");
         output.WriteLine("option name PonderMinThink type check default false");
         output.WriteLine("option name EasyMoveWinOnly type check default true");
+        output.WriteLine("option name RootStaticEval type check default false");
+        output.WriteLine("option name QsStackMove type check default false");
+        output.WriteLine("option name CheckExemptFutility type check default false");
+        output.WriteLine("option name MateDistancePruning type check default true");
+        output.WriteLine("option name TtNoPvCutoff type check default false");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
+        output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
@@ -237,9 +255,27 @@ public sealed class UciOptions
             case "easymovewinonly" when bool.TryParse(value, out bool emw):
                 EasyMoveWinOnly = emw;
                 return "EasyMoveWinOnly";
+            case "rootstaticeval" when bool.TryParse(value, out bool rse):
+                RootStaticEval = rse;
+                return "RootStaticEval";
+            case "qsstackmove" when bool.TryParse(value, out bool qsm):
+                QsStackMove = qsm;
+                return "QsStackMove";
+            case "checkexemptfutility" when bool.TryParse(value, out bool cef):
+                CheckExemptFutility = cef;
+                return "CheckExemptFutility";
+            case "matedistancepruning" when bool.TryParse(value, out bool mdp):
+                MateDistancePruning = mdp;
+                return "MateDistancePruning";
+            case "ttnopvcutoff" when bool.TryParse(value, out bool tnp):
+                TtNoPvCutoff = tnp;
+                return "TtNoPvCutoff";
             case "easymovefiftyguard" when bool.TryParse(value, out bool emf):
                 EasyMoveFiftyGuard = emf;
                 return "EasyMoveFiftyGuard";
+            case "drawtiebreak" when bool.TryParse(value, out bool dtb):
+                DrawTieBreak = dtb;
+                return "DrawTieBreak";
             case "smpovershoottaper" when bool.TryParse(value, out bool sot):
                 SmpOvershootTaper = sot;
                 return "SmpOvershootTaper";
