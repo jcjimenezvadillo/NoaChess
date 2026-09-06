@@ -272,6 +272,7 @@ public sealed class ChessEngine
             h.UsePonderMinThink = _search.UsePonderMinThink;
             h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
+            h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
@@ -617,6 +618,12 @@ public sealed class ChessEngine
     {
         get => _search.UseEasyMoveFiftyGuard;
         set => _search.UseEasyMoveFiftyGuard = value;
+    }
+
+    public bool UseDrawTieBreak
+    {
+        get => _search.UseDrawTieBreak;
+        set => _search.UseDrawTieBreak = value;
     }
 
     public bool UseSmpOvershootTaper

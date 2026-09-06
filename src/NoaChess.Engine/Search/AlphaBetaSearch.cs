@@ -870,6 +870,41 @@ public sealed class AlphaBetaSearch
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
     private bool _rootLostTb;
 
+    // DrawTieBreak: the same idea one band up. When the root score is exactly
+    // zero, every move the search considers is worth the same and the engine
+    // keeps whichever the move ordering put first - which is the previous
+    // iteration's best, not the most natural move. Reported from a real game
+    // (lichess qrVwTTzH, move 50, king and knight with a passed b-pawn against
+    // king, knight and three pawns): our evaluation read 0.00 at depth 36 for
+    // every legal move, and the engine pushed a pawn straight into a capture.
+    // The arbiter scores that move 0.00 as well, so nothing was thrown away -
+    // but nothing tells the engine to prefer the move that keeps the pawn
+    // either, and a spectator reads it as a blunder.
+    //
+    // The mechanism is the one TbResistance already uses one band below: when
+    // the previous completed iteration returned a dead draw, search every root
+    // move with the full window and pick among score-EQUAL moves by the child's
+    // static evaluation. The key never leaves this method and cannot change a
+    // move that is genuinely better, only one that is genuinely equal.
+    //
+    // Cost is bounded to positions the search itself calls drawn, where the
+    // scout window saves the least. Off by default.
+    //
+    // MEASURED, 2026-09-06, and the honest summary is "it helps a little".
+    // Deterministic gate over 40 positions mined from the bot's own games
+    // (our evaluation exactly 0.00 and the move actually played handed the
+    // opponent a capture), one thread, fixed depth 18: the engine gives
+    // material away in 32 of the 40 with the tie-break off and 29 with it on,
+    // 5,800 against 5,650 centipawns handed over. The two keys tried before
+    // this one were worse and both failed for the same instructive reason: a
+    // static evaluation cannot see the capture, and a quiescence score sees it
+    // and still returns zero, because the position IS drawn and the network is
+    // right about that. Only material tells these moves apart, which is why
+    // the key is material and why the whole rule is cosmetic by construction.
+    public bool UseDrawTieBreak = false;
+    private bool _rootDrawn;
+    private readonly MoveList _tieMoves = new();
+
     // Consumer gain when the package is on, holding the consumer's MEAN
     // torque constant: mean|statScore| measured 117 off vs 6825 on (30 bench
     // positions, depth 10, histstats command), 1568 * 117/6825 = 27. The
@@ -1359,6 +1394,7 @@ public sealed class AlphaBetaSearch
         _rootSide = board.SideToMove;
         _rootAverageScore = ScoreNone;
         _rootLostTb = false;
+        _rootDrawn = false;
         _optimism = 0;
         for (int depth = 1; depth <= maxIterationDepth; depth++)
         {
@@ -1552,6 +1588,9 @@ public sealed class AlphaBetaSearch
             // TbResistance: a completed iteration concluding in the loss band
             // switches the NEXT iteration's root into resistance mode.
             _rootLostTb = UseTbResistance && score <= -TbScoreBound && score > -MateBound;
+            // A completed iteration that ended in a dead draw switches the next
+            // one into tie-break mode (see UseDrawTieBreak).
+            _rootDrawn = UseDrawTieBreak && score == 0;
             if (_rootAverageScore == ScoreNone)
             {
                 _rootAverageScore = score;
@@ -2002,6 +2041,8 @@ public sealed class AlphaBetaSearch
         // and pick by a LOCAL key that adds the child's real evaluation as
         // the tiebreak. The key never leaves this method.
         bool lostMode = _rootLostTb;
+        bool drawMode = _rootDrawn && !lostMode;
+        bool fullWindowMode = lostMode || drawMode;
         long bestKey = long.MinValue;
 
         // Effort per root move. Best-move STABILITY alone cannot tell a forced
@@ -2030,7 +2071,7 @@ public sealed class AlphaBetaSearch
             // every move gets the full window: a scout would reject the
             // resistant move for scoring a few band points under the leader.
             int score;
-            if (searched == 0 || lostMode)
+            if (searched == 0 || fullWindowMode)
             {
                 // The root is a PV node; its first child stays on the PV.
                 score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
@@ -2053,6 +2094,32 @@ public sealed class AlphaBetaSearch
             int resistance = 0;
             if (lostMode && score <= -TbScoreBound && score > -MateBound && !_stopped)
                 resistance = Math.Clamp(1024 - _evaluator.Evaluate(board) / 8, 0, 2048);
+            // Draw tie-break: what the opponent can WIN BY CAPTURE after this
+            // move, and nothing else. MEASURED, and the two obvious keys were
+            // both wrong before this one: the child's static evaluation does
+            // not see the capture it walks into, and the child's quiescence
+            // score does see it but reports zero anyway - because the position
+            // IS a dead draw and the evaluation is right about that. A drawn
+            // position cannot be told apart by an evaluation function; only by
+            // what it looks like. So the key is material: among moves the
+            // search scores identically, prefer the one that does not hand the
+            // opponent a free capture. This is cosmetic by construction and it
+            // is meant to be: it can never override a real score difference.
+            else if (drawMode && score == 0 && !_stopped)
+            {
+                int worst = 0;
+                MoveGenerator.GenerateLegalMoves(board, _tieMoves);
+                for (int t = 0; t < _tieMoves.Count; t++)
+                {
+                    Move reply = _tieMoves[t];
+                    if (!reply.IsCapture)
+                        continue;
+                    int gain = StaticExchangeEvaluator.Evaluate(board, reply);
+                    if (gain > worst)
+                        worst = gain;
+                }
+                resistance = Math.Clamp(1024 - worst, 0, 2048);
+            }
 
             board.UnmakeMove();
             _incremental?.Pop();
@@ -2074,9 +2141,12 @@ public sealed class AlphaBetaSearch
             // reported PV still shows the previous (real) best.
             // In lostMode every move was searched with the full window, so
             // the scores ARE comparable and the key decides.
-            long key = (long)score + resistance;
-            if (lostMode ? key > bestKey
-                         : score > bestScore && (searched == 1 || score > alpha))
+            // Scores are multiplied out so the tie-break can only separate moves
+            // whose search scores are EQUAL: one centipawn of score outweighs
+            // the whole 2048-point key range.
+            long key = (long)score * 4096 + resistance;
+            if (fullWindowMode ? key > bestKey
+                               : score > bestScore && (searched == 1 || score > alpha))
             {
                 bestKey = key;
                 bestScore = score;
