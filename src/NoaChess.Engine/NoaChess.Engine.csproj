@@ -8,6 +8,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- SkipLocalsInit needs it. No unsafe code is written: the attribute only
+         tells the JIT not to zero a method's stack buffers, and it is applied
+         to the few hot methods whose stackalloc'd spans are fully written
+         before they are read (see NnueInference and StaticExchangeEvaluator). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
 

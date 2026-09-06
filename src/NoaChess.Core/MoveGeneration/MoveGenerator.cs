@@ -98,6 +98,94 @@ public static class MoveGenerator
         return false;
     }
 
+    // Exact one-sided stalemate test for a side that is NOT in check: true
+    // means a legal move certainly exists, false means "not proven here" and
+    // the caller must fall back to HasLegalMove. Never generates a move and
+    // never touches the board.
+    //
+    // WHY. Quiescence asks "is this stalemate?" at every node where no capture
+    // was made - most of its leaves - and HasLegalMove answers by generating
+    // every pseudo-legal move and making them until one is legal. Almost every
+    // position can be settled far cheaper: when the side to move is not in
+    // check, any piece that is not pinned to its king has a legal move as soon
+    // as it has a square to go to, and a king step to a free square nobody
+    // attacks is legal too. Only positions where every mobile piece is pinned
+    // and the king is boxed in fall through to the full generator, and those
+    // are exactly the positions where the exact answer matters.
+    //
+    // The precondition is essential and the caller owns it: in check, a piece
+    // that is not pinned may still have no legal move, and an adjacent square
+    // can be attacked THROUGH the king's own square, which the attack test
+    // below cannot see.
+    public static bool HasEvidentLegalMove(Board board)
+    {
+        Color us = board.SideToMove;
+        Color them = Board.OppositeColor(us);
+        ulong ours = board.Occupancy(us);
+        ulong theirs = board.Occupancy(them);
+        ulong occupied = ours | theirs;
+        ulong free = ~ours;
+        int king = board.KingSquare(us);
+
+        // Our pieces standing alone between our king and an enemy slider.
+        ulong pinned = 0;
+        ulong queens = board.Pieces(them, PieceType.Queen);
+        ulong snipers = (Attacks.Rook(king, 0) & (board.Pieces(them, PieceType.Rook) | queens))
+                      | (Attacks.Bishop(king, 0) & (board.Pieces(them, PieceType.Bishop) | queens));
+        while (snipers != 0)
+        {
+            int sniper = Bitboard.PopLsb(ref snipers);
+            ulong blockers = Attacks.Between(king, sniper) & occupied;
+            if (blockers != 0 && (blockers & (blockers - 1)) == 0 && (blockers & ours) != 0)
+                pinned |= blockers;
+        }
+        ulong movable = ours & ~pinned;
+
+        // An unpinned knight or slider with any square that is not ours.
+        ulong pieces = board.Pieces(us, PieceType.Knight) & movable;
+        while (pieces != 0)
+            if ((Attacks.Knight(Bitboard.PopLsb(ref pieces)) & free) != 0)
+                return true;
+        pieces = board.Pieces(us, PieceType.Bishop) & movable;
+        while (pieces != 0)
+            if ((Attacks.Bishop(Bitboard.PopLsb(ref pieces), occupied) & free) != 0)
+                return true;
+        pieces = board.Pieces(us, PieceType.Rook) & movable;
+        while (pieces != 0)
+            if ((Attacks.Rook(Bitboard.PopLsb(ref pieces), occupied) & free) != 0)
+                return true;
+        pieces = board.Pieces(us, PieceType.Queen) & movable;
+        while (pieces != 0)
+            if ((Attacks.Queen(Bitboard.PopLsb(ref pieces), occupied) & free) != 0)
+                return true;
+
+        // An unpinned pawn with an empty square ahead or an enemy piece on a
+        // capture diagonal. Promotions are ordinary moves here; en passant is
+        // left to the fallback, since its legality has its own special case.
+        ulong pawns = board.Pieces(us, PieceType.Pawn) & movable;
+        if (pawns != 0)
+        {
+            ulong pushes = us == Color.White ? pawns << 8 : pawns >> 8;
+            if ((pushes & ~occupied) != 0)
+                return true;
+            ulong captures = us == Color.White
+                ? ((pawns & ~Bitboard.FileA) << 7) | ((pawns & ~Bitboard.FileH) << 9)
+                : ((pawns & ~Bitboard.FileA) >> 9) | ((pawns & ~Bitboard.FileH) >> 7);
+            if ((captures & theirs) != 0)
+                return true;
+        }
+
+        // A king step to a square that is not ours and not attacked. With the
+        // king not in check, no enemy line can run through its own square, so
+        // testing the destination on the current occupancy is exact.
+        ulong steps = Attacks.King(king) & free;
+        while (steps != 0)
+            if (!board.IsSquareAttacked(Bitboard.PopLsb(ref steps), them))
+                return true;
+
+        return false;
+    }
+
     // Fills 'list' with pseudo-legal moves (castling excepted: fully legal).
     // With capturesOnly=true only captures and promotions are produced.
     public static void GeneratePseudoLegalMoves(Board board, MoveList list, bool capturesOnly = false)

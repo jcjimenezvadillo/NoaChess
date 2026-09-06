@@ -1009,6 +1009,12 @@ public sealed class UciLoop
             _engine.UsePonderMinThink = _options.PonderMinThink;
         if (changed == "EasyMoveWinOnly")
             _engine.UseEasyMoveWinOnly = _options.EasyMoveWinOnly;
+        if (changed == "RootStaticEval")
+            _engine.UseRootStaticEval = _options.RootStaticEval;
+        if (changed == "QsStackMove")
+            _engine.UseQsStackMove = _options.QsStackMove;
+        if (changed == "CheckExemptFutility")
+            _engine.UseCheckExemptFutility = _options.CheckExemptFutility;
         if (changed == "EasyMoveFiftyGuard")
             _engine.UseEasyMoveFiftyGuard = _options.EasyMoveFiftyGuard;
         if (changed == "DrawTieBreak")
