@@ -114,7 +114,12 @@ public static class NnueModelLoader
             error = "architecture 5 requires format version 2 (it has fields version 1 cannot hold)";
             return false;
         }
-        if (!archFive && (l2Outputs != 0 || flags != 0))
+        // The coarse flag is the one flag the single-transformer
+        // architectures may carry: it only appends a lane block, and the
+        // combination guards further down keep it exclusive.
+        if (!archFive
+            && (l2Outputs != 0
+                || (flags & ~NnueModelHeader.ArchFlagCoarse) != 0))
         {
             error = $"architecture {arch} cannot carry a second hidden layer or arch flags";
             return false;
@@ -226,6 +231,20 @@ public static class NnueModelLoader
         if (psqtBuckets > 0)
             expectedPayload += (long)ftInputs * psqtBuckets * 4;   // psqtWeights int32
 
+        // The coarse threat lane, appended after everything else. Its row
+        // count is a constant of the encoding (144 attacker x victim classes),
+        // asserted by length exactly as the threat block is. No combined
+        // shape exists with threats, psqt or arch 5 - the trainer and the
+        // exporter refuse the combination, and so does this loader.
+        bool hasCoarse = (flags & NnueModelHeader.ArchFlagCoarse) != 0;
+        if (hasCoarse && (hasThreats || archFive || psqtBuckets > 0))
+        {
+            error = "coarse lane is not supported together with threats, psqt or arch 5";
+            return false;
+        }
+        if (hasCoarse)
+            expectedPayload += (long)NnueModelHeader.CoarseRows * ftOutputs * 2;
+
         if ((long)payloadLength != expectedPayload)
         {
             error = $"payload length {payloadLength} does not match dimensions (expected {expectedPayload})";
@@ -315,6 +334,12 @@ public static class NnueModelLoader
         if (psqtBuckets > 0)
             psqtWeights = ReadInt32Array(payload, ftInputs * psqtBuckets);
 
+        // The coarse lane, the true last block.
+        short[]? coarseWeights = null;
+        if (hasCoarse)
+            coarseWeights = ReadInt16Array(payload,
+                NnueModelHeader.CoarseRows * ftOutputs);
+
         // Built once at load: see NnueNetwork.SquaredActivation for why the
         // activation must not divide at evaluation time.
         var squared = new byte[qa + 1];
@@ -347,6 +372,7 @@ public static class NnueModelLoader
             OutBias = outBias,
             ThreatWeights = threatWeights,
             PsqtWeights = psqtWeights,
+            CoarseWeights = coarseWeights,
             PsqtBuckets = psqtBuckets,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };

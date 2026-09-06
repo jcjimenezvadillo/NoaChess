@@ -103,6 +103,13 @@ public sealed class NnueModelHeader
     public const ushort ArchFlagPairwiseFt = 1 << 0;
     // The file carries a threat transformer block, as arch 4 does.
     public const ushort ArchFlagThreats = 1 << 1;
+    // The file carries the COARSE threat lane: 144 x ftOut int16 rows on the
+    // qa grid, appended LAST. Computed at evaluation time from bitboards -
+    // per evaluation, not per node, which is the whole point of the lane.
+    // Forbidden together with threats, psqt or arch 5: no combined payload
+    // shape exists and the trainer refuses the combination too.
+    public const ushort ArchFlagCoarse = 1 << 2;
+    public const int CoarseRows = 144;
 
     // Legacy int16 L1 (every net through gen7). Still loadable, still played.
     public const uint ArchitectureInt16L1 = 1;

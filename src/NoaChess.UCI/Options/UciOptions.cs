@@ -28,6 +28,19 @@ public sealed class UciOptions
     public bool PruningLadderFutility { get; private set; } = true;
     public bool CorrectionBlend { get; private set; }
     public bool StatScoreLmr { get; private set; } = true;
+    public bool NodeTimeFactor { get; private set; }
+    public bool EvalStabilityTime { get; private set; }
+    public bool RootSafetyNet { get; private set; }
+    // Floor on the fresh thinking after a ponderhit (see AlphaBetaSearch.UsePonderMinThink).
+    public bool PonderMinThink { get; private set; }
+    // Easy-move cut only when winning (see AlphaBetaSearch.UseEasyMoveWinOnly).
+    public bool EasyMoveWinOnly { get; private set; } = true;
+    // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
+    public bool EasyMoveFiftyGuard { get; private set; } = true;
+    public bool SmpOvershootTaper { get; private set; }
+    public bool SmpDiversify { get; private set; }
+    public bool SmpAspDiversify { get; private set; }
+    public bool SmpVoteAll { get; private set; }
     public bool CutNodeLmr { get; private set; }
     public bool FailLowCorrection { get; private set; }
     public bool MoveCountLmr { get; private set; }
@@ -35,6 +48,16 @@ public sealed class UciOptions
     public bool HistoryBonus { get; private set; }
     public bool CorrectionLmr { get; private set; }
     public bool KillerShallowing { get; private set; } = true;
+    public bool TbPvCap { get; private set; }
+    public bool TbResistance { get; private set; } = true;
+    public bool CaptureLmr { get; private set; }
+    public bool NmpPackage { get; private set; }
+    // Convert a pondered search in place on "ponderhit" instead of relaunching
+    // it over the warm table. Affects nothing unless the GUI actually ponders.
+    // MEASURED -23.7 [-41.2, -6.3] at 60+1 with ponder on both arms, H0 at 382
+    // games, with zero time forfeits - it lost on chess, not on the clock.
+    // Kept inert; the full record is in AlphaBetaSearch.ApplyClockLimits.
+    public bool PonderInPlace { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -105,6 +128,16 @@ public sealed class UciOptions
         output.WriteLine("option name PruningLadderFutility type check default true");
         output.WriteLine("option name CorrectionBlend type check default false");
         output.WriteLine("option name StatScoreLmr type check default true");
+        output.WriteLine("option name NodeTimeFactor type check default false");
+        output.WriteLine("option name EvalStabilityTime type check default false");
+        output.WriteLine("option name RootSafetyNet type check default false");
+        output.WriteLine("option name PonderMinThink type check default false");
+        output.WriteLine("option name EasyMoveWinOnly type check default true");
+        output.WriteLine("option name EasyMoveFiftyGuard type check default true");
+        output.WriteLine("option name SmpOvershootTaper type check default false");
+        output.WriteLine("option name SmpDiversify type check default false");
+        output.WriteLine("option name SmpAspDiversify type check default false");
+        output.WriteLine("option name SmpVoteAll type check default false");
         output.WriteLine("option name CutNodeLmr type check default false");
         output.WriteLine("option name FailLowCorrection type check default false");
         output.WriteLine("option name MoveCountLmr type check default false");
@@ -112,6 +145,11 @@ public sealed class UciOptions
         output.WriteLine("option name HistoryBonus type check default false");
         output.WriteLine("option name CorrectionLmr type check default false");
         output.WriteLine("option name KillerShallowing type check default true");
+        output.WriteLine("option name TbPvCap type check default false");
+        output.WriteLine("option name TbResistance type check default true");
+        output.WriteLine("option name CaptureLmr type check default false");
+        output.WriteLine("option name NmpPackage type check default false");
+        output.WriteLine("option name PonderInPlace type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
@@ -184,6 +222,36 @@ public sealed class UciOptions
             case "statscorelmr" when bool.TryParse(value, out bool statLmr):
                 StatScoreLmr = statLmr;
                 return "StatScoreLmr";
+            case "nodetimefactor" when bool.TryParse(value, out bool ntf):
+                NodeTimeFactor = ntf;
+                return "NodeTimeFactor";
+            case "evalstabilitytime" when bool.TryParse(value, out bool est):
+                EvalStabilityTime = est;
+                return "EvalStabilityTime";
+            case "rootsafetynet" when bool.TryParse(value, out bool rsn):
+                RootSafetyNet = rsn;
+                return "RootSafetyNet";
+            case "ponderminthink" when bool.TryParse(value, out bool pmt):
+                PonderMinThink = pmt;
+                return "PonderMinThink";
+            case "easymovewinonly" when bool.TryParse(value, out bool emw):
+                EasyMoveWinOnly = emw;
+                return "EasyMoveWinOnly";
+            case "easymovefiftyguard" when bool.TryParse(value, out bool emf):
+                EasyMoveFiftyGuard = emf;
+                return "EasyMoveFiftyGuard";
+            case "smpovershoottaper" when bool.TryParse(value, out bool sot):
+                SmpOvershootTaper = sot;
+                return "SmpOvershootTaper";
+            case "smpdiversify" when bool.TryParse(value, out bool sdv):
+                SmpDiversify = sdv;
+                return "SmpDiversify";
+            case "smpaspdiversify" when bool.TryParse(value, out bool sad):
+                SmpAspDiversify = sad;
+                return "SmpAspDiversify";
+            case "smpvoteall" when bool.TryParse(value, out bool sva):
+                SmpVoteAll = sva;
+                return "SmpVoteAll";
             case "cutnodelmr" when bool.TryParse(value, out bool cutLmr):
                 CutNodeLmr = cutLmr;
                 return "CutNodeLmr";
@@ -205,6 +273,21 @@ public sealed class UciOptions
             case "killershallowing" when bool.TryParse(value, out bool ks):
                 KillerShallowing = ks;
                 return "KillerShallowing";
+            case "tbpvcap" when bool.TryParse(value, out bool tbc):
+                TbPvCap = tbc;
+                return "TbPvCap";
+            case "tbresistance" when bool.TryParse(value, out bool tbr):
+                TbResistance = tbr;
+                return "TbResistance";
+            case "capturelmr" when bool.TryParse(value, out bool clm):
+                CaptureLmr = clm;
+                return "CaptureLmr";
+            case "nmppackage" when bool.TryParse(value, out bool nmp):
+                NmpPackage = nmp;
+                return "NmpPackage";
+            case "ponderinplace" when bool.TryParse(value, out bool pip):
+                PonderInPlace = pip;
+                return "PonderInPlace";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;

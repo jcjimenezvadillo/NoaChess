@@ -74,6 +74,25 @@ public static class NnueProfiler
         report.AppendLine($"  Refresh CACHED (finny diff)   : {nsRefreshCached,9:F1} ns"
                         + $"   [{nsRefreshCold / Math.Max(nsRefreshCached, 1e-9):F1}x cheaper]");
         report.AppendLine($"  Evaluate (L1 dot + output)    : {nsEval,9:F1} ns");
+        if (network.UsesCoarse)
+        {
+            // The coarse lane is paid per evaluation on top of the dot product,
+            // so its isolated cost is the number to hold against the toll the
+            // bench shows: if the lane is cheap here and the bench still pays,
+            // the cost is in what the lane changes (search shape), not in it.
+            // The lane is stateful, so the honest number alternates two
+            // positions (a conservative stand-in for a search path, where far fewer buckets change); the
+            // same-position figure is the floor where no bucket changes.
+            var child = new Board();
+            Fen.Load(child, ProfilePositions[3]);
+            double nsCoarse = TimeCoarseLane(network, board, child);
+            double nsCoarseFloor = TimeCoarseLane(network, board, board);
+            double nsClassify = TimeCoarseClassify(board, out int relations);
+            report.AppendLine($"  Coarse lane, two positions    : {nsCoarse,9:F1} ns"
+                            + $"   [{nsCoarse / Math.Max(nsEval, 1e-9):F2}x the evaluate; {relations} relations]");
+            report.AppendLine($"  Coarse lane, same position    : {nsCoarseFloor,9:F1} ns"
+                            + $"   [floor: classify {nsClassify:F0} ns + sums, no rows]");
+        }
 
         // Same row op, random rows: the difference against the line above is
         // memory latency and nothing else.
@@ -406,6 +425,44 @@ public static class NnueProfiler
 
         Consume(acc.Values[0][0]);
         return sw.Elapsed.TotalMilliseconds * 1e6 / iterations;
+    }
+
+    private static double TimeCoarseClassify(Board board, out int relations)
+    {
+        Span<byte> counts = stackalloc byte[144];
+        relations = 0;
+        for (int i = 0; i < WarmupIterations; i++)
+            relations = NnueCoarse.Classify(board, counts);
+        var sw = Stopwatch.StartNew();
+        int sink = 0;
+        for (int i = 0; i < MeasureIterations; i++)
+            sink ^= NnueCoarse.Classify(board, counts);
+        sw.Stop();
+        Consume(sink);
+        return sw.Elapsed.TotalMilliseconds * 1e6 / MeasureIterations;
+    }
+
+    private static double TimeCoarseLane(NnueNetwork net, Board a, Board b)
+    {
+        var acc = new NnueAccumulator(net.FtOutputs);
+        acc.Refresh(net, a, Color.White);
+        acc.Refresh(net, a, Color.Black);
+        short[] stm = acc.Values[0];
+        short[] opp = acc.Values[1];
+        short[] outStm = new short[net.FtOutputs];
+        short[] outOpp = new short[net.FtOutputs];
+        var lane = new NnueCoarseLane(net.FtOutputs);
+
+        for (int i = 0; i < WarmupIterations; i++)
+            lane.Apply(net, (i & 1) == 0 ? a : b, stm, opp, outStm, outOpp);
+
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < MeasureIterations; i++)
+            lane.Apply(net, (i & 1) == 0 ? a : b, stm, opp, outStm, outOpp);
+        sw.Stop();
+
+        Consume(outStm[0] ^ outOpp[net.FtOutputs - 1]);
+        return sw.Elapsed.TotalMilliseconds * 1e6 / MeasureIterations;
     }
 
     private static double TimeEvaluate(NnueNetwork net, Board board)

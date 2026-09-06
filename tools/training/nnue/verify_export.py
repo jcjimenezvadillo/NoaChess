@@ -38,6 +38,7 @@ ARCH_THREATS = 4
 # format version 2, whose header is eight bytes longer.
 ARCH_DUAL = 5
 ARCH_FLAG_THREATS = 1 << 1
+ARCH_FLAG_COARSE = 1 << 2
 PAIR_SHIFT = 7
 
 _PIECE_CHARS = {"p": 0, "n": 1, "b": 2, "r": 3, "q": 4, "k": 5}
@@ -130,6 +131,11 @@ def load_model(path):
     if psqt_buckets > 0:
         ps_w = take(ft_in * psqt_buckets, np.int32).reshape(ft_in, psqt_buckets)
 
+    # Coarse lane, the true last block: 144 x ft_out int16 on the qa grid.
+    co_w = None
+    if flags & ARCH_FLAG_COARSE:
+        co_w = take(144 * ft_out, np.int16).reshape(144, ft_out)
+
     if offset != payload_len:
         raise SystemExit(f"{path}: payload length mismatch ({offset} read, {payload_len} declared)")
 
@@ -137,7 +143,7 @@ def load_model(path):
                 buckets=buckets, qa=qa, qb=qb, out_scale=out_scale,
                 ft_w=ft_w, ft_b=ft_b, l1_w=l1_w, l1_b=l1_b,
                 l2_w=l2_w, l2_b=l2_b, out_w=out_w, out_b=out_b,
-                th_w=th_w, ps_w=ps_w, psqt_buckets=psqt_buckets)
+                th_w=th_w, ps_w=ps_w, psqt_buckets=psqt_buckets, co_w=co_w)
 
 
 def _dual_activate(pre, qa, qb):
@@ -202,6 +208,23 @@ def evaluate(model, fen):
             white, black = threats.active_threats(occupancy, nibbles)
             for index in (white if perspective == 0 else black):
                 acc += model["th_w"][index].astype(np.int32)
+
+        # The coarse lane: same shape as the threat sum - into the same
+        # accumulator, before the clamp - using the probe's own enumeration
+        # and bucketing, which the C# encoder has 3000/3000 parity with.
+        if model.get("co_w") is not None:
+            occupancy = 0
+            codes = []
+            for square, ptype, colour in sorted(pieces):
+                occupancy |= 1 << square
+                codes.append(colour * 6 + ptype)
+            nibbles = bytearray(16)
+            for i, code in enumerate(codes):
+                nibbles[i >> 1] |= code << (4 * (i & 1))
+            from probe_coarse import coarse_relations, coarse_buckets
+            rel = coarse_relations(occupancy, bytes(nibbles))
+            for bucket_id in coarse_buckets(rel, perspective):
+                acc += model["co_w"][bucket_id].astype(np.int32)
 
         accumulators.append(acc)
 
