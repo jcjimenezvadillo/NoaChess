@@ -1088,6 +1088,24 @@ public sealed class AlphaBetaSearch
     // seen and stay prunable, as before. Off until measured at fixed nodes.
     public bool UseCheckExemptFutility = false;
 
+    // Clamp the window to the mate scores this ply can still produce (audit
+    // find, 2026-09-06). This engine has never had the reference's step 3: a
+    // node could keep searching for a mate in 9 with a mate in 3 already known
+    // above it, and the deeper node had no way to notice the answer could not
+    // matter. Two compares per node, and they cut the node outright whenever a
+    // shorter mate is already in hand. Off until measured at fixed nodes: it
+    // changes node counts.
+    public bool UseMateDistancePruning = false;
+
+    // Take the transposition cutoff only at non-PV nodes (audit find,
+    // 2026-09-06). Our quiescence already gates its cutoff on the window;
+    // Negamax did not, so a stored bound could end a PV node early. The line
+    // reported then comes from whatever the table holds rather than from a
+    // search of this window, which both costs PV accuracy and can truncate it.
+    // The reference has never cut at PV nodes. Off until measured at fixed
+    // nodes: it changes node counts.
+    public bool UseTtNoPvCutoff = false;
+
     // ---- Lazy SMP worker diversification ----
     //
     // 0 is the main worker; helpers get 1, 2, 3... Until 2026-09-01 helpers
@@ -1312,6 +1330,26 @@ public sealed class AlphaBetaSearch
         if (_rootMoves.Count == 0)
             return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
         int legalRootMoveCount = _rootMoves.Count;
+
+        // ---- Illegal root: the side NOT to move is in check ----
+        // No game reaches this, but a GUI can set such a position up by hand
+        // and press go. Searching it captures the enemy king within a ply, and
+        // from there the board has no king for one side: KingSquare answers 64
+        // and the first attack lookup reads past its table. The UCI layer turns
+        // the resulting exception into "bestmove 0000", which a GUI reads as
+        // "no move at all" (found 2026-09-06 by an audit probe, present in
+        // every release). Answer with the capture instead: it is what the
+        // search would return if it could finish, and it costs one attack test
+        // per search - never per node.
+        Color them = Board.OppositeColor(board.SideToMove);
+        int theirKing = board.KingSquare(them);
+        if (theirKing < 64 && board.IsSquareAttacked(theirKing, board.SideToMove))
+        {
+            for (int i = 0; i < _rootMoves.Count; i++)
+                if (_rootMoves[i].To == theirKing)
+                    return new SearchResult(_rootMoves[i], MateScore, 1);
+            return new SearchResult(_rootMoves[0], 0, 1);
+        }
 
         // ---- Syzygy root filtering ----
         // Knowing the position is won is not enough to WIN it: with no distance
@@ -2579,7 +2617,31 @@ public sealed class AlphaBetaSearch
                 return alpha;
         }
 
+        // ---- Mate distance pruning ----
+        // The best this node can possibly return is a mate delivered on the
+        // very next ply, and the worst is being mated right here. Clamping the
+        // window to that range costs two compares and cuts the whole node
+        // whenever a shorter mate is already known higher up the tree, which
+        // also stops the search from wandering off after longer mates once it
+        // has found a short one. Reference step 3, applied at every non-root
+        // node (this function is never called with ply 0).
+        if (UseMateDistancePruning)
+        {
+            int mated = -MateScore + ply;
+            if (mated > alpha)
+                alpha = mated;
+            int mating = MateScore - (ply + 1);
+            if (mating < beta)
+                beta = mating;
+            if (alpha >= beta)
+                return alpha;
+        }
+
         // ---- Transposition table probe ----
+        // Whether this node owns a real window, decided before anything below
+        // narrows it. The reference carries the same fact as a template
+        // parameter, so it never changes inside the node.
+        bool pvWindow = beta - alpha != 1;
         Move ttMove = Move.None;
         bool ttHit = _tt.Probe(board.ZobristKey, out TTEntry entry);
         if (ttHit)
@@ -2591,7 +2653,13 @@ public sealed class AlphaBetaSearch
             // allows a conclusion within the current window (None = eval-only
             // entry, no score). Never in singular verification mode: the
             // entry describes the search WITH the excluded move available.
+            //
+            // The reference takes this cutoff only at non-PV nodes: on the
+            // principal variation a stored bound ends the node early and the
+            // line it reports is whatever the table happens to hold, so the PV
+            // both loses accuracy and can come back truncated.
             if (entry.Depth >= depth && excluded == Move.None
+                && (!UseTtNoPvCutoff || !pvWindow)
                 && CanReuseTtScore(entry.Score, board.HalfmoveClock)
                 && entry.Bound != BoundType.None)
             {

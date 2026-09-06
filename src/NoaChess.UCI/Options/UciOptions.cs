@@ -40,6 +40,10 @@ public sealed class UciOptions
     public bool QsStackMove { get; private set; }
     // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
     public bool CheckExemptFutility { get; private set; }
+    // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
+    public bool MateDistancePruning { get; private set; }
+    // Transposition cutoff refused at PV nodes (see AlphaBetaSearch.UseTtNoPvCutoff).
+    public bool TtNoPvCutoff { get; private set; }
     // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
     public bool EasyMoveFiftyGuard { get; private set; } = true;
     // Break ties between equal-scored root moves in drawn positions (see AlphaBetaSearch).
@@ -143,6 +147,8 @@ public sealed class UciOptions
         output.WriteLine("option name RootStaticEval type check default false");
         output.WriteLine("option name QsStackMove type check default false");
         output.WriteLine("option name CheckExemptFutility type check default false");
+        output.WriteLine("option name MateDistancePruning type check default false");
+        output.WriteLine("option name TtNoPvCutoff type check default false");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
         output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
@@ -257,6 +263,12 @@ public sealed class UciOptions
             case "checkexemptfutility" when bool.TryParse(value, out bool cef):
                 CheckExemptFutility = cef;
                 return "CheckExemptFutility";
+            case "matedistancepruning" when bool.TryParse(value, out bool mdp):
+                MateDistancePruning = mdp;
+                return "MateDistancePruning";
+            case "ttnopvcutoff" when bool.TryParse(value, out bool tnp):
+                TtNoPvCutoff = tnp;
+                return "TtNoPvCutoff";
             case "easymovefiftyguard" when bool.TryParse(value, out bool emf):
                 EasyMoveFiftyGuard = emf;
                 return "EasyMoveFiftyGuard";
