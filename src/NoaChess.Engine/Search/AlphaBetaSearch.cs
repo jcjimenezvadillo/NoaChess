@@ -1089,13 +1089,23 @@ public sealed class AlphaBetaSearch
     public bool UseCheckExemptFutility = false;
 
     // Clamp the window to the mate scores this ply can still produce (audit
-    // find, 2026-09-06). This engine has never had the reference's step 3: a
+    // find, 2026-09-06). This engine had never had the reference's step 3: a
     // node could keep searching for a mate in 9 with a mate in 3 already known
     // above it, and the deeper node had no way to notice the answer could not
     // matter. Two compares per node, and they cut the node outright whenever a
-    // shorter mate is already in hand. Off until measured at fixed nodes: it
-    // changes node counts.
-    public bool UseMateDistancePruning = false;
+    // shorter mate is already in hand.
+    //
+    // ON since v5.6.0, and the only option of this audit that ships enabled.
+    // Both clamps are theorems, not heuristics - no line can score better than
+    // mating on the next ply, nor worse than being mated on this one - so the
+    // nodes they remove are exactly the ones whose result cannot matter.
+    // Measured: the 60-position bench at depth 12 returns 14,994,140 nodes with
+    // it on or off, to the node; over a suite of mating positions at depth 14 it
+    // finds the same move with the same mate distance for 239 nodes instead of
+    // 308,528 (mate in 1), 2,319 instead of 748,527 (mate in 2) and 16,282
+    // instead of 183,934 (mate in 3). That is clock this engine used to spend
+    // confirming a mate it had already found.
+    public bool UseMateDistancePruning = true;
 
     // Take the transposition cutoff only at non-PV nodes (audit find,
     // 2026-09-06). Our quiescence already gates its cutoff on the window;
