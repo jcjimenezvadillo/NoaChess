@@ -30,6 +30,12 @@ public sealed class UciOptions
     public bool NodeTimeFactor { get; private set; }
     public bool EvalStabilityTime { get; private set; }
     public bool RootSafetyNet { get; private set; }
+    // Floor on the fresh thinking after a ponderhit (see AlphaBetaSearch.UsePonderMinThink).
+    public bool PonderMinThink { get; private set; }
+    // Easy-move cut only when winning (see AlphaBetaSearch.UseEasyMoveWinOnly).
+    public bool EasyMoveWinOnly { get; private set; } = true;
+    // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
+    public bool EasyMoveFiftyGuard { get; private set; } = true;
     public bool SmpOvershootTaper { get; private set; }
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
@@ -124,6 +130,9 @@ public sealed class UciOptions
         output.WriteLine("option name NodeTimeFactor type check default false");
         output.WriteLine("option name EvalStabilityTime type check default false");
         output.WriteLine("option name RootSafetyNet type check default false");
+        output.WriteLine("option name PonderMinThink type check default false");
+        output.WriteLine("option name EasyMoveWinOnly type check default true");
+        output.WriteLine("option name EasyMoveFiftyGuard type check default true");
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
@@ -221,6 +230,15 @@ public sealed class UciOptions
             case "rootsafetynet" when bool.TryParse(value, out bool rsn):
                 RootSafetyNet = rsn;
                 return "RootSafetyNet";
+            case "ponderminthink" when bool.TryParse(value, out bool pmt):
+                PonderMinThink = pmt;
+                return "PonderMinThink";
+            case "easymovewinonly" when bool.TryParse(value, out bool emw):
+                EasyMoveWinOnly = emw;
+                return "EasyMoveWinOnly";
+            case "easymovefiftyguard" when bool.TryParse(value, out bool emf):
+                EasyMoveFiftyGuard = emf;
+                return "EasyMoveFiftyGuard";
             case "smpovershoottaper" when bool.TryParse(value, out bool sot):
                 SmpOvershootTaper = sot;
                 return "SmpOvershootTaper";

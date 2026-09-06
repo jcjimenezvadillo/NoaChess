@@ -1,4 +1,110 @@
 # CHANGELOG
+## 2026-09-06 (v5.5.0) - the engine stops giving pieces away when it is losing
+
+**The release, in one line: the clock rules stopped treating a lost position as a decided one.** The
+easy-move rule cuts the budget to 12% of the optimum when a decisive score has held for six
+iterations, and it tested the ABSOLUTE score, so being crushed counted as "decided" exactly like
+crushing. Measured on the bot: over 754 games, 37% reach a score below -7 and 42% of the 6,075 moves
+played there were instantaneous, at a median depth of 15 against 23 for the rest - and not one of
+those 278 games was ever drawn. `EasyMoveWinOnly` restricts the cut to winning scores;
+`EasyMoveFiftyGuard` also suspends it when the fifty-move counter is above 60 half-moves, which is
+where ten of the thirteen audited conversion failures were played. Both default ON.
+
+**What the measurements say, without varnish.** Self-play at 60+1 with pondering on both sides:
+**-4.5 Elo [-21.0, +12.1] over 390 games**, LLR -1.33, no verdict, which is what a rule that only
+acts in already-decided positions is expected to give - 74% of those games were drawn. The clock
+cost is measured and it is zero: 0.88 s against 0.74 s per move inside the decisive band, and the
+median clock low point is 16.8 s against 16.0 s, so the candidate reaches the end of the game with
+MORE cushion, not less. The behavioural gain is not a matter of opinion: on the bot, instantaneous
+moves in lost positions fell from **41.9% to 9.0%** and their depth rose from 15 to 19, and over 91
+games the release candidate gained 53 rating points where its rating expected 0.426. The rapid
+rating went from 2606 to 2664 in three days. This ships under the tie rule: zero measured cost plus
+an improvement proven by another route.
+
+**Also measured and NOT shipped**: `PonderMinThink`, which bounds the fresh thinking after a
+ponderhit (the relaunch was answering in 1 ms, inheriting the transposition table's confidence, and
+at 600+1 that left 6:55 unused on the clock). Its first version forfeited on time at 60+1 (1-6-20
+with three forfeits); the bounded second version costs 1,568 s of clock across an experiment against
+the easy-move fix's 55 s, because it touches 98% of the moves instead of 2%. It stays default-off
+with its numbers until it is measured at a long control, which is where it belongs.
+
+**The coarse threat lane** (the work below) is not in this release: its net wins its attribution
+(**+17.7 Elo [+4.7, +30.7], H1 over 1,339 fixed-node games**) and is **neutral at the clock (+2.6
+[-14.8, +20.0] over 406 games)**, which proves the incremental lane pays for its own cost - the fine
+threats never did. The net that combines it with the champion corpus is training now.
+
+
+**The coarse threat lane was priced before its net exists, and the price was too high.** A
+`nnueprofile` line now times the lane in isolation: the first cut cost ~1,500 ns per evaluation on
+a busy middlegame - three times the entire L1 dot product - and the bench put a coarse net at
+**0.60x NPS**, a toll of nearly -50 Elo against the +36 the lane is expected to bring. The split
+was the finding: classification ~150 ns, row arithmetic ~900 ns. Fifty relations in ~40 distinct
+buckets stream two 256-byte rows each, and those rows were already near the hardware floor
+(histogram, popcount classification and ref-based AVX2 loads together moved it 7%). What had to
+fall was the number of rows, and it falls because consecutive evaluations along a search path
+share almost all of their histogram. The lane is now stateful (`NnueCoarseLane`): it keeps the last
+144-bucket histogram and its own two sums (white- and black-relative, so the side to move never
+forces a recomputation), classifies the position, diffs against the previous histogram, and streams
+rows only for the buckets whose count changed, scaled by the signed delta. Integer arithmetic
+makes it exact and order-independent, so every accumulator value is bit-identical to summing from
+zero: **17,229,970 nodes at depth 12, unchanged; 378 tests.** Quiet-machine bench: **0.60x ->
+0.73x NPS** on the coarse path (+22.6%), which by the 65-Elo-per-doubling calibration returns
+about +18 Elo to whatever the coarse net measures. The floor is now ~330 ns per evaluation
+(classification plus the two sums); the remaining lever is an incremental histogram, which brings
+back the ray geometry that sank the fine threat features, so it waits for the net's own verdict.
+
+**The trainer was paying the same tax on the other side.** The first uncapped coarse epoch took
+92 minutes (a 60-epoch run of ~90 hours) with the GPU at 38%, and a profile of the streaming
+loader put 96% of its 55 ms per batch in one numpy function - the perspective flip of the coarse
+ids, running on the TRAINING thread, serialized with the GPU step. It now runs on the device as a
+145-entry gather (identical on 65,536 real rows, and asserted against the numpy reference on the
+first batch of every run), and the CSR expansion lost its per-row Python loop (identical on
+103,305 real rows, a shard tail and synthetic edge cases). Data, order and RNG untouched, so the
+run is still the attribution arm it was meant to be: **epoch 1 fell from 92 to 56 minutes and the
+GPU rose to 85%**; the 1.7 epochs already trained were discarded to get there.
+
+**The engine stopped thinking when it was losing, and that is what the bot's worst games were made of.**
+Three games flagged on 2026-09-04, one per time control, all with the same fingerprint: a rapid game
+(600+1) where 26 moves scored past -7 got a median of ZERO seconds at depth 15 while the other 66 got
+6 seconds at depth 23, and the engine shuffled a knight until it hung it with 20 seconds unused; a
+bullet game that shed four pawns the same way; and a 180+2 game that answered in 53 ms with 48
+seconds on the clock and dropped a rook (a 10.7 pawn error by the arbiter). The cause is the easy-move
+rule: a decisive score that has held for six iterations cuts the budget to 12% of the optimum, and the
+test is on the ABSOLUTE score, so being crushed counts as "decided" exactly like crushing. Banking the
+clock is right when winning, since the conversion is easy and the saved time buys something later;
+when losing there is no later, and the cheap moves throw away whatever defence was left. Across 754
+games since 2026-08-28, 37% reach a score below -7, and 42% of the 6,075 moves played in that band
+were instantaneous - and not one of those 278 games was ever drawn. The same footprint appears on the
+winning side (52% instantaneous at +7 or better, median depth 13), which is where several of the
+audited conversion failures were played. `EasyMoveWinOnly` restricts the cut to winning scores;
+`PonderMinThink` bounds the fresh thinking after a ponderhit to [0.3, 0.6] of the optimum, replacing a
+floor-only first version that forfeited on time at 60+1 (1-6-20 with three forfeits, stopped and kept
+as a tombstone). Behavioural gate over the 15 flagged positions at their real clocks, graded by a
+3613-rated arbiter with tablebases: total loss 20.01 down to 12.73, with the dropped rook replaced by
+a move that loses 3.5 instead of 14.7. Both are default-off options measured as one package under the
+deployment gate, since they are one subsystem: how much time to spend once the search believes the
+answer is settled.
+
+**The release gate now measures the bot's own regime, and the first audit under it is in.** A day
+of lichess ratings raised the question of whether v5.4.0 was actually stronger on the Mac bot than
+v5.3.0 had been, and the honest answer was that nobody had measured the package as the bot plays
+it: the net's +18.7 came from 100k fixed nodes on one thread, the gauntlet is single-threaded, and
+the bot plays four threads at 60+1 with tablebases and pondering. Three things were verified from
+disk before anything else: the deployed binary, its embedded net and options; the bot's own game
+records (depth per move equal or one ply deeper than v5.3.0 at the same seconds per move, zero time
+forfeits); and an arbiter pass (a 3613-rated engine with six-man tablebases at depth 22) over every
+draw since 30 August, which found not one position the arbiter scores above +1.2 for the bot in its
+last forty moves, while our own evaluation had called several of those endings +2.5 to +5.9. The
+net inflates fortresses (opposite-coloured bishops, a wrong bishop with a rook pawn, blocked pawns);
+the games were not thrown, but the blind spot is real and is logged as a data item (tablebase
+labels for the generator). The gate that closes the gap has three parts and every bot replacement
+now goes through it: an SPRT of the published package against the previous release in the bot's
+regime (four threads, 60+1, Hash 512, tablebases, then with ponder), a two-minute throughput check
+on the destination host (`audit/host_health.py`, new binary against the running one at the bot's
+thread count, NPS within 4% and depth not lower; on the Mac v5.4.0 measured depth 19 = 19 and
++1.9% NPS against v5.3.0 with the machine idle), and a depth audit from the bot's records after 24
+hours. The package SPRT for v5.4.0 under this gate is in: **+41.6 [+21.3, +62.1], LLR +3.46, H1 over 294 games at four threads and 60+1 with tablebases, zero time forfeits** - the release is stronger as the bot plays it, not only at fixed nodes. The same match with pondering on both sides follows.
+
 ## 2026-09-02 (v5.4.0) - the human corpus pays, and the RyzenGate case closes
 
 **The net: fqhuman, +18.7 Elo [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
@@ -17,7 +123,7 @@ byte-identical, and the limit itself was never touched - a silent int16 overflow
 it just plays worse, which is why the guard exists at all.
 
 **Also in this release**: the transposition-table rewrite and the whole SMP investigation below;
-`TbPvCap` ON by default (tablebase-LOST positions no longer shed material to delay TB entry - the
+`TbResistance` ON by default (tablebase-LOST positions no longer shed material to delay TB entry - the
 flat -TbWin+ply score rewarded postponing the *entry*, not the defeat, and 108 of 367 audited bot
 games sat in that band); the ponder freeze hole closed unconditionally (a ponderhit racing the
 search task start could convert stale budget fields and leave a clockless search); and the

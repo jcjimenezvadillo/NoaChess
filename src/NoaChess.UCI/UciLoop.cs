@@ -1005,6 +1005,12 @@ public sealed class UciLoop
             _engine.UseEvalStabilityTime = _options.EvalStabilityTime;
         if (changed == "RootSafetyNet")
             _engine.UseRootSafetyNet = _options.RootSafetyNet;
+        if (changed == "PonderMinThink")
+            _engine.UsePonderMinThink = _options.PonderMinThink;
+        if (changed == "EasyMoveWinOnly")
+            _engine.UseEasyMoveWinOnly = _options.EasyMoveWinOnly;
+        if (changed == "EasyMoveFiftyGuard")
+            _engine.UseEasyMoveFiftyGuard = _options.EasyMoveFiftyGuard;
         if (changed == "SmpOvershootTaper")
             _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
         if (changed == "SmpDiversify")

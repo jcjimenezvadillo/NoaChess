@@ -972,9 +972,46 @@ public sealed class AlphaBetaSearch
     // losing, or without a mate the completed one had already proved.
     public bool UseRootSafetyNet = false;
 
+    // Minimum NEW thinking after a ponderhit, as a share of the optimum.
+    //
+    // The relaunch after a ponderhit re-reaches the pondered depth over the
+    // warm table in a millisecond, and from there two things cut it short:
+    // the pondered time is charged against the budget (up to half the soft
+    // optimum) and the obvious-move rule reads settled-by-depth-4 and a node
+    // share near 1.0, both INHERITED from the ponder, and cuts to 12-30% of
+    // the optimum. At 60+1 the optimum is a second or two and the relaunch
+    // already spends about half of it (median 0.93-1.09 s on the bot), so
+    // this changes almost nothing there. At 600+2 the same rules answered 23
+    // ponderhits in 2-7 s against 35-49 s on the six misses, and the game
+    // (fz29OQxm, 2026-09-04) ended in a repetition draw with 6:55 unused on
+    // the clock against the opponent's 2:52. This floor makes the relaunch
+    // spend at least PonderhitMinShare of the optimum in fresh nodes, measured
+    // from the relaunch itself (the offset is excluded), unless the score is
+    // decisive (easy move) - and, since the floor-only version forfeited on
+    // time at 60+1, also CAPPED at RelaunchMaxShare so a relaunch never spends
+    // like a fresh move. Off by default until measured under the deployment
+    // gate: 60+1 with ponder for safety, 180+2 for the gain.
+    public bool UsePonderMinThink = false;
+    private const double RelaunchMinShare = 0.3;
+    private const double RelaunchMaxShare = 0.6;
+    // True for a search relaunched after a ponderhit (it carries a ponder credit).
+    private bool _relaunch;
+
     // Shrink the mid-iteration overshoot allowance as threads are added, so
     // the licence matches the stop granularity. No effect at one thread.
     public bool UseSmpOvershootTaper = false;
+
+    // Suspend the easy-move cut when the fifty-move counter is high, which is
+    // where conversion needs precision (see the easy-move block). Clock mode
+    // only; node counts at fixed depth and fixed nodes are untouched.
+    public bool UseEasyMoveFiftyGuard = true;
+    private const int EasyMoveFiftyGuardClock = 60; // half-moves without pawn move or capture
+
+    // Restrict the easy-move budget cut to WINNING decisive scores, so a lost
+    // position keeps the full budget (see the easy-move block for the three
+    // production games that measured why). Clock mode only; fixed-depth and
+    // fixed-node searches are untouched, so node counts stay identical.
+    public bool UseEasyMoveWinOnly = true;
 
     // ---- Lazy SMP worker diversification ----
     //
@@ -1169,6 +1206,7 @@ public sealed class AlphaBetaSearch
         _softDeadlineMs = limits.SoftTimeMs;
         _maxNodes = limits.MaxNodes;
         _elapsedOffsetMs = limits.ElapsedOffsetMs;
+        _relaunch = limits.ElapsedOffsetMs > 0;
         _convertedPonder = false;
         _timer.Restart();
 
@@ -1738,8 +1776,40 @@ public sealed class AlphaBetaSearch
                 // iterations will not change. Play it on a fraction of the
                 // budget and bank the clock rather than spend the full optimum
                 // on an obvious move. Only after a trustworthy depth.
+                //
+                // MEASURED IN PRODUCTION, 2026-09-04: the rule is symmetric in
+                // the score, and being decisively LOST is not a reason to stop
+                // thinking. Three games the same day, one per time control:
+                // rapid BSmM1FxX (600+1) spent a median 0 s at depth 15 on the
+                // 26 moves scored past -7, against 6 s at depth 23 on the rest,
+                // and shuffled a knight until it hung it; 60+2 QRnmayrV gave
+                // away four pawns the same way; 180+2 VRnJEzKA answered in 53 ms
+                // with 48 s on the clock and dropped a rook (-10.7 by arbiter).
+                // Banking the clock is right when WINNING - the conversion is
+                // easy and the saved time is worth something later. When
+                // losing, the saved time is worth nothing (there is no later)
+                // and the cheap moves throw away the defence that might still
+                // hold. EasyMoveWinOnly restricts the cut to winning scores.
+                bool decisive = UseEasyMoveWinOnly
+                    ? score >= EasyMoveMargin
+                    : Math.Abs(score) >= EasyMoveMargin;
+                // And the other half of the same rule: a WON position is not a
+                // reason to hurry either when the fifty-move counter is the
+                // real opponent. Of the 13 conversion failures audited on
+                // 2026-09-03 (draws the bot entered with its own evaluation at
+                // +1.5 or better), TEN were fifty-move draws in endings the
+                // engine kept calling +2 to +6 while playing them at a median
+                // depth of 13 - the cut fires at +7 and the arbiter scored
+                // those same positions 0.00, so the search never got the time
+                // to find out the win was not there, or to find it when it
+                // was. Above this counter the cut is suspended and the normal
+                // budget applies; below it nothing changes, so the clock
+                // banking that the rule exists for is untouched.
+                bool fiftyPressure = UseEasyMoveFiftyGuard
+                    && board.HalfmoveClock >= EasyMoveFiftyGuardClock;
                 bool easyMoveEligible = depth >= EasyMoveMinDepth
-                    && Math.Abs(score) >= EasyMoveMargin
+                    && decisive
+                    && !fiftyPressure
                     && lastBestMoveDepth + EasyMoveStableDepth <= depth;
                 if (easyMoveEligible)
                     totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
@@ -1774,7 +1844,28 @@ public sealed class AlphaBetaSearch
                 // repeated self-play position resolving in a couple of cheap
                 // iterations, for instance - which this alone cannot name, but
                 // ruling out the two known causes narrows it down by elimination.
+                // Ponderhit WINDOW (see UsePonderMinThink): a relaunch gets a
+                // bounded amount of FRESH thinking, [min, max] x optimum on top
+                // of the pondered credit, whatever the shortcuts or the dynamic
+                // factors say. A floor alone was measured and rejected the same
+                // day it was written: once it kept the search alive past the
+                // obvious-move cut, the instability factors took over and the
+                // relaunch spent like a fresh move (7-9 s single moves at 60+1,
+                // three time forfeits in the first 27 games with ponder on both
+                // sides). The cap is what keeps bullet's clock profile; the
+                // floor is what stops the 1 ms answers at longer controls.
+                bool ponderWindow = false;
+                if (UsePonderMinThink && _relaunch && !easyMoveEligible)
+                {
+                    double lo = _elapsedOffsetMs + _softTimeMs * RelaunchMinShare;
+                    double hi = _elapsedOffsetMs + _softTimeMs * RelaunchMaxShare;
+                    double clamped = Math.Clamp(totalTime, lo, hi);
+                    ponderWindow = clamped != totalTime;
+                    totalTime = Math.Min(clamped, _hardTimeMs);
+                }
+
                 string reason = easyMoveEligible ? "easy-move"
+                              : ponderWindow ? "ponder-window"
                               : obviousMoveEligible ? "obvious-move"
                               : "budget";
                 if (TimeDebug)

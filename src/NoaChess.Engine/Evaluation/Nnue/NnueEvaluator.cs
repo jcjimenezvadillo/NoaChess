@@ -103,8 +103,11 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
     // time the primitives in isolation. Read-only after load.
     public NnueNetwork Network => _network;
 
-    // Scratch for the coarse lane: accumulator + lane land here so the
-    // incremental accumulator stays untouched. Lazily sized to FtOutputs.
+    // The coarse lane keeps STATE (last histogram, its own two sums) so each
+    // evaluation streams rows only for the buckets a move changed; the
+    // incremental accumulator stays untouched and accumulator + lane land in
+    // the two scratch arrays. Lazily sized to FtOutputs.
+    private NnueCoarseLane? _coarseLane;
     private short[]? _coarseStm, _coarseOpp;
 
     public int Evaluate(Board board)
@@ -115,9 +118,10 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
 
         if (_network.UsesCoarse)
         {
+            _coarseLane ??= new NnueCoarseLane(_network.FtOutputs);
             _coarseStm ??= new short[_network.FtOutputs];
             _coarseOpp ??= new short[_network.FtOutputs];
-            NnueCoarse.AddLanes(_network, board, stmAcc, oppAcc, _coarseStm, _coarseOpp);
+            _coarseLane.Apply(_network, board, stmAcc, oppAcc, _coarseStm, _coarseOpp);
             stmAcc = _coarseStm;
             oppAcc = _coarseOpp;
         }
