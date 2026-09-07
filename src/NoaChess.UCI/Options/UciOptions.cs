@@ -49,6 +49,19 @@ public sealed class UciOptions
     // Break ties between equal-scored root moves in drawn positions (see AlphaBetaSearch).
     public bool DrawTieBreak { get; private set; }
     public bool SmpOvershootTaper { get; private set; }
+    // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
+    public bool RepetitionAfterRoot { get; private set; }
+    public bool NmpNonPvOnly { get; private set; }
+    public bool TtEvalRefine { get; private set; }
+    public bool TtKeepMoveOnFailLow { get; private set; } = true;
+    public bool TtMateReuse { get; private set; }
+    public bool RootScoreOrdering { get; private set; }
+    public bool Razoring { get; private set; }
+    public bool LmpAllDepths { get; private set; }
+    public bool QuietSeePrune { get; private set; }
+    public bool CaptureSeePruneDeep { get; private set; }
+    // Percent multiplier on the clock optimum (see TimeManager.FromClock).
+    public int TimeScale { get; private set; } = 100;
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
@@ -155,6 +168,17 @@ public sealed class UciOptions
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
         output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
+        output.WriteLine("option name RepetitionAfterRoot type check default false");
+        output.WriteLine("option name NmpNonPvOnly type check default false");
+        output.WriteLine("option name TtEvalRefine type check default false");
+        output.WriteLine("option name TtKeepMoveOnFailLow type check default true");
+        output.WriteLine("option name TtMateReuse type check default false");
+        output.WriteLine("option name RootScoreOrdering type check default false");
+        output.WriteLine("option name Razoring type check default false");
+        output.WriteLine("option name LmpAllDepths type check default false");
+        output.WriteLine("option name QuietSeePrune type check default false");
+        output.WriteLine("option name CaptureSeePruneDeep type check default false");
+        output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
@@ -283,6 +307,39 @@ public sealed class UciOptions
             case "smpovershoottaper" when bool.TryParse(value, out bool sot):
                 SmpOvershootTaper = sot;
                 return "SmpOvershootTaper";
+            case "repetitionafterroot" when bool.TryParse(value, out bool rar):
+                RepetitionAfterRoot = rar;
+                return "RepetitionAfterRoot";
+            case "nmpnonpvonly" when bool.TryParse(value, out bool nnp):
+                NmpNonPvOnly = nnp;
+                return "NmpNonPvOnly";
+            case "ttevalrefine" when bool.TryParse(value, out bool ter):
+                TtEvalRefine = ter;
+                return "TtEvalRefine";
+            case "ttkeepmoveonfaillow" when bool.TryParse(value, out bool tkm):
+                TtKeepMoveOnFailLow = tkm;
+                return "TtKeepMoveOnFailLow";
+            case "ttmatereuse" when bool.TryParse(value, out bool tmr):
+                TtMateReuse = tmr;
+                return "TtMateReuse";
+            case "rootscoreordering" when bool.TryParse(value, out bool rso):
+                RootScoreOrdering = rso;
+                return "RootScoreOrdering";
+            case "razoring" when bool.TryParse(value, out bool rz):
+                Razoring = rz;
+                return "Razoring";
+            case "timescale" when int.TryParse(value, out int ts):
+                TimeScale = Math.Clamp(ts, 50, 200);
+                return "TimeScale";
+            case "lmpalldepths" when bool.TryParse(value, out bool lad):
+                LmpAllDepths = lad;
+                return "LmpAllDepths";
+            case "quietseeprune" when bool.TryParse(value, out bool qsp):
+                QuietSeePrune = qsp;
+                return "QuietSeePrune";
+            case "captureseeprunedeep" when bool.TryParse(value, out bool csp):
+                CaptureSeePruneDeep = csp;
+                return "CaptureSeePruneDeep";
             case "smpdiversify" when bool.TryParse(value, out bool sdv):
                 SmpDiversify = sdv;
                 return "SmpDiversify";

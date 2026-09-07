@@ -307,9 +307,18 @@ public class SyzygyScoreTests
         Assert.Equal(-AlphaBetaSearch.TbWin, storedLoss);
         Assert.Equal(AlphaBetaSearch.TbWin - 3, InvokePrivate<int>("FromTT", storedWin, 3));
         Assert.Equal(-AlphaBetaSearch.TbWin + 3, InvokePrivate<int>("FromTT", storedLoss, 3));
-        Assert.True(InvokePrivate<bool>("CanReuseTtScore", storedWin, 0));
-        Assert.False(InvokePrivate<bool>("CanReuseTtScore", storedWin, 1));
-        Assert.True(InvokePrivate<bool>("CanReuseTtScore", 500, 99));
+        Assert.True(InvokePrivate<bool>("CanReuseTtScore", storedWin, 0, false));
+        Assert.False(InvokePrivate<bool>("CanReuseTtScore", storedWin, 1, false));
+        Assert.True(InvokePrivate<bool>("CanReuseTtScore", 500, 99, false));
+
+        // Mate reuse (audit 2026-09-08): a node-relative mate in 5 plies is
+        // reusable while the clock leaves room for it, never a tablebase score.
+        int mateIn5 = AlphaBetaSearch.MateScore - 5;
+        Assert.False(InvokePrivate<bool>("CanReuseTtScore", mateIn5, 1, false));
+        Assert.True(InvokePrivate<bool>("CanReuseTtScore", mateIn5, 1, true));
+        Assert.True(InvokePrivate<bool>("CanReuseTtScore", -mateIn5, 95, true));
+        Assert.False(InvokePrivate<bool>("CanReuseTtScore", mateIn5, 96, true));
+        Assert.False(InvokePrivate<bool>("CanReuseTtScore", storedWin, 1, true));
     }
 
     private static T InvokePrivate<T>(string name, params object[] arguments)

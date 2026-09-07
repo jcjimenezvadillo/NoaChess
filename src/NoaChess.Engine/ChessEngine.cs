@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.7.0";
+    public const string Version = "5.8.0";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -281,6 +281,16 @@ public sealed class ChessEngine
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
+            h.UseRepetitionAfterRoot = _search.UseRepetitionAfterRoot;
+            h.UseNmpNonPvOnly = _search.UseNmpNonPvOnly;
+            h.UseTtEvalRefine = _search.UseTtEvalRefine;
+            h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
+            h.UseTtMateReuse = _search.UseTtMateReuse;
+            h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
+            h.UseRazoring = _search.UseRazoring;
+            h.UseLmpAllDepths = _search.UseLmpAllDepths;
+            h.UseQuietSeePrune = _search.UseQuietSeePrune;
+            h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
@@ -685,6 +695,67 @@ public sealed class ChessEngine
     {
         get => _search.UseSmpDiversify;
         set => _search.UseSmpDiversify = value;
+    }
+
+    // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
+    public bool UseRepetitionAfterRoot
+    {
+        get => _search.UseRepetitionAfterRoot;
+        set => _search.UseRepetitionAfterRoot = value;
+    }
+
+    public bool UseNmpNonPvOnly
+    {
+        get => _search.UseNmpNonPvOnly;
+        set => _search.UseNmpNonPvOnly = value;
+    }
+
+    public bool UseTtEvalRefine
+    {
+        get => _search.UseTtEvalRefine;
+        set => _search.UseTtEvalRefine = value;
+    }
+
+    public bool UseTtKeepMoveOnFailLow
+    {
+        get => _search.UseTtKeepMoveOnFailLow;
+        set => _search.UseTtKeepMoveOnFailLow = value;
+    }
+
+    public bool UseTtMateReuse
+    {
+        get => _search.UseTtMateReuse;
+        set => _search.UseTtMateReuse = value;
+    }
+
+    public bool UseRootScoreOrdering
+    {
+        get => _search.UseRootScoreOrdering;
+        set => _search.UseRootScoreOrdering = value;
+    }
+
+    public bool UseRazoring
+    {
+        get => _search.UseRazoring;
+        set => _search.UseRazoring = value;
+    }
+
+    public bool UseLmpAllDepths
+    {
+        get => _search.UseLmpAllDepths;
+        set => _search.UseLmpAllDepths = value;
+    }
+
+    public bool UseQuietSeePrune
+    {
+        get => _search.UseQuietSeePrune;
+        set => _search.UseQuietSeePrune = value;
+    }
+
+    public bool UseCaptureSeePruneDeep
+    {
+        get => _search.UseCaptureSeePruneDeep;
+        set => _search.UseCaptureSeePruneDeep = value;
     }
 
     public bool UseSmpAspDiversify
