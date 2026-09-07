@@ -263,6 +263,7 @@ public sealed class ChessEngine
             h.UseTbPvCap = _search.UseTbPvCap;
             h.UseTbResistance = _search.UseTbResistance;
             h.UseLostResistance = _search.UseLostResistance;
+            h.LostResistanceBound = _search.LostResistanceBound;
             h.UseCaptureLmr = _search.UseCaptureLmr;
             h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
@@ -559,6 +560,12 @@ public sealed class ChessEngine
     {
         get => _search.UseLostResistance;
         set => _search.UseLostResistance = value;
+    }
+
+    public int LostResistanceBound
+    {
+        get => _search.LostResistanceBound;
+        set => _search.LostResistanceBound = value;
     }
 
     public bool UseCaptureLmr

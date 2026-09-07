@@ -127,6 +127,14 @@ public sealed class AlphaBetaSearch
     // equal. See the probe guard in Negamax for the full reasoning.
     private bool _rootInTb;
 
+    // The root is a plain tablebase LOSS (set by the root filter, 2026-09-07).
+    // Distinct from _rootInTb on purpose: a lost root keeps the in-search
+    // probe ON and lets it fire regardless of the fifty-move clock, so every
+    // losing line scores in the flat band while any line that is MATED within
+    // the horizon scores below it. That is what stops a bare king walking into
+    // the fastest mate, which is what the saturated evaluation used to pick.
+    private bool _rootLostInTb;
+
     // Recomputed after the tablebases are (re)loaded or the limit changes.
     public void RefreshTbLimit()
     {
@@ -898,8 +906,28 @@ public sealed class AlphaBetaSearch
     // same, prefer the one that does not hand the opponent a free capture. A
     // sacrifice that genuinely resists still scores a bucket higher and wins on
     // score. Above the bound nothing changes at all.
-    public bool UseLostResistance = true;
-    private const int LostResistanceBound = 600;   // centipawns, root score
+    //
+    // MEASURED OFF THE SAME DAY (2026-09-07 evening). The 400-to-200 figure
+    // above was judged by the very key the mode optimises - material the
+    // opponent can capture for free - and that is circular. Judged instead by
+    // an independent 3461-rated engine over 101 lost positions from the bot's
+    // own games (reference score before the move minus after it):
+    //
+    //     without the mode      mean loss  99.8   >=300: 11.9%
+    //     bound 600 (shipped)             141.0          16.8%
+    //     bound 400                       119.7          16.0%
+    //     bound 300                       144.6          19.8%
+    //
+    // The mode makes the engine WORSE by an outside judgement at every
+    // threshold: refusing to hang material is not the same as resisting, and
+    // the full-window root search spends nodes a lost position cannot spare.
+    // A fixed-node SPRT read -18.5 +/- 41.8 at 152 games in the same direction.
+    // Kept as an option, OFF. The lesson is the instrument: our own evaluation
+    // and any key derived from it cannot judge a fix for our own blindness.
+    public bool UseLostResistance = false;
+    // Root score at or below which the mode arms, in centipawns. A field so the
+    // behavioural gate can sweep it; 600 is where the bench stays node-identical.
+    public int LostResistanceBound = 600;
     private const int LostResistanceBucket = 100;  // one pawn per bucket
     private bool _rootLostBadly;
 
@@ -1324,6 +1352,7 @@ public sealed class AlphaBetaSearch
         _nodes = 0;
         TbHits = 0;
         _rootInTb = false;
+        _rootLostInTb = false;
         _rootTbResolved = false;
         _stopped = false;
         _softStopped = false;
@@ -2435,11 +2464,59 @@ public sealed class AlphaBetaSearch
         // switches off the flat in-search tablebase scores. Without it every
         // losing continuation would come back as the same number and the search
         // would be just as blind as the filter was.
+        //
+        // REVISED 2026-09-07. Switching the in-search scores off left the
+        // search with only the heuristic evaluation, which saturates in a lost
+        // position and cannot tell mate in two from mate in twenty: measured on
+        // the bot, a bare king against king and queen walked into the fastest
+        // mate available (Ka8, a 1,648-point loss by an independent engine).
+        // The flat scores are no longer blinding since TbResistance can act
+        // (its key was repaired the same day), and mate scores sit BELOW the
+        // band, so with the probe on the search prefers any not-yet-mated
+        // line over a mated one. The clock condition on the probe is lifted
+        // for this root only: with nothing to capture the counter never
+        // returns to zero, and that is precisely the ending that needs it.
         if (Tablebases.Syzygy.ProbeWdl(board, out var lostRoot)
             && lostRoot == Tablebases.WdlScore.Loss)
         {
             TbHits++;
-            _rootInTb = true;
+            _rootLostInTb = true;
+
+            // The one lost case where DTZ IS resistance (added 2026-09-07): no
+            // pawn of ours and nothing of theirs to capture, so the only event
+            // that can zero the counter is the opponent taking one of our
+            // pieces or mating us. Maximising DTZ then means exactly "be
+            // captured or mated as late as possible", and the objection that
+            // sank the filter for lost roots in 5.0.2.1 - it refused to
+            // capture - cannot arise because there is nothing to capture.
+            // Measured on 60 tablebase-lost roots from the bot's games, 25 are
+            // of this kind, and with the probe alone 4 of them still walked
+            // into a mate the search could not see. A slack band of a few
+            // plies keeps the search a choice among the longest defences.
+            Color us = board.SideToMove;
+            bool pawnless = board.Pieces(us, PieceType.Pawn) == 0;
+            bool nothingToTake = true;
+            for (int i = 0; i < n && nothingToTake; i++)
+                if (_rootMoves[i].IsCapture)
+                    nothingToTake = false;
+            if (pawnless && nothingToTake)
+            {
+                Span<int> lostRanks = stackalloc int[n];
+                if (TryRankRootMovesByDtz(board, lostRanks, out int longest))
+                {
+                    const int resistSlack = 4;
+                    var resist = new MoveList();
+                    for (int i = 0; i < n; i++)
+                        if (lostRanks[i] >= longest - resistSlack)
+                            resist.Add(_rootMoves[i]);
+                    if (resist.Count > 0 && resist.Count < n)
+                    {
+                        _rootMoves.Clear();
+                        for (int i = 0; i < resist.Count; i++)
+                            _rootMoves.Add(resist[i]);
+                    }
+                }
+            }
             return;
         }
 
@@ -2800,7 +2877,7 @@ public sealed class AlphaBetaSearch
         if (!_rootInTb
             && pieceCount <= _tbMaxMen
             && (pieceCount < _tbMaxMen || depth >= _tbMinProbeDepth)
-            && board.HalfmoveClock == 0 && ply > 0
+            && (board.HalfmoveClock == 0 || _rootLostInTb) && ply > 0
             && excluded == Move.None)
         {
             if (Tablebases.Syzygy.ProbeWdl(board, out var wdlScore))

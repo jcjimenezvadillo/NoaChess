@@ -1051,6 +1051,8 @@ public sealed class UciLoop
             _engine.UseTbResistance = _options.TbResistance;
         if (changed == "LostResistance")
             _engine.UseLostResistance = _options.LostResistance;
+        if (changed == "LostResistanceBound")
+            _engine.LostResistanceBound = _options.LostResistanceBound;
         if (changed == "CaptureLmr")
             _engine.UseCaptureLmr = _options.CaptureLmr;
         if (changed == "NmpPackage")

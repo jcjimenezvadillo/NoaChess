@@ -21,6 +21,39 @@ public class LostBandResistanceTests(ITestOutputHelper output)
 {
     private const string LostWithARookToThrow = "8/6r1/1p4P1/6K1/P7/7R/1k4P1/2q5 w - - 0 60";
 
+    // A bare king against king and queen, from a bot game. Every move loses,
+    // and the engine used to walk into the fastest mate because the root
+    // filter switched the tablebase scores off and left the saturated
+    // evaluation to choose. With the probe kept on for a lost root the search
+    // sees the mates and picks the longest defence: Kc8, not Ka8.
+    private const string BareKingVersusQueen = "8/1k6/8/1Q3K2/8/8/8/8 b - - 3 67";
+
+    [SyzygyFact]
+    public void ABareKingTakesTheLongestRoadToMate()
+    {
+        string? model = EmbeddedModelPath();
+        if (model is null)
+            return;
+        Assert.True(NnueModelLoader.TryLoad(model, out NnueNetwork? net, out string error), error);
+        string tb = SyzygyTestEnvironment.TablebasePath!;
+        if (Tablebases.Syzygy.CurrentPath != tb)
+            Tablebases.Syzygy.Init(tb);
+
+        var search = new AlphaBetaSearch(new NnueEvaluator(net!));
+        // The UCI layer sets this after loading the tables; a bare search
+        // object probes nothing until it is told how many men the tables hold.
+        search.SyzygyProbeLimit = 7;
+        var board = new Board(BareKingVersusQueen);
+        SearchResult result = search.FindBestMove(board, SearchLimits.Depth(12));
+        output.WriteLine($"best {result.BestMove} score {result.Score}");
+
+        // The search must have SEEN the mate, i.e. reported a mate score, and
+        // must not have chosen the move that loses fastest.
+        Assert.True(result.Score <= -(AlphaBetaSearch.MateScore - 1000),
+            $"expected a mate score, got {result.Score}");
+        Assert.NotEqual("b7a8", result.BestMove.ToString());
+    }
+
     private static string? EmbeddedModelPath()
     {
         string dir = AppContext.BaseDirectory;

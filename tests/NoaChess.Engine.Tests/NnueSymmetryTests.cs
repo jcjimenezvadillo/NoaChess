@@ -95,8 +95,23 @@ public class NnueSymmetryTests(ITestOutputHelper output)
         Assert.True(NnueModelLoader.TryLoad(model, out NnueNetwork? net, out string error), error);
 
         string mirrored = MirrorFen(fen);
-        int direct = new NnueEvaluator(net!).Evaluate(new Board(fen));
-        int reflected = new NnueEvaluator(net!).Evaluate(new Board(mirrored));
+        // Reset installs the accumulator for the board; without it Evaluate reads
+        // an empty accumulator and returns the same constant for every position,
+        // which is how the first version of this test passed while checking
+        // nothing (found 2026-09-07).
+        var evaluator = new NnueEvaluator(net!);
+        var first = new Board(fen);
+        evaluator.Reset(first);
+        int direct = evaluator.Evaluate(first);
+        var second = new Board(mirrored);
+        evaluator.Reset(second);
+        int reflected = evaluator.Evaluate(second);
+        // Guard against the unreset-evaluator trap: two different positions must
+        // not evaluate alike. The start position is the second one.
+        var start = new Board(Board.StartFen);
+        evaluator.Reset(start);
+        if (fen != Board.StartFen)
+            Assert.NotEqual(evaluator.Evaluate(start), direct);
         output.WriteLine($"{fen} = {direct}");
         output.WriteLine($"{mirrored} = {reflected}");
 
