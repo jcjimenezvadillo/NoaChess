@@ -1,4 +1,70 @@
 # CHANGELOG
+## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, and a clock lead spent
+
+**The release, in one line: two more reference prunings measured and switched on (late move pruning at
+every depth, +16.3 Elo H1; the stored transposition score refining the pruning evaluation, +13.1 with the
+interval clear of zero), the bot's clock lead turned into depth at the user's request, and the discovery
+that the search was never deterministic, with the repair kept as a guarded configuration until its Elo
+is settled.**
+
+**Determinism.** Three identical single-threaded searches of one bench position at depth 12, each after
+`ucinewgame`, visited 36,507, 132,048 and a third count of nodes; six positions out of six differed, and
+the published v5.7.0 does the same. The cause is the H2 finding of the 2026-09-06 audit that had shipped as
+an unmeasured option: quiescence never wrote its moves to the search stack, so every quiescence node below
+the first keyed the stand-pat correction on the slot a MAIN-search node had last left there, and at the
+start of a search that slot holds the previous search's leftovers. Writing the stack in quiescence makes three searches identical to the node - and it measured **-9.9 +/- 17.1 over 718 games** at fixed nodes: the continuation-keyed correction of a quiescence stand-pat is not worth having, and the stale slots were mostly supplying no key at all. So v5.8.1 ships the measured quiescence unchanged, `QsStackMove` off, and keeps the repair as the deterministic configuration that `SearchDeterminismTests` pins (three identical trees on three positions) while its two Elo-neutral shapes, `QsContCorrection` off and `QsEntryKey`, are measured; whichever holds Elo becomes the default. Every
+node-identity claim this project ever made was a within-process comparison, so none of them is affected.
+
+**Late move pruning at every depth.** The reference prunes late quiets at every depth by the count
+`3 + depth^2` (halved when not improving); this engine only did so at depth 3 and below. Fixed-node SPRT at
+100,000 nodes: **+16.3 Elo [+4.2, +28.4], LLR +2.98, H1 over 1,515 games** (396 wins, 325 losses, 794
+draws). Ships ON.
+
+**The stored score refines the pruning evaluation.** The reference's step 5: when the transposition
+table holds a score whose bound points the right way, the reverse-futility test reads it instead of the
+static evaluation. Quiescence already did this for its stand-pat; the main search never did. Fixed-node
+SPRT at 100,000 nodes: **+13.1 Elo +/- 11.6 at 1,727 games, LLR +2.32**, the interval clear of zero and the
+verdict still running when this shipped; bench -6.8% nodes. Ships ON.
+
+**A clock lead is spent, not kept.** At move 24 of a 10-minute game against a 2963 bot the engine held
+8:08 against the opponent's 2:26, and it ends its blitz games with a median 1.5x to 2x the opponent's
+clock. Pondering explains part of that (the engine thinks on the opponent's time), but clock left over at
+the end of a game is depth that was never bought. `ClockLead`, ON: when this side holds more time than the
+opponent, the optimum grows by the ratio of the two clocks, capped at 2x; the hard maximum and the
+sustainability rails are untouched, so the extra spend can only come out of a lead we demonstrably have,
+and with equal clocks the budget is exactly what it was. On that game's position the optimum goes from
+18.9 s to 37.8 s and the search reaches depth 23 instead of 22. Not measurable in self-play, where both
+sides keep the same clock; it ships on the user's call and is confirmed against outside engines next.
+
+**A Debug build allocated 883 KB per search.** The allocation probe failed in Debug (the test explorer's
+default): `Enum.HasFlag` on the castling rights boxes the enum in the castling generator and in the
+transposition-move vetting, and only the Release JIT removes the box. Replaced with bit tests, node-identical;
+the probe reads zero bytes in both configurations.
+
+**Instrumentation.** `NOA_SEARCH_STATS=1` prints a `stats` line after every completed iteration. Over 30
+bench positions at depth 12: 32% of nodes are quiescence, the transposition table hits 42% of main nodes
+but supplies a move at only 19% of the nodes that reach the move loop (fail-low nodes store none, by design
+since v5.8.0), internal iterative reduction fires at 14% of those, the null move cuts 33% of its tries,
+86.7% of beta cutoffs come on the first move, and 0.6% of reduced moves are re-searched.
+
+**Also measured, and clean.** The network scores all 60 bench positions and their colour mirrors identically
+(new `EvalSymmetryBenchTests`); a position reached by two move orders or by FEN searches identically; a 1 MB
+and a 1 GB table pick the same move in 9 of 10 positions; the opening book leaves the bot at a mean -0.5
+centipawns by an independent judge over 551 games; the cold start on the Mac is 1.0 s including a depth-10
+search; the first engine move of a game takes 5 s against 2.5 s for the rest only because it is the one
+move without a ponder credit. Runtime settings (workstation GC, no concurrent GC, no tiered PGO, no
+ready-to-run) measured within noise on a loaded machine.
+
+**More options, off, with node counts and SPRTs queued:** `QsChecks` (checking quiets at the first
+quiescence ply, 9,610,927 against 9,658,211), `ProbCutAllowNull` (the ProbCut child may null, as the
+reference's does, 9,374,930), `FutilityFailSoft` (a futility-pruned quiet raises the fail-low bound to its
+futility value, 9,729,841 against 9,966,507), `CaptureFutility` (9,808,972), `HistoryPrune` (barely fires at
+this engine's history range), `SingularTight` (reference gate and margin, +29% nodes), `QsContCorrection`,
+`NoDecayOnRelaunch` (the bot halves its history twice per move with pondering on), and the picker's
+`PickerCheckBonus` / `PickerThreatWeight` magnitudes, which had never been measured.
+
+**Bench with the shipped defaults: 8,134,147 nodes** at depth 12 (9,658,211 in v5.8.0). **Tests: 438** (Core 128, Engine 310).
+
 ## 2026-09-07 (v5.8.0) - the transposition table was throwing away its best moves
 
 **The release, in one line: a node that failed low overwrote the table's best move with the best of the

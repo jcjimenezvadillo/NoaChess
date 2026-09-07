@@ -52,16 +52,33 @@ public sealed class UciOptions
     // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
     public bool RepetitionAfterRoot { get; private set; }
     public bool NmpNonPvOnly { get; private set; }
-    public bool TtEvalRefine { get; private set; }
+    public bool TtEvalRefine { get; private set; } = true;
     public bool TtKeepMoveOnFailLow { get; private set; } = true;
     public bool TtMateReuse { get; private set; }
     public bool RootScoreOrdering { get; private set; }
     public bool Razoring { get; private set; }
-    public bool LmpAllDepths { get; private set; }
+    public bool LmpAllDepths { get; private set; } = true;
     public bool QuietSeePrune { get; private set; }
     public bool CaptureSeePruneDeep { get; private set; }
     // Percent multiplier on the clock optimum (see TimeManager.FromClock).
     public int TimeScale { get; private set; } = 100;
+    // Move picker magnitudes (see MovePicker.CheckBonus / ThreatEscapeWeight).
+    public int PickerCheckBonus { get; private set; } = 16384;
+    public int PickerThreatWeight { get; private set; } = 20;
+    // Skip the between-search history halving on a ponderhit relaunch (see AlphaBetaSearch).
+    public bool NoDecayOnRelaunch { get; private set; }
+    public bool QsChecks { get; private set; }
+    public bool ProbCutAllowNull { get; private set; }
+    public bool FutilityFailSoft { get; private set; }
+    public bool CaptureFutility { get; private set; }
+    public bool HistoryPrune { get; private set; }
+    public bool QsContCorrection { get; private set; } = true;
+    public bool SingularTight { get; private set; }
+    public bool QsEntryKey { get; private set; }
+    // Spend a clock lead over the opponent (see UciLoop.ParseLimits). ON since
+    // v5.8.1 at the user's explicit request: the bot ends games with up to twice
+    // the opponent's clock, which is depth left unused.
+    public bool ClockLead { get; private set; } = true;
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
@@ -170,15 +187,27 @@ public sealed class UciOptions
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name RepetitionAfterRoot type check default false");
         output.WriteLine("option name NmpNonPvOnly type check default false");
-        output.WriteLine("option name TtEvalRefine type check default false");
+        output.WriteLine("option name TtEvalRefine type check default true");
         output.WriteLine("option name TtKeepMoveOnFailLow type check default true");
         output.WriteLine("option name TtMateReuse type check default false");
         output.WriteLine("option name RootScoreOrdering type check default false");
         output.WriteLine("option name Razoring type check default false");
-        output.WriteLine("option name LmpAllDepths type check default false");
+        output.WriteLine("option name LmpAllDepths type check default true");
         output.WriteLine("option name QuietSeePrune type check default false");
         output.WriteLine("option name CaptureSeePruneDeep type check default false");
         output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
+        output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
+        output.WriteLine("option name PickerThreatWeight type spin default 20 min 0 max 100");
+        output.WriteLine("option name NoDecayOnRelaunch type check default false");
+        output.WriteLine("option name QsChecks type check default false");
+        output.WriteLine("option name ProbCutAllowNull type check default false");
+        output.WriteLine("option name FutilityFailSoft type check default false");
+        output.WriteLine("option name CaptureFutility type check default false");
+        output.WriteLine("option name HistoryPrune type check default false");
+        output.WriteLine("option name QsContCorrection type check default true");
+        output.WriteLine("option name SingularTight type check default false");
+        output.WriteLine("option name QsEntryKey type check default false");
+        output.WriteLine("option name ClockLead type check default true");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
@@ -331,6 +360,42 @@ public sealed class UciOptions
             case "timescale" when int.TryParse(value, out int ts):
                 TimeScale = Math.Clamp(ts, 50, 200);
                 return "TimeScale";
+            case "pickercheckbonus" when int.TryParse(value, out int pcb):
+                PickerCheckBonus = Math.Clamp(pcb, 0, 65536);
+                return "PickerCheckBonus";
+            case "pickerthreatweight" when int.TryParse(value, out int ptw):
+                PickerThreatWeight = Math.Clamp(ptw, 0, 100);
+                return "PickerThreatWeight";
+            case "nodecayonrelaunch" when bool.TryParse(value, out bool ndr):
+                NoDecayOnRelaunch = ndr;
+                return "NoDecayOnRelaunch";
+            case "qschecks" when bool.TryParse(value, out bool qsc):
+                QsChecks = qsc;
+                return "QsChecks";
+            case "probcutallownull" when bool.TryParse(value, out bool pcn):
+                ProbCutAllowNull = pcn;
+                return "ProbCutAllowNull";
+            case "futilityfailsoft" when bool.TryParse(value, out bool ffs):
+                FutilityFailSoft = ffs;
+                return "FutilityFailSoft";
+            case "capturefutility" when bool.TryParse(value, out bool cft):
+                CaptureFutility = cft;
+                return "CaptureFutility";
+            case "historyprune" when bool.TryParse(value, out bool hpr):
+                HistoryPrune = hpr;
+                return "HistoryPrune";
+            case "qscontcorrection" when bool.TryParse(value, out bool qcc):
+                QsContCorrection = qcc;
+                return "QsContCorrection";
+            case "singulartight" when bool.TryParse(value, out bool sgt):
+                SingularTight = sgt;
+                return "SingularTight";
+            case "qsentrykey" when bool.TryParse(value, out bool qek):
+                QsEntryKey = qek;
+                return "QsEntryKey";
+            case "clocklead" when bool.TryParse(value, out bool cld):
+                ClockLead = cld;
+                return "ClockLead";
             case "lmpalldepths" when bool.TryParse(value, out bool lad):
                 LmpAllDepths = lad;
                 return "LmpAllDepths";

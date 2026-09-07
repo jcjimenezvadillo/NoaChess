@@ -116,6 +116,7 @@ public static class TimeManager
         // deadline keeps the forfeit count at zero, which is what the SPRT at
         // the deployment control decides. The maximum is never scaled: it is
         // the safety rail and stays bounded by the clock as before.
+        // The percent may exceed 100 by the clock-lead ratio as well (UciLoop).
         if (timeScalePercent != 100)
             optimum = Math.Max(1, optimum * timeScalePercent / 100);
 
