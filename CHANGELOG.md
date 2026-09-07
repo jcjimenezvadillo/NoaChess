@@ -1,4 +1,41 @@
 # CHANGELOG
+## 2026-09-07 (v5.7.0) - a lost position stops being an excuse to give pieces away
+
+**The release, in one line: the evaluation saturates once a position is decided, and the engine was
+spending that blindness on ugly sacrifices.** At minus seven pawns, being a knight down as well is not
+worth another three to a network whose output has already flattened; it is worth almost nothing. So the
+material gradient that would stop the engine shedding pieces disappears exactly where it is most needed,
+and what a spectator sees is a move no beginner would play. v5.6.0 fixed this inside the tablebase-lost
+band. This release fixes the ordinary case.
+
+**The game that produced it.** Bot game of 2026-09-07 at 180+2, move 51 of a rook endgame. At depth 17
+the engine scored the knight sacrifice at -698 and the sane queening at -707, and played the sacrifice: it
+handed a knight over for **nine centipawns**. The position was genuinely lost, and that is not the defence
+it sounds like - an independent engine rated 3461 put the same position at -603 and could not save it
+either - but the move still made the engine look broken, and losing positions are most of what a bot's
+spectators see.
+
+**What ships.** `LostResistance`, default ON. When a completed iteration puts the root at or below **-600
+centipawns** and above the tablebase band, the next iteration searches every root move with the full window
+and selects on a coarser sieve: the score is rounded to whole pawns, and among moves that land in the same
+pawn the choice goes to the one that does not hand the opponent a free capture, measured by static exchange
+exactly as the tablebase resistance key does. A sacrifice that genuinely resists still scores a bucket
+higher and wins on score alone. Above -600 nothing changes at all, and the 60-position bench returns
+**14,994,140 nodes, identical to v5.6.0**, so ordinary play is untouched to the node.
+
+**Measured.** On the game position the knight sacrifice is gone. On a suite of 25 positions taken from the
+bot's own games whose search puts the root between -600 and the tablebase band, one thread at a fixed depth
+so the comparison is exact rather than sampled: **material handed to the opponent fell from 400 to 200**,
+one position improved and none got worse. The clock cost of the full-window root search in these positions
+is not yet measured; the fixed-node SPRT is prepared and runs next, and the threshold is deliberately high
+so the mode is rare. Its sibling for drawn positions, `DrawTieBreak`, measured -29.5 +/- 19.5 Elo and H0 the
+same day and stays off: the full window is affordable in a position that is already lost and is not
+affordable in the drawn positions that make up 40% of games.
+
+**Also this day.** `DrawTieBreak` closed at H0 (-29.5 +/- 19.5, LLR -2.98, 869 games at fixed nodes) and
+`RootStaticEval` was stopped at 1,594 games sitting on equality (+6.5 +/- 12.1, LLR +0.39) to free the
+machine for this release; it goes back in the queue.
+
 ## 2026-09-06 (v5.6.0) - the audit release: a crash nobody had seen, and the mate the engine kept re-proving
 
 **The release, in one line: the whole hot path was read line by line, and it gave up one crash, one missing
