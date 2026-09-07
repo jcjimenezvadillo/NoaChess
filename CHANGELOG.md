@@ -7,6 +7,13 @@ touches play is either node-identical or provably incapable of changing a result
 counts and test counts, which is what this kind of release can honestly offer. The gauntlet follows for the
 record, not as a gate.
 
+**The gauntlet, measured on the rebuilt binary.** Field 2, single-threaded at 60+0.6, the same field as
+v5.3.0, v5.4.0 and v5.5.0 and therefore comparable one to one: **51.2% over 240 games, 3347 CCRL +/- 44**,
+against v5.5.0's 3328 +/- 44 and v5.4.0's 3337 +/- 41. The highest of the three, and the bands overlap, which
+is what a release whose playing change is node-identical plus two endgame repairs should read. The run on
+the binary BEFORE the lost-band fix was stopped at 105 games to free the machine for the rebuild and is kept
+with its number, 49.5% and 3325 +/- 67, in `results/gauntlet_560_sin_arreglo_105partidas.pgn`.
+
 **Late addition, and the reason this release was rebuilt: the engine could hand a rook over for
 nothing, and the guard meant to stop it could never fire.** Three bot games sent in by the user showed
 material being given away in positions the engine had already decided were lost. Reproduced and traced: a
