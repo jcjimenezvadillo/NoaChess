@@ -1,11 +1,13 @@
 # CHANGELOG
-## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, and a clock lead spent
+## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, a clock lead spent, and a tablebase win no longer bought with pieces
 
 **The release, in one line: two more reference prunings measured and switched on (late move pruning at
 every depth, +16.3 Elo H1; the stored transposition score refining the pruning evaluation, +13.1 with the
 interval clear of zero), the bot's clock lead turned into depth at the user's request, and the discovery
 that the search was never deterministic, with the repair kept as a guarded configuration until its Elo
 is settled.**
+
+**Rebuilt the same night: a tablebase win at any price.** From a bot game the user sent (K+N+3P against K+N, the f-pawn on the seventh): the engine shuffled its knight for two moves, hung it, and only then queened. With seven or more men the root is outside the tablebases, but every winning line that captures something enters them, and a tablebase win is scored `TbWin - ply`: the sooner the line reaches the tables, the higher the score, and the quickest way to reach them is to have a piece taken. Promoting scored 19988, and so did every knight move, including the one that offered the knight. `TbWinTieBreak`, ON: the mirror of `TbResistance` for the winning side. Once an iteration proves the root tablebase-won, the next searches every root move with the full window and, among band-won moves, picks by what the opponent can win by capture (negated) plus progress, a promotion or a capture that wins material; a mate still wins on score and nothing outside the band changes. On the game position the engine now queens at every depth from 10 to 20 (before: f8=Q, Nh3, Nh7, Kh3 by turns). Gate by an independent engine on tablebase-won positions with seven or more men from the bot's games: mean loss 167.3 to 83.8 centipawns, moves costing 300 or more from 25.0% to 12.5%, 150 or more from 32.5% to 17.5% (40 positions, one thread, depth 14, bench node-identical). The clock-lead scale now obeys the sustainability guard (it was applied after it).
 
 **Determinism.** Three identical single-threaded searches of one bench position at depth 12, each after
 `ucinewgame`, visited 36,507, 132,048 and a third count of nodes; six positions out of six differed, and

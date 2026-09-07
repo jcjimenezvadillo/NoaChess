@@ -1092,6 +1092,8 @@ public sealed class UciLoop
             _engine.UseTbPvCap = _options.TbPvCap;
         if (changed == "TbResistance")
             _engine.UseTbResistance = _options.TbResistance;
+        if (changed == "TbWinTieBreak")
+            _engine.UseTbWinTieBreak = _options.TbWinTieBreak;
         if (changed == "LostResistance")
             _engine.UseLostResistance = _options.LostResistance;
         if (changed == "LostResistanceBound")

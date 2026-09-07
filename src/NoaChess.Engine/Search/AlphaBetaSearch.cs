@@ -897,6 +897,25 @@ public sealed class AlphaBetaSearch
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
     private bool _rootLostTb;
 
+    // TbWinTieBreak (2026-09-08, from a bot game the user sent): the mirror
+    // of TbResistance for the WINNING side. With seven or more men on the
+    // board the root is outside the tablebases, but every winning line that
+    // captures something enters them, and a tablebase win is scored
+    // TbWin - ply: the sooner the line reaches the tables, the higher the
+    // score. The quickest way to reach them is to have a piece taken. In a
+    // K+N+3P vs K+N ending with the f-pawn on the seventh, promoting scored
+    // 19988 and so did every knight move, including the one that hung the
+    // knight - a capture on it would have brought the position to five men.
+    // The engine shuffled the knight for two moves, offered it, and only then
+    // queened. When the previous iteration proved the root tablebase-won,
+    // every root move is searched with the full window and, among band-won
+    // moves, the key is what the opponent can win by capture (negated) plus
+    // progress: a promotion or a capture that wins material. Moves that
+    // escape the band upward (mates) still win on score; nothing outside the
+    // band changes. The key never leaves SearchRoot.
+    public bool UseTbWinTieBreak = true;
+    private bool _rootWonTb;
+
     // LostResistance: the same idea as TbResistance, for a position that is
     // merely LOST BY A LOT rather than lost to a tablebase (added 2026-09-07
     // from a bot game the user sent).
@@ -1709,6 +1728,7 @@ public sealed class AlphaBetaSearch
         _rootSide = board.SideToMove;
         _rootAverageScore = ScoreNone;
         _rootLostTb = false;
+        _rootWonTb = false;
         _rootLostBadly = false;
         _rootDrawn = false;
         _optimism = 0;
@@ -1904,6 +1924,8 @@ public sealed class AlphaBetaSearch
             // TbResistance: a completed iteration concluding in the loss band
             // switches the NEXT iteration's root into resistance mode.
             _rootLostTb = UseTbResistance && score <= -TbScoreBound && score > -MateBound;
+            // TbWinTieBreak: the mirror for a root proved tablebase-won.
+            _rootWonTb = UseTbWinTieBreak && score >= TbScoreBound && score < MateBound;
             // Plain "losing badly", strictly above the tablebase band so the two
             // modes never fight over the same iteration.
             _rootLostBadly = UseLostResistance && score <= -LostResistanceBound
@@ -2411,7 +2433,8 @@ public sealed class AlphaBetaSearch
         bool lostMode = _rootLostTb;
         bool lostBadlyMode = _rootLostBadly && !lostMode;
         bool drawMode = _rootDrawn && !lostMode && !lostBadlyMode;
-        bool fullWindowMode = lostMode || drawMode || lostBadlyMode;
+        bool wonMode = _rootWonTb && !lostMode && !lostBadlyMode && !drawMode;
+        bool fullWindowMode = lostMode || drawMode || lostBadlyMode || wonMode;
         long bestKey = long.MinValue;
 
         // Effort per root move. Best-move STABILITY alone cannot tell a forced
@@ -2427,6 +2450,11 @@ public sealed class AlphaBetaSearch
         {
             Move move = moves[i];
             long nodesBefore = _nodes;
+            // TbWinTieBreak progress term, read while the parent is still on
+            // the board: a capture that wins material is progress, a capture
+            // that loses it is not.
+            int moveGain = wonMode && move.IsCapture
+                ? StaticExchangeEvaluator.Evaluate(board, move) : 0;
             _stackPiece[0] = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
             _stackTo[0] = move.To;
             _stackStatScore[0] = (move.IsCapture || move.IsPromotion ? 0
@@ -2463,7 +2491,31 @@ public sealed class AlphaBetaSearch
             int resistance = 0;
             bool bandLoss = lostMode && score <= -TbScoreBound && score > -MateBound;
             bool badLoss = lostBadlyMode && score <= -LostResistanceBound && score > -TbScoreBound;
-            if ((bandLoss || badLoss) && !_stopped)
+            bool bandWin = wonMode && score >= TbScoreBound && score < MateBound;
+            if (bandWin && !_stopped)
+            {
+                // Same material key as the loss band (what the opponent can
+                // win by capture), plus progress: a promotion outranks every
+                // quiet move, and a capture counts what it wins, capped so
+                // that no capture outranks a promotion. Range 0..1736, inside
+                // the 2048 the score key reserves.
+                int worst = 0;
+                MoveGenerator.GenerateLegalMoves(board, _tieMoves);
+                for (int t = 0; t < _tieMoves.Count; t++)
+                {
+                    Move reply = _tieMoves[t];
+                    if (!reply.IsCapture)
+                        continue;
+                    int gain = StaticExchangeEvaluator.Evaluate(board, reply);
+                    if (gain > worst)
+                        worst = gain;
+                }
+                int progress = move.IsPromotion ? 512 : 0;
+                if (move.IsCapture)
+                    progress += Math.Clamp(moveGain, 0, 400) / 2;
+                resistance = Math.Clamp(1024 - worst + progress, 0, 2048);
+            }
+            else if ((bandLoss || badLoss) && !_stopped)
             {
                 // The key is MATERIAL, not the evaluation (changed 2026-09-07).
                 // The static evaluation is blind to the capture the move walks
@@ -2566,6 +2618,8 @@ public sealed class AlphaBetaSearch
             long scoreKey;
             if (bandLoss)
                 scoreKey = -TbScoreBound;
+            else if (bandWin)
+                scoreKey = TbScoreBound;
             else if (badLoss)
                 scoreKey = (long)Math.Round(score / (double)LostResistanceBucket)
                            * LostResistanceBucket;
