@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.8.0";
+    public const string Version = "5.8.1";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -288,6 +288,15 @@ public sealed class ChessEngine
             h.UseTtMateReuse = _search.UseTtMateReuse;
             h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
             h.UseRazoring = _search.UseRazoring;
+            h.UseNoDecayOnRelaunch = _search.UseNoDecayOnRelaunch;
+            h.UseQsChecks = _search.UseQsChecks;
+            h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
+            h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
+            h.UseCaptureFutility = _search.UseCaptureFutility;
+            h.UseHistoryPrune = _search.UseHistoryPrune;
+            h.UseQsContCorrection = _search.UseQsContCorrection;
+            h.UseSingularTight = _search.UseSingularTight;
+            h.UseQsEntryKey = _search.UseQsEntryKey;
             h.UseLmpAllDepths = _search.UseLmpAllDepths;
             h.UseQuietSeePrune = _search.UseQuietSeePrune;
             h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
@@ -738,6 +747,60 @@ public sealed class ChessEngine
     {
         get => _search.UseRazoring;
         set => _search.UseRazoring = value;
+    }
+
+    public bool UseNoDecayOnRelaunch
+    {
+        get => _search.UseNoDecayOnRelaunch;
+        set => _search.UseNoDecayOnRelaunch = value;
+    }
+
+    public bool UseQsChecks
+    {
+        get => _search.UseQsChecks;
+        set => _search.UseQsChecks = value;
+    }
+
+    public bool UseProbCutAllowNull
+    {
+        get => _search.UseProbCutAllowNull;
+        set => _search.UseProbCutAllowNull = value;
+    }
+
+    public bool UseFutilityFailSoft
+    {
+        get => _search.UseFutilityFailSoft;
+        set => _search.UseFutilityFailSoft = value;
+    }
+
+    public bool UseCaptureFutility
+    {
+        get => _search.UseCaptureFutility;
+        set => _search.UseCaptureFutility = value;
+    }
+
+    public bool UseHistoryPrune
+    {
+        get => _search.UseHistoryPrune;
+        set => _search.UseHistoryPrune = value;
+    }
+
+    public bool UseQsContCorrection
+    {
+        get => _search.UseQsContCorrection;
+        set => _search.UseQsContCorrection = value;
+    }
+
+    public bool UseSingularTight
+    {
+        get => _search.UseSingularTight;
+        set => _search.UseSingularTight = value;
+    }
+
+    public bool UseQsEntryKey
+    {
+        get => _search.UseQsEntryKey;
+        set => _search.UseQsEntryKey = value;
     }
 
     public bool UseLmpAllDepths

@@ -558,6 +558,17 @@ public sealed class AlphaBetaSearch
 
     private long _nodes;
 
+    // Search statistics, printed as "info string stats ..." after each
+    // completed iteration when NOA_SEARCH_STATS=1 (audit 2026-09-07). Off,
+    // they cost one predicted branch per event. The first-move cutoff rate,
+    // the transposition-move hit rate and the null-move cut rate are the
+    // numbers every engine author compares against the field.
+    private static readonly bool SearchStats =
+        Environment.GetEnvironmentVariable("NOA_SEARCH_STATS") == "1";
+    private long _stMain, _stQs, _stTtHit, _stTtCut, _stTtServed, _stNullTry, _stNullCut,
+                 _stCut, _stCutFirst, _stCutTt, _stFutility, _stLmp, _stSeePrune, _stLmr, _stLmrResearch,
+                 _stLoop, _stLmrReduced, _stIir;
+
     // Share of the last completed root iteration spent on the move it chose.
     // Near 1.0 when every alternative was refuted at once, which is what a
     // forced move looks like from the inside.
@@ -1124,8 +1135,21 @@ public sealed class AlphaBetaSearch
     // every quiescence node below the first ply keyed its continuation
     // correction on whatever move a MAIN-search node had last left in that
     // slot, in some other branch: a random entry read as if it were this
-    // line's. The reference sets ss->currentMove in qsearch. Off until
-    // measured at fixed nodes: it changes node counts.
+    // line's. The reference sets ss->currentMove in qsearch.
+    //
+    // MEASURED 2026-09-07 and the finding is two-sided. With it off the
+    // search is NOT DETERMINISTIC: the same position after ucinewgame
+    // searched three times at depth 12 gave three different trees (36,507
+    // against 132,048 nodes on one bench position, 6 of 6 positions
+    // differing, on every release ever published), because the stale slots
+    // hold whatever the PREVIOUS search left there. With it on, three runs
+    // are identical to the node on all six. But the real keys LOSE at fixed
+    // nodes: -9.9 +/- 17.1 over 718 games (LLR -1.96 towards H0), so the
+    // continuation-keyed correction of a quiescence stand-pat is not worth
+    // having, and the stale slots were mostly supplying "no key". Off for
+    // v5.8.1, exactly the measured behaviour; the deterministic shapes
+    // (QsContCorrection off, QsEntryKey) are under measurement and
+    // SearchDeterminismTests pins the deterministic configuration.
     public bool UseQsStackMove = false;
 
     // Exempt quiet moves that give DIRECT check from futility pruning (audit
@@ -1189,7 +1213,9 @@ public sealed class AlphaBetaSearch
     // A stored transposition score refines the static evaluation the pruning
     // reads when its bound points that way (reference step 5). Quiescence
     // already does this for its stand-pat; the main search never did.
-    public bool UseTtEvalRefine = false;
+    // ON since v5.8.1: fixed-node SPRT (100k, 2026-09-07) +13.1 +/- 11.6 at
+    // 1,727 games, LLR +2.32, the interval clear of zero; bench -6.8% nodes.
+    public bool UseTtEvalRefine = true;
 
     // A fail-low node stores NO move, so the table keeps the move it already
     // had for the position (the reference's bestMove is only ever a move that
@@ -1223,7 +1249,10 @@ public sealed class AlphaBetaSearch
     // at depth <= 3. The count is the same 3 + depth^2, halved when not
     // improving. The pruning ladder measured this only as part of a four-rung
     // package; this is the rung alone.
-    public bool UseLmpAllDepths = false;
+    //
+    // ON since v5.8.1: fixed-node SPRT (100k, 2026-09-07) +16.3 [+4.2, +28.4],
+    // LLR +2.98, H1 over 1,515 games; bench -4.8% nodes at depth 12.
+    public bool UseLmpAllDepths = true;
 
     // SEE pruning of quiet moves (reference: see_ge(-27 * lmrDepth^2)), which
     // this engine never applied outside the ladder: a quiet move that hangs a
@@ -1235,6 +1264,61 @@ public sealed class AlphaBetaSearch
     // it (reference: see_ge(-157 * depth) in its units, 75 per ply here),
     // instead of the flat one pawn at depth <= 2 only.
     public bool UseCaptureSeePruneDeep = false;
+
+    // Continuation-keyed correction of the quiescence stand-pat. With the
+    // stack written in quiescence the keys are real; off, the stand-pat is
+    // corrected by the structural tables only (continuation and context keys
+    // 0). The determinism repair does not depend on this: both states read
+    // nothing left over from another search.
+    public bool UseQsContCorrection = true;
+
+    // Singular extension on the reference's terms: a lower depth gate (6
+    // instead of 8) and a margin of one centipawn per ply instead of two, so
+    // singularBeta sits half as far below the stored score and the extension
+    // fires on moves this engine's margin never called singular. The 5E
+    // rebuild measured the full package worse, but that was before the
+    // transposition move stopped being overwritten on fail-low (v5.8.0), and
+    // a singular test is only as good as the move it tests.
+    public bool UseSingularTight = false;
+
+    // Third deterministic shape for the quiescence correction key: every
+    // quiescence node below a main-search node keys its stand-pat correction
+    // on the move that ENTERED quiescence (the last main-search move), not on
+    // its own capture. Deterministic like the other two, and the closest
+    // stand-in for what the stale slots used to supply, which was mostly a
+    // recent main-search move at that ply.
+    public bool UseQsEntryKey = false;
+
+    // Fail-soft accounting for futility-pruned quiets (reference step 14):
+    // the pruned move's value is at most its futility value, so a fail-low
+    // node's returned upper bound is raised to it instead of ignoring the move.
+    public bool UseFutilityFailSoft = false;
+
+    // Capture futility pruning (reference step 14), never present here.
+    public bool UseCaptureFutility = false;
+
+    // Continuation-history pruning of quiets (reference step 14), which this
+    // engine only had inside the pruning ladder package.
+    public bool UseHistoryPrune = false;
+
+    // The ProbCut verification search may itself try a null move, as the
+    // reference's does (its child is an ordinary NonPV search); this engine
+    // forbade it, so every ProbCut child paid for a full reduced search.
+    public bool UseProbCutAllowNull = false;
+
+    // Quiet checking moves at the FIRST quiescence ply (reference qsearch
+    // generates checks at depth 0). This engine only ever had them inside the
+    // NMP package, which was measured as a whole and lost; the checks alone
+    // were never priced. Direct checks only, as the package generates them.
+    public bool UseQsChecks = false;
+
+    // The butterfly history is halved between searches. With pondering on,
+    // a ponderhit relaunch is a second search for the same move, so the bot
+    // halves its history TWICE per move where every fixed-node measurement
+    // halved it once: the deployed regime is not the measured one. On, a
+    // relaunch keeps the ponder's history whole. Clock games only, by
+    // construction; a search without a ponder credit is untouched.
+    public bool UseNoDecayOnRelaunch = false;
     private readonly int[] _rootPrevScores = new int[1 << 16];
     private static int MoveKey(Move move) => ((int)move.Flag << 12) | (move.To << 6) | move.From;
 
@@ -1420,6 +1504,10 @@ public sealed class AlphaBetaSearch
 
         _nodes = 0;
         TbHits = 0;
+        if (SearchStats)
+            _stMain = _stQs = _stTtHit = _stTtCut = _stTtServed = _stNullTry = _stNullCut
+                = _stCut = _stCutFirst = _stCutTt = _stFutility = _stLmp = _stSeePrune = _stLmr = _stLmrResearch
+                = _stLoop = _stLmrReduced = _stIir = 0;
         _rootInTb = false;
         _rootLostInTb = false;
         _rootTbResolved = false;
@@ -1533,7 +1621,8 @@ public sealed class AlphaBetaSearch
         // ages one generation: previous-search entries yield their cluster
         // slots gracefully as this search fills the table.
         _killers.Clear();
-        _history.Decay();
+        if (!(UseNoDecayOnRelaunch && _relaunch))
+            _history.Decay();
         if (newSearch)
             _tt.NewSearch();
 
@@ -1541,6 +1630,19 @@ public sealed class AlphaBetaSearch
         // from the previous search describe other positions).
         _nmpMinPly = 0;
         Array.Clear(_stackStatScore);
+        // In the deterministic configuration no slot may carry a previous
+        // search's move into this one: every read is then either preceded by
+        // a write on the current path or sees the "no move" sentinel, so the
+        // tree depends on the position alone. Gated on the option so the
+        // shipped (measured) quiescence behaviour stays byte-identical.
+        // (_stackEval is left as it is: every read of it is preceded by a
+        // write on the current path, and its root slot is the documented
+        // RootStaticEval question, not a leftover.)
+        if (UseQsStackMove)
+        {
+            Array.Fill(_stackPiece, -1);
+            Array.Clear(_stackTo);
+        }
         if (UseRootScoreOrdering)
             Array.Fill(_rootPrevScores, -Infinity);
 
@@ -1822,6 +1924,18 @@ public sealed class AlphaBetaSearch
             }
             progress?.Report(new SearchProgress(depth, score, _nodes, bestMove,
                                                 ExtractPv(board, bestMove, depth)));
+            if (SearchStats)
+                Console.Out.WriteLine(
+                    $"info string stats d={depth} main={_stMain} qs={_stQs}"
+                  + $" qsShare={(double)_stQs / Math.Max(1, _stMain + _stQs):F3}"
+                  + $" ttHit={(double)_stTtHit / Math.Max(1, _stMain):F3}"
+                  + $" ttCut={(double)_stTtCut / Math.Max(1, _stMain):F3}"
+                  + $" loop={_stLoop} ttMoveServedAtLoop={(double)_stTtServed / Math.Max(1, _stLoop):F3} iir={_stIir}"
+                  + $" nullTry={_stNullTry} nullCut={(double)_stNullCut / Math.Max(1, _stNullTry):F3}"
+                  + $" cuts={_stCut} firstMoveCut={(double)_stCutFirst / Math.Max(1, _stCut):F3}"
+                  + $" ttMoveCut={(double)_stCutTt / Math.Max(1, _stCut):F3}"
+                  + $" lmr={_stLmr} lmrReduced={_stLmrReduced} lmrResearch={(double)_stLmrResearch / Math.Max(1, _stLmrReduced):F3}"
+                  + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}");
             lastReportedMove = bestMove;
             lastReportedDepth = depth;
 
@@ -2852,6 +2966,7 @@ public sealed class AlphaBetaSearch
             CheckStop();
         if (_stopped)
             return 0;
+        if (SearchStats) _stMain++;
 
         // Ply overflow guard for recursive and singular-extension searches.
         if (ply >= MaxPly)
@@ -2922,6 +3037,7 @@ public sealed class AlphaBetaSearch
         if (ttHit)
         {
             ttMove = entry.BestMove; // Always useful for ordering.
+            if (SearchStats) _stTtHit++;
 
             // The stored score is only reusable if it comes from a search at
             // least as deep as the one we are about to do, and its bound type
@@ -2939,14 +3055,13 @@ public sealed class AlphaBetaSearch
                 && entry.Bound != BoundType.None)
             {
                 int score = FromTT(entry.Score, ply);
-                switch (entry.Bound)
+                bool cut = entry.Bound == BoundType.Exact
+                        || (entry.Bound == BoundType.LowerBound && score >= beta)
+                        || (entry.Bound == BoundType.UpperBound && score <= alpha);
+                if (cut)
                 {
-                    case BoundType.Exact:
-                        return score;
-                    case BoundType.LowerBound when score >= beta:
-                        return score;
-                    case BoundType.UpperBound when score <= alpha:
-                        return score;
+                    if (SearchStats) _stTtCut++;
+                    return score;
                 }
             }
         }
@@ -3036,11 +3151,14 @@ public sealed class AlphaBetaSearch
         // Search one ply shallower; if the node matters, a later (deeper)
         // visit will find a TT move waiting and search it properly.
         if (depth >= 4 && ttMove == Move.None && excluded == Move.None)
+        {
+            if (SearchStats) _stIir++;
             depth--;
+        }
 
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
-            return Quiescence(board, alpha, beta, ply, genChecks: UseNmpPackage);
+            return Quiescence(board, alpha, beta, ply, genChecks: UseNmpPackage || UseQsChecks);
 
         // Only now, past every early return above. Same board, so the same
         // answer as computing it at the top - just not paid by the nodes that
@@ -3205,6 +3323,7 @@ public sealed class AlphaBetaSearch
 
             _stackPiece[ply] = -1; // No usable "previous move" for the child.
             _stackStatScore[ply] = 0;
+            if (SearchStats) _stNullTry++;
             _incremental?.PushNull();
             board.MakeNullMove();
             int nullScore = -Negamax(board, depth - r, -beta, -beta + 1,
@@ -3217,6 +3336,7 @@ public sealed class AlphaBetaSearch
 
             if (nullScore >= beta && nullScore < TbScoreBound)
             {
+                if (SearchStats) _stNullCut++;
                 // Mate-range null scores never cut (the guard above): a mate
                 // "found" after passing a move is exactly the unproven kind -
                 // falling through to the real search keeps forced mates visible
@@ -3310,7 +3430,7 @@ public sealed class AlphaBetaSearch
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
                 if (score >= probBeta)
                     score = -Negamax(board, probCutDepth, -probBeta, -probBeta + 1,
-                                     ply + 1, allowNull: false, cutNode: !cutNode);
+                                     ply + 1, allowNull: UseProbCutAllowNull, cutNode: !cutNode);
 
                 board.UnmakeMove();
                 _incremental?.Pop();
@@ -3415,7 +3535,7 @@ public sealed class AlphaBetaSearch
         // That is a statement about move ordering, not about extensions, so this
         // block gets re-measured after the killers and counter reform and not
         // before. The knobs to do it with are on branch bisect-5x.
-        if (depth >= 8 && excluded == Move.None && ttMove != Move.None
+        if (depth >= (UseSingularTight ? 6 : 8) && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
             && CanReuseTtScore(entry.Score, board.HalfmoveClock))
         {
@@ -3424,7 +3544,7 @@ public sealed class AlphaBetaSearch
             // material: the reference tests !is_decisive here too.
             if (Math.Abs(ttScore) < TbScoreBound)
             {
-                int singularBeta = ttScore - 2 * depth;
+                int singularBeta = ttScore - (UseSingularTight ? depth : 2 * depth);
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
                                     ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
@@ -3446,9 +3566,13 @@ public sealed class AlphaBetaSearch
         // The order served is identical to the old full-sort ordering.
         MoveList moves = _moveLists[ply];
         moves.Clear();
+        if (SearchStats) _stLoop++;
         bool ttServed = ttMove != Move.None && MoveGenerator.IsPseudoLegal(board, ttMove);
         if (ttServed)
+        {
             moves.Add(ttMove);
+            if (SearchStats) _stTtServed++;
+        }
 
         // If the TT's best move is itself a capture, quiet alternatives are less
         // likely to be the refutation, so late quiets are reduced one extra ply
@@ -3622,6 +3746,20 @@ public sealed class AlphaBetaSearch
                 int lmpThreshold = 3 + depth * depth;
                 if (!improving) lmpThreshold /= 2;
                 if ((depth <= 3 || UseLmpAllDepths) && quietsSearched >= lmpThreshold)
+                {
+                    if (SearchStats) _stLmp++;
+                    continue;
+                }
+
+                // Continuation-history pruning (reference: history below
+                // -4165 * depth in its units skips the quiet). Our combined
+                // signal (2x butterfly + continuation) runs at about 0.28x of
+                // theirs, so the bar is -500 * depth here (-1165 barely fired: +0.1% nodes).
+                if (UseHistoryPrune && depth <= 8
+                    && 2 * _history.Get(stm, move)
+                       + (prevPiece >= 0 ? _contHist[0].Get(prevPiece, prevTo,
+                            ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From)), move.To) : 0)
+                       < -500 * depth)
                     continue;
 
                 // A quiet move that loses material outright by SEE is not the
@@ -3647,6 +3785,14 @@ public sealed class AlphaBetaSearch
                 // past d17 / 100M nodes with the reshape in either scale).
                 if (depth <= 4 && staticEval + 100 * depth <= alpha)
                 {
+                    if (SearchStats) _stFutility++;
+                    // Fail-soft accounting for the pruned move (reference
+                    // step 14): the move's value is bounded by the futility
+                    // value, so the node's returned upper bound may not sit
+                    // below it. Without this a fail-low node stored a bound
+                    // that ignored every pruned move.
+                    if (UseFutilityFailSoft && staticEval + 100 * depth > bestScore)
+                        bestScore = staticEval + 100 * depth;
                     if (!UseCheckExemptFutility)
                         continue;
                     if (!checkMasksReady)
@@ -3685,6 +3831,20 @@ public sealed class AlphaBetaSearch
                       && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 75 * depth)
                     : depth <= 2
                       && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
+                {
+                    if (SearchStats) _stSeePrune++;
+                    continue;
+                }
+
+                // Capture futility (reference step 14): a capture that cannot
+                // lift the static evaluation to alpha even after winning its
+                // victim outright is not worth a search at shallow depth.
+                // Reference 287 + 253 * lmrDepth in its units, x0.48 here on
+                // the full depth; checks are not exempted (no cheap test).
+                if (UseCaptureFutility && nonPv && depth <= 6 && Math.Abs(alpha) < TbScoreBound
+                    && staticEval + 138 + 121 * depth
+                       + PieceValueQs[(int)(move.Flag == MoveFlag.EnPassant
+                                            ? PieceType.Pawn : board.PieceTypeAt(move.To))] <= alpha)
                     continue;
             }
 
@@ -3753,6 +3913,7 @@ public sealed class AlphaBetaSearch
                     && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
+                    if (SearchStats) _stLmr++;
                     // Everything below is in 1024ths. Every adjuster here is a
                     // whole number of plies, so the single truncation at the
                     // end reproduces the previous per-term integer arithmetic
@@ -3894,6 +4055,7 @@ public sealed class AlphaBetaSearch
                     reduction = r / LmrScale;
                     if (reduction < 0) reduction = 0;
                     if (reduction > newDepth - 1) reduction = newDepth - 1;
+                    if (SearchStats && reduction > 0) _stLmrReduced++;
                 }
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
@@ -3906,8 +4068,11 @@ public sealed class AlphaBetaSearch
                 // The reduced probe beat alpha: verify at full depth first
                 // (reference re-search flips the parent's node type).
                 if (score > alpha && reduction > 0 && !_stopped)
+                {
+                    if (SearchStats) _stLmrResearch++;
                     score = -Negamax(board, newDepth, -alpha - 1, -alpha,
                                      ply + 1, allowNull: true, cutNode: !cutNode);
+                }
 
                 // Still inside the window: it is a genuine PV candidate,
                 // re-search with the real window as a PV (non-cut) child.
@@ -3944,6 +4109,12 @@ public sealed class AlphaBetaSearch
 
                     if (alpha >= beta)
                     {
+                        if (SearchStats)
+                        {
+                            _stCut++;
+                            if (searched == 1) _stCutFirst++;
+                            if (move == ttMove && ttServed) _stCutTt++;
+                        }
                         // Beta cutoff by a quiet move: exactly the signal the
                         // ordering heuristics feed on. The cutoff move gets a
                         // bonus everywhere (killers, counter move, butterfly
@@ -4188,12 +4359,18 @@ public sealed class AlphaBetaSearch
     // out: measured in the 5E campaign, depth-0 entries flooded the clusters
     // and evicted main-search entries (d15 nodes ROSE 1.35M -> 1.75M, nps -11%).
     private int Quiescence(Board board, int alpha, int beta, int ply,
-                           bool genChecks = false)
+                           bool genChecks = false, int entryPly = -1)
     {
+        // The ply at which quiescence was entered from the main search; the
+        // recursion passes it down so every node of the subtree can key on
+        // the entering move when UseQsEntryKey asks for it.
+        if (entryPly < 0)
+            entryPly = ply;
         if ((++_nodes & (StopCheckInterval - 1)) == 0)
             CheckStop();
         if (_stopped)
             return 0;
+        if (SearchStats) _stQs++;
 
         // Same reasoning as the main search: the check test is two magic-bitboard
         // lookups and the transposition cutoff below can finish the node without
@@ -4307,9 +4484,12 @@ public sealed class AlphaBetaSearch
                           BoundType.None, Move.None, ttPv);
             }
 
-            bestScore = _corrections.Correct(board, rawEval + OptimismTerm(board),
-                                             ContinuationCorrectionKey(ply),
-                                             ContextCorrectionKeyA(ply), ContextCorrectionKeyB(ply));
+            int keyPly = UseQsEntryKey ? entryPly : ply;
+            bestScore = UseQsContCorrection
+                ? _corrections.Correct(board, rawEval + OptimismTerm(board),
+                                       ContinuationCorrectionKey(keyPly),
+                                       ContextCorrectionKeyA(keyPly), ContextCorrectionKeyB(keyPly))
+                : _corrections.Correct(board, rawEval + OptimismTerm(board), 0);
 
             // A stored SCORE beats the static evaluation as a stand-pat floor
             // when its bound points the right way: it came from a real search
@@ -4466,7 +4646,7 @@ public sealed class AlphaBetaSearch
             _incremental?.CompleteThreatDelta(board);
 
             moveCount++;
-            int score = -Quiescence(board, -beta, -alpha, ply + 1);
+            int score = -Quiescence(board, -beta, -alpha, ply + 1, entryPly: entryPly);
             board.UnmakeMove();
             _incremental?.Pop();
 

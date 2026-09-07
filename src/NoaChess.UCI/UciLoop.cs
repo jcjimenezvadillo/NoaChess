@@ -1039,6 +1039,29 @@ public sealed class UciLoop
             _engine.UseRootScoreOrdering = _options.RootScoreOrdering;
         if (changed == "Razoring")
             _engine.UseRazoring = _options.Razoring;
+        if (changed == "PickerCheckBonus")
+            NoaChess.Engine.Heuristics.MovePicker.CheckBonus = _options.PickerCheckBonus;
+        if (changed == "PickerThreatWeight")
+            NoaChess.Engine.Heuristics.MovePicker.ThreatEscapeWeight = _options.PickerThreatWeight;
+        if (changed == "NoDecayOnRelaunch")
+            _engine.UseNoDecayOnRelaunch = _options.NoDecayOnRelaunch;
+        if (changed == "QsChecks")
+            _engine.UseQsChecks = _options.QsChecks;
+        if (changed == "ProbCutAllowNull")
+            _engine.UseProbCutAllowNull = _options.ProbCutAllowNull;
+        if (changed == "FutilityFailSoft")
+            _engine.UseFutilityFailSoft = _options.FutilityFailSoft;
+        if (changed == "CaptureFutility")
+            _engine.UseCaptureFutility = _options.CaptureFutility;
+        if (changed == "HistoryPrune")
+            _engine.UseHistoryPrune = _options.HistoryPrune;
+        if (changed == "QsContCorrection")
+            _engine.UseQsContCorrection = _options.QsContCorrection;
+        if (changed == "SingularTight")
+            _engine.UseSingularTight = _options.SingularTight;
+        if (changed == "QsEntryKey")
+            _engine.UseQsEntryKey = _options.QsEntryKey;
+        // ClockLead is read by ParseLimits directly; nothing to push.
         if (changed == "LmpAllDepths")
             _engine.UseLmpAllDepths = _options.LmpAllDepths;
         if (changed == "QuietSeePrune")
@@ -1459,8 +1482,24 @@ public sealed class UciLoop
             // Game ply (halfmoves elapsed) drives the optimum-time curve: the
             // engine spends a growing share of its clock as the game advances.
             int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
+            // ClockLead (2026-09-07, from a user observation): when this side
+            // holds more clock than the opponent, the optimum grows by the
+            // ratio of the two clocks, capped at 2x. In the bot's games the
+            // engine ends with a median 1.5x to 2x the opponent's time (and
+            // far more at rapid: 8:08 against 2:26 at move 24 of a 10-minute
+            // game), which is depth left unused. The hard maximum and the
+            // sustainability rails are untouched, so the extra spend can only
+            // come out of a lead we demonstrably have; with equal clocks the
+            // budget is exactly what it was.
+            int scalePercent = _options.TimeScale;
+            long? oppTime = _board.SideToMove == Color.White ? Value("btime") : Value("wtime");
+            if (_options.ClockLead && oppTime is long opp && opp > 0 && time > opp)
+            {
+                double lead = Math.Min(2.0, time / (double)opp);
+                scalePercent = (int)Math.Round(scalePercent * lead);
+            }
             limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly,
-                                           _options.TimeScale);
+                                           scalePercent);
             hasLimit = true;
         }
 
