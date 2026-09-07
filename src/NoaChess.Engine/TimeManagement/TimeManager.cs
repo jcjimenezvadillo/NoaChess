@@ -99,14 +99,6 @@ public static class TimeManager
         // Bound the target by inc + clock/16 and the hard deadline by
         // inc + clock/4: every move stays affordable, and near-exhausted
         // clocks stabilize around the increment instead of flagging.
-        if (movesToGo is null or <= 0)
-        {
-            long sustainableOptimum = incrementMs + time / 16;
-            long sustainableMaximum = Math.Max(1, incrementMs + time / 4 - moveOverheadMs);
-            optimum = Math.Min(optimum, sustainableOptimum);
-            maximum = Math.Min(maximum, sustainableMaximum);
-        }
-
         // TimeScale (audit 2026-09-08): a plain multiplier on the optimum so
         // the bot's measured under-spend can be priced. Over 483 bot games at
         // 60+1, 60+2, 180+1 and 180+2 (2026-09-01 to 09-07) the engine ended
@@ -117,8 +109,20 @@ public static class TimeManager
         // the deployment control decides. The maximum is never scaled: it is
         // the safety rail and stays bounded by the clock as before.
         // The percent may exceed 100 by the clock-lead ratio as well (UciLoop).
+        // Applied BEFORE the sustainability guard (moved 2026-09-08, from a
+        // bot game that reached 0:12 against 3:52): the guard is the brake
+        // that keeps every move affordable, and a scaled optimum has to obey
+        // it like any other.
         if (timeScalePercent != 100)
             optimum = Math.Max(1, optimum * timeScalePercent / 100);
+
+        if (movesToGo is null or <= 0)
+        {
+            long sustainableOptimum = incrementMs + time / 16;
+            long sustainableMaximum = Math.Max(1, incrementMs + time / 4 - moveOverheadMs);
+            optimum = Math.Min(optimum, sustainableOptimum);
+            maximum = Math.Min(maximum, sustainableMaximum);
+        }
 
         if (optimum > maximum)
             optimum = maximum;

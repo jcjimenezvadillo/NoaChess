@@ -91,6 +91,8 @@ public sealed class UciOptions
     public bool KillerShallowing { get; private set; } = true;
     public bool TbPvCap { get; private set; }
     public bool TbResistance { get; private set; } = true;
+    // Progress tie-break in tablebase-won roots outside the tables (see AlphaBetaSearch.UseTbWinTieBreak).
+    public bool TbWinTieBreak { get; private set; } = true;
     // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
     public bool LostResistance { get; private set; }
     public int LostResistanceBound { get; private set; } = 600;
@@ -220,6 +222,7 @@ public sealed class UciOptions
         output.WriteLine("option name KillerShallowing type check default true");
         output.WriteLine("option name TbPvCap type check default false");
         output.WriteLine("option name TbResistance type check default true");
+        output.WriteLine("option name TbWinTieBreak type check default true");
         output.WriteLine("option name LostResistance type check default false");
         output.WriteLine("option name LostResistanceBound type spin default 600 min 100 min 100 max 5000".Replace("min 100 min 100", "min 100"));
         output.WriteLine("option name CaptureLmr type check default false");
@@ -441,6 +444,9 @@ public sealed class UciOptions
             case "tbresistance" when bool.TryParse(value, out bool tbr):
                 TbResistance = tbr;
                 return "TbResistance";
+            case "tbwintiebreak" when bool.TryParse(value, out bool tbw):
+                TbWinTieBreak = tbw;
+                return "TbWinTieBreak";
             case "lostresistance" when bool.TryParse(value, out bool lrs):
                 LostResistance = lrs;
                 return "LostResistance";
