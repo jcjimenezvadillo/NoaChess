@@ -632,6 +632,53 @@ public sealed class Board
         return count;
     }
 
+    // The reference's repetition rule, distinguished from CountRepetitions by
+    // WHERE the earlier occurrence lies. 'ply' is the distance from the search
+    // root to the current position.
+    //
+    // A position that repeats one it reached earlier INSIDE the search
+    // (distance < ply) is a draw: the side to move can force the cycle again.
+    // A position that repeats one from the GAME history (at or before the root)
+    // is not: the earlier occurrence is a fact, not a choice, and either side
+    // may still deviate. Only a genuine threefold - the earlier occurrence had
+    // itself already occurred - is a draw there.
+    //
+    // CountRepetitions makes no such distinction, and scoring every game-history
+    // repetition as a draw has a cost in both directions: a winning engine sees
+    // 0 wherever the opponent can steer back to an earlier position, so it
+    // abandons plans it could still pursue by deviating later; a losing engine
+    // credits itself with draws the opponent can refuse.
+    public bool IsRepetition(int ply)
+    {
+        if (HalfmoveClock < 4 || _historyCount < 4)
+            return false;
+
+        int oldest = OldestRepetitionFrame();
+        ulong key = ZobristKey;
+        ulong[] keys = _historyKeys;
+
+        // The same side to move sits an even number of plies back.
+        for (int i = _historyCount - 2; i >= oldest; i -= 2)
+        {
+            if (keys[i] != key)
+                continue;
+
+            int distance = _historyCount - i;
+            if (distance < ply)
+                return true;
+
+            // At or before the root: a draw only if that occurrence was itself
+            // a repetition. Its reversible window is a prefix of ours (the
+            // clock only counts up between them), so the same lower bound holds.
+            for (int j = i - 2; j >= oldest; j -= 2)
+                if (keys[j] == key)
+                    return true;
+            return false;
+        }
+
+        return false;
+    }
+
     // First frame index a repetition scan may look at. Frames below it are
     // either older than the fifty-move clock or behind a null move.
     private int OldestRepetitionFrame()

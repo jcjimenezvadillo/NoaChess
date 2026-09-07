@@ -1025,6 +1025,26 @@ public sealed class UciLoop
             _engine.UseDrawTieBreak = _options.DrawTieBreak;
         if (changed == "SmpOvershootTaper")
             _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
+        if (changed == "RepetitionAfterRoot")
+            _engine.UseRepetitionAfterRoot = _options.RepetitionAfterRoot;
+        if (changed == "NmpNonPvOnly")
+            _engine.UseNmpNonPvOnly = _options.NmpNonPvOnly;
+        if (changed == "TtEvalRefine")
+            _engine.UseTtEvalRefine = _options.TtEvalRefine;
+        if (changed == "TtKeepMoveOnFailLow")
+            _engine.UseTtKeepMoveOnFailLow = _options.TtKeepMoveOnFailLow;
+        if (changed == "TtMateReuse")
+            _engine.UseTtMateReuse = _options.TtMateReuse;
+        if (changed == "RootScoreOrdering")
+            _engine.UseRootScoreOrdering = _options.RootScoreOrdering;
+        if (changed == "Razoring")
+            _engine.UseRazoring = _options.Razoring;
+        if (changed == "LmpAllDepths")
+            _engine.UseLmpAllDepths = _options.LmpAllDepths;
+        if (changed == "QuietSeePrune")
+            _engine.UseQuietSeePrune = _options.QuietSeePrune;
+        if (changed == "CaptureSeePruneDeep")
+            _engine.UseCaptureSeePruneDeep = _options.CaptureSeePruneDeep;
         if (changed == "SmpDiversify")
             _engine.UseSmpDiversify = _options.SmpDiversify;
         if (changed == "SmpAspDiversify")
@@ -1439,7 +1459,8 @@ public sealed class UciLoop
             // Game ply (halfmoves elapsed) drives the optimum-time curve: the
             // engine spends a growing share of its clock as the game advances.
             int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
-            limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly);
+            limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly,
+                                           _options.TimeScale);
             hasLimit = true;
         }
 

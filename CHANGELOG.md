@@ -1,4 +1,69 @@
 # CHANGELOG
+## 2026-09-07 (v5.8.0) - the transposition table was throwing away its best moves
+
+**The release, in one line: a node that failed low overwrote the table's best move with the best of the
+moves that failed, and fixing that alone removes a third of the tree at fixed depth and measures
++43.3 Elo at fixed nodes, the largest single search gain this project has ever recorded.**
+
+**Where it came from.** After v5.7.0 shipped, the whole engine was read again line by line against the
+reference and three other open engines: board, generator, search, time manager, transposition table, move
+picker, every history table, the SMP coordinator, the UCI loop, the NNUE evaluator with its lazy
+accumulator stack and kernels, the model loader and the tablebase prober. The search stores its result in
+the transposition table with the move it found best. At a node that fails low that move is only the best
+of the moves that failed, ranked by fail-soft upper bounds, and storing it replaced whatever move an earlier
+visit had proved good. The reference never stores a move at a fail-low node: its best move is by
+construction a move that raised alpha, and on a fail-low the table keeps the move it already held. This
+engine did the opposite since the transposition table existed.
+
+**Measured.** `TtKeepMoveOnFailLow` ON: the 60-position bench at depth 12 returns **9,658,211 nodes
+against 14,994,140** with it off, the same depth reached with a third fewer nodes. Fixed-node SPRT at
+100,000 nodes per move, same binary with the option on against off: **+43.3 Elo [+20.9, +65.7], LLR +3.0,
+H1 over 411 games** (117 wins, 66 losses, 228 draws). It ships ON.
+
+**Four exact repairs, no option.** Four "decisive score" guards stopped at the mate bound and let the
+tablebase band through, which sits just below it: the null-move cutoff could accept a tablebase win found
+after passing a move, ProbCut accepted a window or a reduced-search score inside the band and returned a
+heuristic value minus its margin for a position the tables call lost, the transposition-table ProbCut
+shortcut did the same, and singular extension took a tablebase score as a candidate. The reference tests
+`is_win` and `is_decisive`, which cover both bands. Without tablebases no such score exists, so the bench
+is node-identical; with them the search stops mixing the two kinds of score in exactly the lost endings
+that the last two releases were about.
+
+**Nine further divergences ship as options, off, each with its node count at depth 12 and its SPRT queued
+at fixed nodes.** `TtEvalRefine` (a stored score refines the static evaluation the reverse-futility test
+reads when its bound points that way; the quiescence stand-pat already did this, the main search never
+did): 13,976,262. `NmpNonPvOnly` (null move only off the principal variation, as the reference and every
+audited engine do; this engine nulled at PV nodes too): 14,155,533. `RepetitionAfterRoot` (the reference's
+repetition rule: a single repetition counts as a draw only when the earlier occurrence lies inside the
+search; a repetition of a position from the game history needs the threefold; new `Board.IsRepetition`
+with its own test file): 14,914,998. `TtMateReuse` (a stored mate is reused whenever the fifty-move
+counter plus the mate distance stays within 100 plies, instead of only at a zeroed counter): 15,922,429.
+`Razoring` (reference step 7, never present here): 14,444,805. `LmpAllDepths` (late move pruning at every
+depth, not only at three or less): 14,273,590. `QuietSeePrune` (a quiet move that hangs material by static
+exchange is pruned; this engine never did that outside the pruning ladder): 14,719,418.
+`CaptureSeePruneDeep` (capture SEE pruning at every depth with a margin that grows with it): 14,054,652.
+`RootScoreOrdering` (root moves by the previous iteration's scores) measured 15,499,259, worse than the
+picker, and stays documented rather than measured. `TimeScale` is a spin on the clock optimum, for the
+finding below. The previous audit had called the repetition rule "equivalent to the reference"; it was not,
+and that is why the second read was done character by character.
+
+**The bot's clock, measured against its opponents.** Over 483 bot games at 60+1, 60+2, 180+1 and 180+2
+(2026-09-01 to 09-07), reading the clock comments of both sides, the engine ends its games with a median
+1.5x to 1.96x the opponent's remaining time and spends about 84% of what they spend, with zero forfeits. At
+this project's measured ~65 Elo per doubling of time that is roughly 15 Elo unused, if the hard deadline
+keeps the forfeit count at zero; `TimeScale` 125 is queued at 60+1 in the bot's own configuration.
+
+**The bot's draws, judged.** 559 bot games since 2026-09-01: 218 draws, 117 by repetition, 41 by the
+fifty-move rule, 40 by agreement, 17 by material, 3 stalemates; 34 of the 59 draws against opponents rated
+50 or more points lower were repetitions. Judged by an independent 3461 engine, eight plies before the end
+only 1 of the 117 repetition draws had the engine at +100 or better, and sampling the whole game every six
+plies only 7 ever reached +150 and none +300; the fifty-move, agreement and material draws show no thrown
+win either. The draws are level positions, not wins given away: against those opponents the engine does not
+create the advantage, which is strength, and strength is what this release adds.
+
+**Tests: 434** (Core 128, Engine 306), with `RepetitionRuleTests` checking `Board.IsRepetition` against a
+naive model over random games with null moves, and the tablebase score test extended to the mate-reuse rule.
+
 ## 2026-09-07 (v5.7.0) - a lost position stops being an excuse to give pieces away
 
 **The release, in one line: the evaluation saturates once a position is decided, and the engine was

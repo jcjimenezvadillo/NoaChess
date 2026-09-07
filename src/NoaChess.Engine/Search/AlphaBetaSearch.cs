@@ -1169,6 +1169,75 @@ public sealed class AlphaBetaSearch
     // nodes: it changes node counts.
     public bool UseTtNoPvCutoff = false;
 
+    // ---- Audit of 2026-09-08: six divergences from the reference, each behind
+    // its own switch so it can be measured alone. ----
+
+    // The reference's repetition rule (see Board.IsRepetition). This engine
+    // scored ANY single repetition as a draw, including a repetition of a
+    // position from the game history before the root. Over 559 bot games
+    // (2026-09-01 to 09-07) 218 ended drawn and 117 of those by repetition,
+    // far ahead of the fifty-move rule (41) and agreement (40); 34 of the 59
+    // draws against opponents rated 50+ points lower were repetitions.
+    public bool UseRepetitionAfterRoot = false;
+
+    // Null move pruning only off the principal variation. The reference (and
+    // every audited engine) never nulls at a PV node; this engine nulled
+    // everywhere, so a null cutoff could end a PV node on a heuristic and hand
+    // the root a fail-high it then re-searched.
+    public bool UseNmpNonPvOnly = false;
+
+    // A stored transposition score refines the static evaluation the pruning
+    // reads when its bound points that way (reference step 5). Quiescence
+    // already does this for its stand-pat; the main search never did.
+    public bool UseTtEvalRefine = false;
+
+    // A fail-low node stores NO move, so the table keeps the move it already
+    // had for the position (the reference's bestMove is only ever a move that
+    // raised alpha). This engine stored the best of the failing moves, which
+    // overwrote a cutoff move from an earlier visit with a fail-soft bound.
+    //
+    // ON since v5.8.0. Bench at depth 12: 9,658,211 nodes against 14,994,140,
+    // a third of the tree gone at the same depth, and the fixed-node SPRT
+    // (100k nodes, 2026-09-07) read +43.3 [+20.9, +65.7], LLR +3.0, H1 over
+    // 411 games - the largest single search gain this project has measured.
+    public bool UseTtKeepMoveOnFailLow = true;
+
+    // Reuse a stored MATE score whenever the mate lands before the fifty-move
+    // counter can expire, instead of only at a zeroed counter. The mate
+    // distance is in the score, so the test is exact.
+    public bool UseTtMateReuse = false;
+
+    // Order the root moves by the previous iteration's fail-soft scores
+    // (best first, then by how close each came) instead of by the generic
+    // picker every iteration. Bench at depth 12: +3.4% nodes, so the picker's
+    // order is the better one here; kept as an option for the record.
+    public bool UseRootScoreOrdering = false;
+
+    // Razoring (reference step 7), which this engine never had: at a non-PV
+    // node whose static eval sits hopelessly below alpha, answer with the
+    // quiescence value instead of searching. The reference margin 483 +
+    // 318 * depth^2 is in its units; x0.48 gives 232 + 153 * depth^2 here.
+    public bool UseRazoring = false;
+
+    // Late move pruning at EVERY depth (reference moveCountPruning), not only
+    // at depth <= 3. The count is the same 3 + depth^2, halved when not
+    // improving. The pruning ladder measured this only as part of a four-rung
+    // package; this is the rung alone.
+    public bool UseLmpAllDepths = false;
+
+    // SEE pruning of quiet moves (reference: see_ge(-27 * lmrDepth^2)), which
+    // this engine never applied outside the ladder: a quiet move that hangs a
+    // piece outright is searched like any other. Our units and our full
+    // depth in place of the reduced one, so the margin is the looser side.
+    public bool UseQuietSeePrune = false;
+
+    // SEE pruning of captures at every depth with a margin that grows with
+    // it (reference: see_ge(-157 * depth) in its units, 75 per ply here),
+    // instead of the flat one pawn at depth <= 2 only.
+    public bool UseCaptureSeePruneDeep = false;
+    private readonly int[] _rootPrevScores = new int[1 << 16];
+    private static int MoveKey(Move move) => ((int)move.Flag << 12) | (move.To << 6) | move.From;
+
     // ---- Lazy SMP worker diversification ----
     //
     // 0 is the main worker; helpers get 1, 2, 3... Until 2026-09-01 helpers
@@ -1472,6 +1541,8 @@ public sealed class AlphaBetaSearch
         // from the previous search describe other positions).
         _nmpMinPly = 0;
         Array.Clear(_stackStatScore);
+        if (UseRootScoreOrdering)
+            Array.Fill(_rootPrevScores, -Infinity);
 
         // Anchor the incremental evaluator's state (NNUE accumulators) at
         // the new root position.
@@ -2175,6 +2246,32 @@ public sealed class AlphaBetaSearch
             contHist: default, counterMove: Move.None,
             captureHistory: _captureHistory);
 
+        // Root moves by what the previous iteration learned about each of
+        // them: the best move first, then the rest by their fail-soft scout
+        // scores, which say how close each came. Stable, so moves the previous
+        // iteration never reached keep the picker's order among themselves.
+        if (UseRootScoreOrdering && depth > 1)
+        {
+            int[] scores = moves.Scores;
+            for (int i = 0; i < moves.Count; i++)
+                scores[i] = _rootPrevScores[MoveKey(moves[i])];
+            Move[] items = moves.Moves;
+            for (int i = 1; i < moves.Count; i++)
+            {
+                Move m = items[i];
+                int s = scores[i];
+                int j = i - 1;
+                while (j >= 0 && scores[j] < s)
+                {
+                    items[j + 1] = items[j];
+                    scores[j + 1] = scores[j];
+                    j--;
+                }
+                items[j + 1] = m;
+                scores[j + 1] = s;
+            }
+        }
+
         // The root's own static evaluation, corrected exactly as an inner node
         // corrects its own, so a ply-2 node's "improving" compares like with
         // like. One evaluation per iteration. See UseRootStaticEval.
@@ -2306,6 +2403,11 @@ public sealed class AlphaBetaSearch
             board.UnmakeMove();
             _incremental?.Pop();
             searched++;
+
+            // What this iteration learned about the move, for the next one's
+            // ordering. A hard stop leaves garbage, which the next line skips.
+            if (UseRootScoreOrdering && !_stopped)
+                _rootPrevScores[MoveKey(move)] = score;
 
             long nodesSpent = _nodes - nodesBefore;
             iterationNodes += nodesSpent;
@@ -2773,7 +2875,9 @@ public sealed class AlphaBetaSearch
                 return 0;
             return -MateScore + ply;
         }
-        if (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
+        if (UseRepetitionAfterRoot
+                ? board.IsRepetition(ply)
+                : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
             return 0;
         if (GameState.IsDeadPosition(board))
             return 0;
@@ -2992,6 +3096,23 @@ public sealed class AlphaBetaSearch
             correctionDelta = staticEval - rawStaticEval - optimismTerm;
         }
 
+        // The evaluation the reverse-futility test reads: the corrected static
+        // eval, or a stored search score when its bound says it is a better
+        // estimate (reference step 5). Never a mate or tablebase score, and
+        // never in check. staticEval itself is untouched so improving, the
+        // stack and the correction update keep reading the evaluation.
+        int pruningEval = staticEval;
+        if (UseTtEvalRefine && !inCheck && ttHit && entry.Bound != BoundType.None
+            && CanReuseTtScore(entry.Score, board.HalfmoveClock))
+        {
+            int ttValue = FromTT(entry.Score, ply);
+            if (Math.Abs(ttValue) < MateBound
+                && (ttValue > staticEval
+                        ? entry.Bound is BoundType.LowerBound or BoundType.Exact
+                        : entry.Bound is BoundType.UpperBound or BoundType.Exact))
+                pruningEval = ttValue;
+        }
+
         // ---- Improvement / improving ----
         // How much our static eval gained over our previous position - two
         // plies back, or four when the previous position was a check. Feeds
@@ -3009,6 +3130,12 @@ public sealed class AlphaBetaSearch
             : 0;
         bool improving = improvement > 0;
 
+        // ---- Razoring ----
+        if (UseRazoring && nonPv && !inCheck && excluded == Move.None
+            && Math.Abs(alpha) < TbScoreBound
+            && staticEval < alpha - 232 - 153 * depth * depth)
+            return Quiescence(board, alpha, beta, ply);
+
         // ---- Reverse futility pruning (a.k.a. static null move) ----
         // If our static eval is so far above beta that even conceding a healthy
         // margin per remaining ply keeps us above it, the opponent will avoid
@@ -3020,10 +3147,10 @@ public sealed class AlphaBetaSearch
         // cut comes easier, after a maligned one it needs more headroom.
         if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
             && excluded == Move.None
-            && staticEval >= beta
-            && staticEval - 85 * (depth - (improving ? 1 : 0))
+            && pruningEval >= beta
+            && pruningEval - 85 * (depth - (improving ? 1 : 0))
                - (ply > 0 ? _stackStatScore[ply - 1] : 0) / StatScoreRfpDiv >= beta)
-            return staticEval;
+            return pruningEval;
 
         // ---- Null Move Pruning (with verification search) ----
         // "Pass" the turn: if the opponent moving twice in a row still cannot
@@ -3052,6 +3179,7 @@ public sealed class AlphaBetaSearch
         // alone here just forbids profitable probes. The option stays for a
         // future package test; do not measure it alone.
         if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
+            && (!UseNmpNonPvOnly || nonPv)
             && board.HasNonPawnMaterial(board.SideToMove)
             && (!UseNmpEvalGate
                 || (staticEval != NoEval
@@ -3087,13 +3215,18 @@ public sealed class AlphaBetaSearch
             if (_stopped)
                 return 0;
 
-            if (nullScore >= beta && nullScore < MateBound)
+            if (nullScore >= beta && nullScore < TbScoreBound)
             {
                 // Mate-range null scores never cut (the guard above): a mate
                 // "found" after passing a move is exactly the unproven kind -
                 // falling through to the real search keeps forced mates visible
                 // at the depth they deserve (measured: the reference's cap-to-
                 // beta hid a WAC mate-in-4 through depth 17 on our search).
+                // Tablebase-band scores are excluded for the same reason
+                // (audit 2026-09-08: the guard stopped at MateBound, so a null
+                // move could "prove" a tablebase win). The reference tests
+                // is_win, which covers both bands. Node-identical without
+                // tablebases, where no such score exists.
 
                 // Shallow nodes trust the null cutoff outright; so does any
                 // node inside a verification search (no recursive verifying).
@@ -3121,8 +3254,14 @@ public sealed class AlphaBetaSearch
         // critical correction: no cutoff may rest on qsearch alone.
         int probBeta = beta + ProbCutMargin
                      - ProbCutImprovingMargin * (improving ? 1 : 0);
+        // Decisive windows - mate OR tablebase band - are excluded, as the
+        // reference's is_decisive does (audit 2026-09-08: the guard stopped
+        // at MateBound, and a window inside the tablebase-loss band let a
+        // capture's reduced search return a heuristic score minus the margin
+        // for a position the tables call lost). Node-identical without
+        // tablebases.
         if (!inCheck && depth >= 3 && excluded == Move.None
-            && Math.Abs(beta) < MateBound
+            && Math.Abs(beta) < TbScoreBound
             && !(ttHit && entry.Bound != BoundType.None
                  && FromTT(entry.Score, ply) < probBeta))
         {
@@ -3184,7 +3323,7 @@ public sealed class AlphaBetaSearch
                               rawStaticEval, BoundType.LowerBound, move, ttPv);
 
                     // Reduced searches do not establish mate/TB scores.
-                    if (Math.Abs(score) < MateBound)
+                    if (Math.Abs(score) < TbScoreBound)
                         return score - (probBeta - beta);
                 }
             }
@@ -3201,10 +3340,10 @@ public sealed class AlphaBetaSearch
         if (!inCheck && excluded == Move.None && ttHit
             && entry.Bound == BoundType.LowerBound
             && entry.Depth >= 1 && entry.Depth >= depth - 4
-            && Math.Abs(beta) < MateBound)
+            && Math.Abs(beta) < TbScoreBound)
         {
             int ttScore = FromTT(entry.Score, ply);
-            if (ttScore >= smallProbBeta && Math.Abs(ttScore) < MateBound)
+            if (ttScore >= smallProbBeta && Math.Abs(ttScore) < TbScoreBound)
                 return smallProbBeta;
         }
         // ---- Singular extension detection ----
@@ -3281,7 +3420,9 @@ public sealed class AlphaBetaSearch
             && CanReuseTtScore(entry.Score, board.HalfmoveClock))
         {
             int ttScore = FromTT(entry.Score, ply);
-            if (Math.Abs(ttScore) < MateBound)
+            // Decisive (mate or tablebase) stored scores are not singular
+            // material: the reference tests !is_decisive here too.
+            if (Math.Abs(ttScore) < TbScoreBound)
             {
                 int singularBeta = ttScore - 2 * depth;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
@@ -3480,7 +3621,13 @@ public sealed class AlphaBetaSearch
                 // halve the count before the cut (reference LMP shape).
                 int lmpThreshold = 3 + depth * depth;
                 if (!improving) lmpThreshold /= 2;
-                if (depth <= 3 && quietsSearched >= lmpThreshold)
+                if ((depth <= 3 || UseLmpAllDepths) && quietsSearched >= lmpThreshold)
+                    continue;
+
+                // A quiet move that loses material outright by SEE is not the
+                // one that rescues a node; the bar tightens with depth squared.
+                if (UseQuietSeePrune && depth <= 8
+                    && StaticExchangeEvaluator.Evaluate(board, move) < -23 * depth * depth)
                     continue;
 
                 // Futility pruning (reference parent-node shape): if the static
@@ -3533,8 +3680,11 @@ public sealed class AlphaBetaSearch
                 // SEE pruning near the horizon: a capture that clearly loses
                 // material will not recover the loss in the couple of plies
                 // left; skip it.
-                if (depth <= 2
-                    && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
+                if (UseCaptureSeePruneDeep
+                    ? Math.Abs(alpha) < TbScoreBound
+                      && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 75 * depth)
+                    : depth <= 2
+                      && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
                     continue;
             }
 
@@ -3954,8 +4104,12 @@ public sealed class AlphaBetaSearch
             BoundType bound = bestScore <= originalAlpha ? BoundType.UpperBound
                             : bestScore >= beta ? BoundType.LowerBound
                             : BoundType.Exact;
+            // A fail-low proved nothing about any move, so the table keeps the
+            // move it had (Store preserves the old move when given none).
+            Move storedMove = UseTtKeepMoveOnFailLow && bound == BoundType.UpperBound
+                ? Move.None : bestMove;
             _tt.Store(board.ZobristKey, depth, ToTT(bestScore, ply),
-                      inCheck ? TTEntry.NoStaticEval : rawStaticEval, bound, bestMove, ttPv);
+                      inCheck ? TTEntry.NoStaticEval : rawStaticEval, bound, storedMove, ttPv);
 
             // Learn only from quiet conclusions whose bound points in the same
             // direction as the evaluation error. Captures/promotions change the
@@ -4060,7 +4214,9 @@ public sealed class AlphaBetaSearch
                 return 0;
             return -MateScore + ply;
         }
-        if (board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
+        if (UseRepetitionAfterRoot
+                ? board.IsRepetition(ply)
+                : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
             return 0;
         if (GameState.IsDeadPosition(board))
             return 0;
@@ -4440,7 +4596,26 @@ public sealed class AlphaBetaSearch
     // score learned immediately after a zeroing move is therefore unsafe in
     // the same placement with a live rule-50 counter. Keep its move for
     // ordering, but conservatively refuse its bound until the counter resets.
-    private static bool CanReuseTtScore(int score, int halfmoveClock)
-        => halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound);
+    private bool CanReuseTtScore(int score, int halfmoveClock)
+        => CanReuseTtScore(score, halfmoveClock, UseTtMateReuse);
+
+    private static bool CanReuseTtScore(int score, int halfmoveClock, bool mateReuse)
+    {
+        if (halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound))
+            return true;
+
+        // A stored mate score is node-relative, so MateScore - |score| is the
+        // number of plies from this node to the mate. The line cannot be cut
+        // short by the fifty-move rule if it ends before the counter reaches
+        // 100 even with no zeroing move on the way (mate on the hundredth
+        // half-move still wins). Tablebase scores stay clock-zero only: their
+        // distance is not in the score.
+        if (mateReuse)
+        {
+            int magnitude = Math.Abs(score);
+            return magnitude > MateBound && halfmoveClock + (MateScore - magnitude) <= 100;
+        }
+        return false;
+    }
 
 }
