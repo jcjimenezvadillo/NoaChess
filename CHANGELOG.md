@@ -146,6 +146,8 @@ create the advantage, which is strength, and strength is what this release adds.
 **Tests: 434** (Core 128, Engine 306), with `RepetitionRuleTests` checking `Board.IsRepetition` against a
 naive model over random games with null moves, and the tablebase score test extended to the mate-reuse rule.
 
+**Gauntlet (2026-09-08).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.7.0: **48.8% over 240 games, 3328 CCRL +/- 44** (v5.6.0 3347, v5.5.0 3328, v5.4.0 3337 on the same field), measured on a box that was also running four fixed-node SPRT chains and a four-thread round-robin; the fixed-node gain of the release (+43 Elo, H1) does not show at 60+0.6 within this interval.
+
 ## 2026-09-07 (v5.7.0) - a lost position stops being an excuse to give pieces away
 
 **The release, in one line: the evaluation saturates once a position is decided, and the engine was
