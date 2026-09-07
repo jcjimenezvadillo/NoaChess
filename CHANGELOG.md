@@ -1,4 +1,18 @@
 # CHANGELOG
+
+## 2026-09-08 (v5.8.2) - quiet moves that lose material are pruned
+
+**The release, in one line: the reference prunes quiet moves whose static exchange loses more than
+a depth-scaled margin, this engine did not, and the option measured +15.7 Elo at fixed nodes, H1.**
+
+**Quiet SEE pruning.** At depth 8 and below, a quiet move whose static exchange evaluation loses more
+than `23 x depth^2` centipawns is skipped. Fixed-node SPRT at 100,000 nodes (`QuietSeePrune`):
+**+15.7 Elo +/- 11.8, LLR +2.96, H1 over 1,657 games** (LOS 99.5%, draw ratio 50.2%). Ships ON.
+Bench 8,071,333 nodes at depth 12 with the shipped defaults (8,134,147 in v5.8.1).
+
+Everything else is v5.8.1 as rebuilt the same night (`TbWinTieBreak` for tablebase-won roots outside
+the tables, the clock-lead scale under the sustainability guard). **Tests: 438** (Core 128, Engine 310).
+
 ## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, a clock lead spent, and a tablebase win no longer bought with pieces
 
 **The release, in one line: two more reference prunings measured and switched on (late move pruning at

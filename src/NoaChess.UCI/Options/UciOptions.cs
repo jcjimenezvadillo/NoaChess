@@ -58,7 +58,7 @@ public sealed class UciOptions
     public bool RootScoreOrdering { get; private set; }
     public bool Razoring { get; private set; }
     public bool LmpAllDepths { get; private set; } = true;
-    public bool QuietSeePrune { get; private set; }
+    public bool QuietSeePrune { get; private set; } = true;
     public bool CaptureSeePruneDeep { get; private set; }
     // Percent multiplier on the clock optimum (see TimeManager.FromClock).
     public int TimeScale { get; private set; } = 100;
@@ -195,7 +195,7 @@ public sealed class UciOptions
         output.WriteLine("option name RootScoreOrdering type check default false");
         output.WriteLine("option name Razoring type check default false");
         output.WriteLine("option name LmpAllDepths type check default true");
-        output.WriteLine("option name QuietSeePrune type check default false");
+        output.WriteLine("option name QuietSeePrune type check default true");
         output.WriteLine("option name CaptureSeePruneDeep type check default false");
         output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
         output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
