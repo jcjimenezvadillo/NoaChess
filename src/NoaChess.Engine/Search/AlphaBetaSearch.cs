@@ -878,6 +878,31 @@ public sealed class AlphaBetaSearch
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
     private bool _rootLostTb;
 
+    // LostResistance: the same idea as TbResistance, for a position that is
+    // merely LOST BY A LOT rather than lost to a tablebase (added 2026-09-07
+    // from a bot game the user sent).
+    //
+    // The evaluation saturates once a position is decided: at minus seven
+    // pawns, being a knight down as well is not worth another three, it is
+    // worth almost nothing, so the material gradient the engine needs to stop
+    // shedding pieces is exactly the gradient it loses. Measured on that game
+    // (a rook endgame at move 51, depth 17): the knight sacrifice scored -698
+    // and the sane queening -707, so the engine handed a knight over to gain
+    // nine centipawns, and a 3461-rated engine put the same position at -603
+    // and could not save it either. The position was lost; the move still made
+    // the engine look broken, and losing positions are most of what a bot's
+    // spectators see.
+    //
+    // So below the bound the root rounds its scores to whole pawns and lets
+    // the material key separate what is left: among moves the search calls the
+    // same, prefer the one that does not hand the opponent a free capture. A
+    // sacrifice that genuinely resists still scores a bucket higher and wins on
+    // score. Above the bound nothing changes at all.
+    public bool UseLostResistance = true;
+    private const int LostResistanceBound = 600;   // centipawns, root score
+    private const int LostResistanceBucket = 100;  // one pawn per bucket
+    private bool _rootLostBadly;
+
     // DrawTieBreak: the same idea one band up. When the root score is exactly
     // zero, every move the search considers is worth the same and the engine
     // keeps whichever the move ordering put first - which is the previous
@@ -1482,6 +1507,7 @@ public sealed class AlphaBetaSearch
         _rootSide = board.SideToMove;
         _rootAverageScore = ScoreNone;
         _rootLostTb = false;
+        _rootLostBadly = false;
         _rootDrawn = false;
         _optimism = 0;
         for (int depth = 1; depth <= maxIterationDepth; depth++)
@@ -1676,6 +1702,10 @@ public sealed class AlphaBetaSearch
             // TbResistance: a completed iteration concluding in the loss band
             // switches the NEXT iteration's root into resistance mode.
             _rootLostTb = UseTbResistance && score <= -TbScoreBound && score > -MateBound;
+            // Plain "losing badly", strictly above the tablebase band so the two
+            // modes never fight over the same iteration.
+            _rootLostBadly = UseLostResistance && score <= -LostResistanceBound
+                             && score > -TbScoreBound;
             // A completed iteration that ended in a dead draw switches the next
             // one into tie-break mode (see UseDrawTieBreak).
             _rootDrawn = UseDrawTieBreak && score == 0;
@@ -2139,8 +2169,9 @@ public sealed class AlphaBetaSearch
         // and pick by a LOCAL key that adds the child's real evaluation as
         // the tiebreak. The key never leaves this method.
         bool lostMode = _rootLostTb;
-        bool drawMode = _rootDrawn && !lostMode;
-        bool fullWindowMode = lostMode || drawMode;
+        bool lostBadlyMode = _rootLostBadly && !lostMode;
+        bool drawMode = _rootDrawn && !lostMode && !lostBadlyMode;
+        bool fullWindowMode = lostMode || drawMode || lostBadlyMode;
         long bestKey = long.MinValue;
 
         // Effort per root move. Best-move STABILITY alone cannot tell a forced
@@ -2190,7 +2221,9 @@ public sealed class AlphaBetaSearch
             // scores get one; the 2048 cap keeps any graded loss below every
             // non-band score by orders of magnitude.
             int resistance = 0;
-            if (lostMode && score <= -TbScoreBound && score > -MateBound && !_stopped)
+            bool bandLoss = lostMode && score <= -TbScoreBound && score > -MateBound;
+            bool badLoss = lostBadlyMode && score <= -LostResistanceBound && score > -TbScoreBound;
+            if ((bandLoss || badLoss) && !_stopped)
             {
                 // The key is MATERIAL, not the evaluation (changed 2026-09-07).
                 // The static evaluation is blind to the capture the move walks
@@ -2278,9 +2311,21 @@ public sealed class AlphaBetaSearch
             // among lost moves, while any move that ESCAPES the band still
             // scores above the boundary and wins on score alone, and mate
             // scores stay outside the band and keep their full weight.
-            long scoreKey = lostMode && score <= -TbScoreBound && score > -MateBound
-                ? -TbScoreBound
-                : score;
+            //
+            // A position that is merely lost by a lot gets the same treatment
+            // with a coarser sieve: the score is rounded to whole pawns, so
+            // moves the search calls the same to within a pawn are separated by
+            // the material key instead of by noise the saturated evaluation
+            // cannot justify. A move that is genuinely a pawn better still
+            // lands in a higher bucket and wins on score alone.
+            long scoreKey;
+            if (bandLoss)
+                scoreKey = -TbScoreBound;
+            else if (badLoss)
+                scoreKey = (long)Math.Round(score / (double)LostResistanceBucket)
+                           * LostResistanceBucket;
+            else
+                scoreKey = score;
             long key = scoreKey * 4096 + resistance;
             if (fullWindowMode ? key > bestKey
                                : score > bestScore && (searched == 1 || score > alpha))
