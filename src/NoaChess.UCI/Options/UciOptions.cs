@@ -61,6 +61,8 @@ public sealed class UciOptions
     public bool KillerShallowing { get; private set; } = true;
     public bool TbPvCap { get; private set; }
     public bool TbResistance { get; private set; } = true;
+    // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
+    public bool LostResistance { get; private set; } = true;
     public bool CaptureLmr { get; private set; }
     public bool NmpPackage { get; private set; }
     // Convert a pondered search in place on "ponderhit" instead of relaunching
@@ -164,6 +166,7 @@ public sealed class UciOptions
         output.WriteLine("option name KillerShallowing type check default true");
         output.WriteLine("option name TbPvCap type check default false");
         output.WriteLine("option name TbResistance type check default true");
+        output.WriteLine("option name LostResistance type check default true");
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
@@ -314,6 +317,9 @@ public sealed class UciOptions
             case "tbresistance" when bool.TryParse(value, out bool tbr):
                 TbResistance = tbr;
                 return "TbResistance";
+            case "lostresistance" when bool.TryParse(value, out bool lrs):
+                LostResistance = lrs;
+                return "LostResistance";
             case "capturelmr" when bool.TryParse(value, out bool clm):
                 CaptureLmr = clm;
                 return "CaptureLmr";
