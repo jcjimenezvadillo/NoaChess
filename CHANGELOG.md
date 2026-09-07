@@ -8,6 +8,30 @@ material gradient that would stop the engine shedding pieces disappears exactly 
 and what a spectator sees is a move no beginner would play. v5.6.0 fixed this inside the tablebase-lost
 band. This release fixes the ordinary case.
 
+**Rebuilt the same evening, and the first version of this release was wrong.** `LostResistance` shipped
+at noon on a gate that measured material the opponent could capture for free, which is the very key the
+mode optimises: circular. Judged instead by an independent 3461-rated engine over 101 lost positions from
+the bot's own games (its score before the move minus after it), the mode made the engine WORSE at every
+threshold: mean loss 99.8 without it, 141.0 at the shipped bound of -600, 119.7 at -400, 144.6 at -300. It
+is now OFF by default and stays as an option with those numbers. The night's tablebase-band repair passed
+the same test and stays: 207 to 154 mean loss over the 23 band positions, four better and none worse.
+
+**What the investigation found, and what ships instead.** A blunder map over 120 bot games, every position
+scored by the reference engine, puts the blunder rate at 0.8% near equality and 16 to 26% below -750: the
+engine does collapse when losing. The evaluation saturates - at -5 pawns a knight is worth 124 and a rook
+234 to it - so material stops counting where it matters most; that is a training-side limit and the search
+can only patch it. Of the worst blunders, most were king moves in tablebase endings, and the cause was
+precise: a root that is a plain tablebase loss switched the in-search tablebase probe OFF (since v5.0.2.1)
+and the probe requires a zeroed fifty-move counter, which a bare king never has, so the search ran on the
+saturated evaluation and walked into the fastest mate. Two repairs: a lost root now keeps the probe on
+regardless of the counter, so every lost line scores in the flat band and any line mated within the horizon
+scores below it; and when the losing side has no pawns and nothing to capture, the only case where DTZ
+measures resistance and cannot mean "refuse to capture", the root keeps the longest defences by DTZ with a
+four-ply slack. King against king and queen now plays Kc8 with a mate score, the reference's own move,
+instead of Ka8. Bench node-identical. Final gate, deployed noon build against this one over the 101
+positions, independent judge: **mean loss 121.3 to 91.6, whole-piece blunders 14.9% to 11.9%, seven
+positions better and five worse.**
+
 **The game that produced it.** Bot game of 2026-09-07 at 180+2, move 51 of a rook endgame. At depth 17
 the engine scored the knight sacrifice at -698 and the sane queening at -707, and played the sacrifice: it
 handed a knight over for **nine centipawns**. The position was genuinely lost, and that is not the defence
