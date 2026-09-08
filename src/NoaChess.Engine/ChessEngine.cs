@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.8.5";
+    public const string Version = "5.8.6";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -300,6 +300,13 @@ public sealed class ChessEngine
             h.UseQsEntryKey = _search.UseQsEntryKey;
             h.UseLmpAllDepths = _search.UseLmpAllDepths;
             h.UseQuietSeePrune = _search.UseQuietSeePrune;
+            h.UsePriorFailLowBonus = _search.UsePriorFailLowBonus;
+            h.UseLmrDeeperResearch = _search.UseLmrDeeperResearch;
+            h.UseRfpTtMoveGuard = _search.UseRfpTtMoveGuard;
+            h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
+            h.UseDrawRandom = _search.UseDrawRandom;
+            h.UseHindsightDepth = _search.UseHindsightDepth;
+            h.UseCutoffCountLmr = _search.UseCutoffCountLmr;
             h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
@@ -819,6 +826,41 @@ public sealed class ChessEngine
     {
         get => _search.UseQuietSeePrune;
         set => _search.UseQuietSeePrune = value;
+    }
+    public bool UsePriorFailLowBonus
+    {
+        get => _search.UsePriorFailLowBonus;
+        set => _search.UsePriorFailLowBonus = value;
+    }
+    public bool UseLmrDeeperResearch
+    {
+        get => _search.UseLmrDeeperResearch;
+        set => _search.UseLmrDeeperResearch = value;
+    }
+    public bool UseRfpTtMoveGuard
+    {
+        get => _search.UseRfpTtMoveGuard;
+        set => _search.UseRfpTtMoveGuard = value;
+    }
+    public bool UseLmpCountAllMoves
+    {
+        get => _search.UseLmpCountAllMoves;
+        set => _search.UseLmpCountAllMoves = value;
+    }
+    public bool UseDrawRandom
+    {
+        get => _search.UseDrawRandom;
+        set => _search.UseDrawRandom = value;
+    }
+    public bool UseHindsightDepth
+    {
+        get => _search.UseHindsightDepth;
+        set => _search.UseHindsightDepth = value;
+    }
+    public bool UseCutoffCountLmr
+    {
+        get => _search.UseCutoffCountLmr;
+        set => _search.UseCutoffCountLmr = value;
     }
 
     public bool UseCaptureSeePruneDeep

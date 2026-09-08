@@ -105,6 +105,11 @@ public sealed class ContinuationHistory
     public void AddWeightedMalus(int prevPiece, int prevTo, int piece, int to, int depth, int weight)
         => Update(prevPiece, prevTo, piece, to, -Scale(depth, weight));
 
+    // Raw-amount entry point (PriorFailLowBonus): the caller has already shaped
+    // the bonus, as HistoryTable.Add does for the butterfly table.
+    public void Add(int prevPiece, int prevTo, int piece, int to, int amount)
+        => Update(prevPiece, prevTo, piece, to, amount);
+
     private void Update(int prevPiece, int prevTo, int piece, int to, int bonus)
     {
         bonus = Math.Clamp(bonus, -MaxScore, MaxScore);

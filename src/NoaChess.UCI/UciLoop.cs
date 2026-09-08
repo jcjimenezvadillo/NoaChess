@@ -1064,6 +1064,20 @@ public sealed class UciLoop
         // ClockLead is read by ParseLimits directly; nothing to push.
         if (changed == "LmpAllDepths")
             _engine.UseLmpAllDepths = _options.LmpAllDepths;
+        if (changed == "PriorFailLowBonus")
+            _engine.UsePriorFailLowBonus = _options.PriorFailLowBonus;
+        if (changed == "LmrDeeperResearch")
+            _engine.UseLmrDeeperResearch = _options.LmrDeeperResearch;
+        if (changed == "RfpTtMoveGuard")
+            _engine.UseRfpTtMoveGuard = _options.RfpTtMoveGuard;
+        if (changed == "LmpCountAllMoves")
+            _engine.UseLmpCountAllMoves = _options.LmpCountAllMoves;
+        if (changed == "DrawRandom")
+            _engine.UseDrawRandom = _options.DrawRandom;
+        if (changed == "HindsightDepth")
+            _engine.UseHindsightDepth = _options.HindsightDepth;
+        if (changed == "CutoffCountLmr")
+            _engine.UseCutoffCountLmr = _options.CutoffCountLmr;
         if (changed == "QuietSeePrune")
             _engine.UseQuietSeePrune = _options.QuietSeePrune;
         if (changed == "CaptureSeePruneDeep")

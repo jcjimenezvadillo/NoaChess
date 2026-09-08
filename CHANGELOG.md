@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-09-08 (v5.8.6) - the search corrects a reduction it now regrets
+
+**The release, in one line: a node can look back at the reduction its parent's move was given and, when
+the evaluation says that reduction was undeserved, take the ply back.**
+
+**Hindsight depth.** Late move reductions are decided before the child is searched, on move order and
+history alone. Two of the reference engines in this project's collection (Reckless, Pawnocchio) revisit
+that decision one ply later, where the child's own static evaluation is available: if the parent's move
+was reduced by two plies or more and this node's evaluation plus the parent's is negative - the move
+turned out better than the ordering thought - the node is searched one ply deeper; if the move was
+reduced at all and the evaluation confirms the reduction by a margin, one ply shallower, off the
+principal variation. This engine had neither half. Fixed-node SPRT at 100,000 nodes (`HindsightDepth`):
+**+17.0 +/- 12.5 Elo, LLR +2.98, H1 over 1,266 games**. Ships ON. Bench 8,478,755 nodes at depth 12.
+
+Found in the sixth audit pass of 2026-09-08, which read Negamax and Quiescence line by line against the
+reference and then swept the other three engines for mechanisms this one lacks. Six more options came out
+of that pass and are measured or measuring: `PriorFailLowBonus` (-22.2, H0), `LmpCountAllMoves`,
+`LmrDeeperResearch`, `RfpTtMoveGuard`, `DrawRandom`, `CutoffCountLmr`. **Tests: 441.**
+
 ## 2026-09-08 (v5.8.5) - quiescence tries the checks
 
 **The release, in one line: the first ply of quiescence generates checking quiet moves as the reference does,

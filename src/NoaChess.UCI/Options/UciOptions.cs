@@ -59,6 +59,13 @@ public sealed class UciOptions
     public bool Razoring { get; private set; }
     public bool LmpAllDepths { get; private set; } = true;
     public bool QuietSeePrune { get; private set; } = true;
+    public bool PriorFailLowBonus { get; private set; }
+    public bool LmrDeeperResearch { get; private set; }
+    public bool RfpTtMoveGuard { get; private set; }
+    public bool LmpCountAllMoves { get; private set; }
+    public bool DrawRandom { get; private set; }
+    public bool HindsightDepth { get; private set; } = true;
+    public bool CutoffCountLmr { get; private set; }
     public bool CaptureSeePruneDeep { get; private set; }
     // Percent multiplier on the clock optimum (see TimeManager.FromClock).
     public int TimeScale { get; private set; } = 100;
@@ -196,6 +203,13 @@ public sealed class UciOptions
         output.WriteLine("option name Razoring type check default false");
         output.WriteLine("option name LmpAllDepths type check default true");
         output.WriteLine("option name QuietSeePrune type check default true");
+        output.WriteLine("option name PriorFailLowBonus type check default false");
+        output.WriteLine("option name LmrDeeperResearch type check default false");
+        output.WriteLine("option name RfpTtMoveGuard type check default false");
+        output.WriteLine("option name LmpCountAllMoves type check default false");
+        output.WriteLine("option name DrawRandom type check default false");
+        output.WriteLine("option name HindsightDepth type check default true");
+        output.WriteLine("option name CutoffCountLmr type check default false");
         output.WriteLine("option name CaptureSeePruneDeep type check default false");
         output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
         output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
@@ -402,6 +416,27 @@ public sealed class UciOptions
             case "lmpalldepths" when bool.TryParse(value, out bool lad):
                 LmpAllDepths = lad;
                 return "LmpAllDepths";
+            case "priorfaillowbonus" when bool.TryParse(value, out bool a0):
+                PriorFailLowBonus = a0;
+                return "PriorFailLowBonus";
+            case "lmrdeeperresearch" when bool.TryParse(value, out bool a1):
+                LmrDeeperResearch = a1;
+                return "LmrDeeperResearch";
+            case "rfpttmoveguard" when bool.TryParse(value, out bool a2):
+                RfpTtMoveGuard = a2;
+                return "RfpTtMoveGuard";
+            case "lmpcountallmoves" when bool.TryParse(value, out bool a3):
+                LmpCountAllMoves = a3;
+                return "LmpCountAllMoves";
+            case "drawrandom" when bool.TryParse(value, out bool a4):
+                DrawRandom = a4;
+                return "DrawRandom";
+            case "hindsightdepth" when bool.TryParse(value, out bool b0):
+                HindsightDepth = b0;
+                return "HindsightDepth";
+            case "cutoffcountlmr" when bool.TryParse(value, out bool b1):
+                CutoffCountLmr = b1;
+                return "CutoffCountLmr";
             case "quietseeprune" when bool.TryParse(value, out bool qsp):
                 QuietSeePrune = qsp;
                 return "QuietSeePrune";
