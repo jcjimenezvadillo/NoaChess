@@ -1169,7 +1169,11 @@ public sealed class AlphaBetaSearch
     // v5.8.1, exactly the measured behaviour; the deterministic shapes
     // (QsContCorrection off, QsEntryKey) are under measurement and
     // SearchDeterminismTests pins the deterministic configuration.
-    public bool UseQsStackMove = false;
+    // ON since v5.8.3 by criterion: the deterministic configuration (this plus
+    // QsContCorrection off) measured +1.0 +/- 7.1 over 4,109 fixed-node games
+    // (H0, sprt_detvsold_100k), and alone -1.2 +/- 8.9 over 2,673; cost zero,
+    // and the search becomes reproducible (SearchDeterminismTests).
+    public bool UseQsStackMove = true;
 
     // Exempt quiet moves that give DIRECT check from futility pruning (audit
     // find, 2026-09-06). The reference prunes quiets on the static eval only
@@ -1291,7 +1295,9 @@ public sealed class AlphaBetaSearch
     // corrected by the structural tables only (continuation and context keys
     // 0). The determinism repair does not depend on this: both states read
     // nothing left over from another search.
-    public bool UseQsContCorrection = true;
+    // OFF since v5.8.3: with real keys the correction measured -9.9 +/- 17.1
+    // over 718 games; without it the deterministic configuration is a tight zero.
+    public bool UseQsContCorrection = false;
 
     // Singular extension on the reference's terms: a lower depth gate (6
     // instead of 8) and a margin of one centipawn per ply instead of two, so

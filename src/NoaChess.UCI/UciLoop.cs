@@ -1307,7 +1307,13 @@ public sealed class UciLoop
         // reads the score, including the bot's resign and draw-offer rules.
         // Report the conventional saturated value, keeping the ply ordering so
         // a win found sooner still scores higher.
-        const int tbBand = AlphaBetaSearch.TbWin - 256;
+        // The margin below the band is wide (4,096) because an aspiration
+        // window that fails high or low next to the band reports its bound,
+        // which sits a widening delta outside it: a bot game of 2026-09-07
+        // recorded "cp -98535", 337 points short of the band, and the eval
+        // annotation read minus 985 pawns. No heuristic score comes anywhere
+        // near this range, so everything above it is band-derived.
+        const int tbBand = AlphaBetaSearch.TbWin - 4_096;
         if (score > tbBand)
             return $"cp {20_000 - (AlphaBetaSearch.TbWin - score)}";
         if (score < -tbBand)
