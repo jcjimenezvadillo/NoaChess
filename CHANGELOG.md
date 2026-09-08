@@ -42,6 +42,8 @@ the tables, the clock-lead scale under the sustainability guard). **Tests: 438**
 
 **Package control (2026-09-08):** the shipped v5.8.2 against the shipped v5.8.0 at 100,000 nodes, defaults against defaults: **+28.8 Elo +/- 17.6, LLR +2.96, H1 over 652 games** (170 wins, 116 losses, 366 draws). The three prunings switched on since v5.8.0 were each measured alone; together they hold, inside the interval of their sum.
 
+**Gauntlet (2026-09-08).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.8.0: **52.1% over 240 games, 3353 CCRL +/- 45**, the highest of the series (v5.6.0 3347, v5.4.0 3337, v5.5.0 and v5.8.0 3328), measured on the same loaded box as the v5.8.0 number (four fixed-node chains and a four-thread match running alongside).
+
 ## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, a clock lead spent, and a tablebase win no longer bought with pieces
 
 **The release, in one line: two more reference prunings measured and switched on (late move pruning at
