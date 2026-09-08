@@ -1337,7 +1337,10 @@ public sealed class AlphaBetaSearch
     // generates checks at depth 0). This engine only ever had them inside the
     // NMP package, which was measured as a whole and lost; the checks alone
     // were never priced. Direct checks only, as the package generates them.
-    public bool UseQsChecks = false;
+    // ON since v5.8.5 by the user's call: +6.3 Elo +/- 6.5 over 4,993 fixed-node
+    // games (LOS 97.2%, sprt_qschecks_100k), a verdict the [0, 10] bounds would
+    // not close either way after 5,000 games.
+    public bool UseQsChecks = true;
 
     // The butterfly history is halved between searches. With pondering on,
     // a ponderhit relaunch is a second search for the same move, so the bot

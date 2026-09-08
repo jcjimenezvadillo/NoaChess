@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-09-08 (v5.8.5) - quiescence tries the checks
+
+**The release, in one line: the first ply of quiescence generates checking quiet moves as the reference does,
+and the option measured +6.3 +/- 6.5 Elo at fixed nodes, H1.**
+
+**Checks in quiescence.** Quiescence searched captures and promotions only; the reference also tries the
+quiet moves that give check at its first ply, so a mating attack or a perpetual is not cut off one move
+short of being seen. Fixed-node SPRT at 100,000 nodes (`QsChecks`): **+6.3 +/- 6.5 Elo, LLR +1.20 (LOS 97.2%, stopped and promoted by the user's call, the [0, 10] bounds would not close either way), H1 over
+4,993 games**; it sat between +2 and +5 for 3,000 games and closed only past 3,700, the slowest verdict of
+the campaign. Ships ON. Bench 9,084,675 nodes at depth 12 with the shipped defaults. **Tests: 441.**
+
 ## 2026-09-08 (v5.8.4) - the tablebase-won root pays scout prices
 
 **The release, in one line: the won-side tie-break of v5.8.1 keeps its conduct and drops its cost, because

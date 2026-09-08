@@ -67,7 +67,7 @@ public sealed class UciOptions
     public int PickerThreatWeight { get; private set; } = 20;
     // Skip the between-search history halving on a ponderhit relaunch (see AlphaBetaSearch).
     public bool NoDecayOnRelaunch { get; private set; }
-    public bool QsChecks { get; private set; }
+    public bool QsChecks { get; private set; } = true;
     public bool ProbCutAllowNull { get; private set; }
     public bool FutilityFailSoft { get; private set; }
     public bool CaptureFutility { get; private set; }
@@ -201,7 +201,7 @@ public sealed class UciOptions
         output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
         output.WriteLine("option name PickerThreatWeight type spin default 20 min 0 max 100");
         output.WriteLine("option name NoDecayOnRelaunch type check default false");
-        output.WriteLine("option name QsChecks type check default false");
+        output.WriteLine("option name QsChecks type check default true");
         output.WriteLine("option name ProbCutAllowNull type check default false");
         output.WriteLine("option name FutilityFailSoft type check default false");
         output.WriteLine("option name CaptureFutility type check default false");
