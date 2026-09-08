@@ -2476,11 +2476,38 @@ public sealed class AlphaBetaSearch
             // every move gets the full window: a scout would reject the
             // resistant move for scoring a few band points under the leader.
             int score;
-            if (searched == 0 || fullWindowMode)
+            if (searched == 0 || (fullWindowMode && !(wonMode && bestScore >= TbScoreBound)))
             {
                 // The root is a PV node; its first child stays on the PV.
                 score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
                                  cutNode: false);
+            }
+            else if (wonMode && bestScore >= TbScoreBound)
+            {
+                // TbWinTieBreak, band-edge scout (v5.8.4). The key flattens
+                // every band-won move to the band's boundary, so all it needs
+                // to know is whether the move IS band-won, never by how many
+                // plies: a null window on the boundary answers that at scout
+                // cost, where the full window of v5.8.1 measured -7.5 +/- 12.7
+                // over 1,293 self-play games. A move that clears the boundary
+                // is probed once more above the band, and only a mate earns
+                // the exact search, because a mate outranks every band move.
+                // A move that fails low is below the band and its bound is all
+                // the key needs. Guarded on the first move's exact score: if
+                // the root has dropped out of the band this iteration, the
+                // plain scout below takes over.
+                score = -Negamax(board, depth - 1, -TbScoreBound, -(TbScoreBound - 1), ply: 1,
+                                 allowNull: true, cutNode: true);
+                if (score >= TbScoreBound && !_stopped)
+                {
+                    int probe = -Negamax(board, depth - 1, -(TbWin + 1), -TbWin, ply: 1,
+                                         allowNull: true, cutNode: true);
+                    if (probe > TbWin && !_stopped)
+                        score = -Negamax(board, depth - 1, -beta, -alpha, ply: 1, allowNull: true,
+                                         cutNode: false);
+                    else
+                        score = bestScore < MateBound ? bestScore : TbScoreBound + 1;
+                }
             }
             else
             {
