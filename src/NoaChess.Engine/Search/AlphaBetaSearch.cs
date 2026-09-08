@@ -457,6 +457,16 @@ public sealed class AlphaBetaSearch
     // (a null move); continuation history and counter moves then skip it.
     private readonly int[] _stackPiece = new int[MaxPly + 2];
     private readonly int[] _stackTo   = new int[MaxPly + 2];
+    // The move played to reach each ply and the victim it took (6 = none),
+    // for the PriorFailLowBonus (the reference reads (ss-1)->currentMove
+    // and pos.captured_piece()). Written wherever _stackPiece is.
+    private readonly Move[] _stackMove = new Move[MaxPly + 2];
+    // The LMR reduction (plies) applied to the move that reached each ply
+    // (HindsightDepth) and the number of beta cutoffs the children of each
+    // node have produced so far (CutoffCountLmr).
+    private readonly int[] _stackReduction = new int[MaxPly + 2];
+    private readonly int[] _stackCutoff = new int[MaxPly + 3];
+    private readonly int[] _stackVictim = new int[MaxPly + 2];
     // Static eval at each ply (sentinel NoEval when in check). Used to derive
     // the improving flag: eval[ply] > eval[ply-2] means our position is trending
     // upward, which gates several pruning and reduction heuristics.
@@ -1284,6 +1294,45 @@ public sealed class AlphaBetaSearch
     // Measured 2026-09-07 at 100,000 nodes: +15.7 Elo +/- 11.8, LLR +2.96, H1
     // over 1,657 games (sprt_quietseeprune_100k). ON since v5.8.2.
     public bool UseQuietSeePrune = true;
+
+    // ---- Audit options of 2026-09-08 (sixth pass), all OFF until measured ----
+    // PriorFailLowBonus: when a node fails low, the quiet move that led to it
+    // did its job for the parent and earns butterfly and continuation history
+    // (reference step 20, 'bonus for prior quiet countermove that caused the
+    // fail low'); a capturing parent move earns capture history instead. The
+    // reference scales the bonus by depth, by the parent's statScore and by
+    // how far below the static eval the node landed; the move-count and the
+    // grandparent terms are dropped (no cheap source here).
+    public bool UsePriorFailLowBonus = false;
+    // LmrDeeperResearch: after a reduced probe beats alpha, the full-depth
+    // re-search goes one ply deeper when the probe beat the best score by a
+    // margin and one ply shallower when it barely did (reference step 17,
+    // doDeeperSearch / doShallowerSearch, 53 and 8 in its units, x0.48).
+    public bool UseLmrDeeperResearch = false;
+    // RfpTtMoveGuard: reverse futility only when the table holds no move or a
+    // capturing one (reference step 8: !ttData.move || ttCapture).
+    public bool UseRfpTtMoveGuard = false;
+    // LmpCountAllMoves: the late-move-pruning count is the node's move count
+    // as the reference's is, captures included, not the quiets alone.
+    public bool UseLmpCountAllMoves = false;
+    // DrawRandom: draws by rule score 1 - (nodes & 2) instead of a flat zero
+    // (reference value_draw), so two draw lines never tie exactly and the
+    // search cannot settle on a repetition it never examined.
+    public bool UseDrawRandom = false;
+    // HindsightDepth (Reckless, Pawnocchio): a node reached through a move
+    // reduced by two plies or more, whose static eval says the reduction
+    // was undeserved (our eval plus the parent's is negative: the parent's
+    // move turned out well), is searched one ply deeper; one reached through
+    // any reduced move whose eval confirms the reduction (the sum clears a
+    // margin) is searched one ply shallower, off the ttPv.
+    // ON since v5.8.6: +17.0 Elo +/- 12.5, LLR +2.98, H1 over 1,266 fixed-node
+    // games (sprt_hindsightdepth_100k), found in the sixth audit pass.
+    public bool UseHindsightDepth = true;
+    // CutoffCountLmr (reference step 17, Reckless): once the children of a
+    // node have cut off more than three times, the remaining moves are
+    // reduced one ply more - most of what this node tries is being refuted.
+    public bool UseCutoffCountLmr = false;
+    private int DrawScore() => UseDrawRandom ? 1 - (int)(_nodes & 2) : 0;
 
     // SEE pruning of captures at every depth with a margin that grows with
     // it (reference: see_ge(-157 * depth) in its units, 75 per ply here),
@@ -2468,6 +2517,9 @@ public sealed class AlphaBetaSearch
                 ? StaticExchangeEvaluator.Evaluate(board, move) : 0;
             _stackPiece[0] = ContinuationHistory.PieceIndex(board.SideToMove, board.PieceTypeAt(move.From));
             _stackTo[0] = move.To;
+            _stackMove[0] = move;
+            _stackReduction[0] = 0;
+            _stackVictim[0] = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
             _stackStatScore[0] = (move.IsCapture || move.IsPromotion ? 0
                 : 2 * _history.Get(board.SideToMove, move)) - StatScoreOffset;
             _incremental?.PushMove(board, move);
@@ -3079,22 +3131,22 @@ public sealed class AlphaBetaSearch
         if (board.HalfmoveClock >= 100)
         {
             if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
-                return 0;
+                return DrawScore();
             return -MateScore + ply;
         }
         if (UseRepetitionAfterRoot
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
-            return 0;
+            return DrawScore();
         if (GameState.IsDeadPosition(board))
-            return 0;
+            return DrawScore();
 
         // A reversible move may be about to enter a repeated position even
         // though the current key itself is new. Raising alpha to draw avoids
         // searching for a loss below a cycle the side can force immediately.
         if (alpha < 0 && board.HasUpcomingRepetition(ply))
         {
-            alpha = 0;
+            alpha = DrawScore();
             if (alpha >= beta)
                 return alpha;
         }
@@ -3266,6 +3318,7 @@ public sealed class AlphaBetaSearch
         // entry carries the flag from an earlier visit through the PV.
         // Stored back on every write so the mark survives re-searches.
         bool ttPv = !nonPv || (ttHit && entry.IsPv);
+        _stackCutoff[ply + 1] = 0;
 
         // Static evaluation, reused by the forward-pruning heuristics. Skipped
         // in check (the position is not "quiet" and the eval is meaningless).
@@ -3340,6 +3393,18 @@ public sealed class AlphaBetaSearch
             : 0;
         bool improving = improvement > 0;
 
+        // ---- Hindsight depth (HindsightDepth) ----
+        if (UseHindsightDepth && !inCheck && excluded == Move.None && ply > 0
+            && _stackEval[ply - 1] != NoEval)
+        {
+            int evalDelta = staticEval + _stackEval[ply - 1];
+            int parentReduction = _stackReduction[ply - 1];
+            if (parentReduction >= 2 && evalDelta < 0)
+                depth++;
+            else if (!ttPv && depth >= 2 && parentReduction > 0 && evalDelta > 40)
+                depth--;
+        }
+
         // ---- Razoring ----
         if (UseRazoring && nonPv && !inCheck && excluded == Move.None
             && Math.Abs(alpha) < TbScoreBound
@@ -3357,6 +3422,7 @@ public sealed class AlphaBetaSearch
         // cut comes easier, after a maligned one it needs more headroom.
         if (!inCheck && nonPv && depth <= 6 && Math.Abs(beta) < MateBound
             && excluded == Move.None
+            && (!UseRfpTtMoveGuard || ttMove == Move.None || ttMove.IsCapture || ttMove.IsPromotion)
             && pruningEval >= beta
             && pruningEval - 85 * (depth - (improving ? 1 : 0))
                - (ply > 0 ? _stackStatScore[ply - 1] : 0) / StatScoreRfpDiv >= beta)
@@ -3414,6 +3480,9 @@ public sealed class AlphaBetaSearch
             int r = UseNmpPackage ? 7 + depth / 3 : 3 + depth / 4;
 
             _stackPiece[ply] = -1; // No usable "previous move" for the child.
+            _stackMove[ply] = Move.None;
+            _stackVictim[ply] = 6;
+            _stackReduction[ply] = 0;
             _stackStatScore[ply] = 0;
             if (SearchStats) _stNullTry++;
             _incremental?.PushNull();
@@ -3506,6 +3575,7 @@ public sealed class AlphaBetaSearch
                 // move under Pawn - the split key this file warns about at
                 // ContinuationCorrectionKey, and it is silent when it happens.
                 int movedPiece = ContinuationHistory.PieceIndex(mover, board.PieceTypeAt(move.From));
+                int probVictim = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
                 _incremental?.PushMove(board, move);
                 board.MakeMove(move);
                 if (board.IsSquareAttacked(board.KingSquare(mover), board.SideToMove))
@@ -3517,6 +3587,9 @@ public sealed class AlphaBetaSearch
             _incremental?.CompleteThreatDelta(board);
                 _stackPiece[ply] = movedPiece;
                 _stackTo[ply] = move.To;
+                _stackMove[ply] = move;
+                _stackVictim[ply] = probVictim;
+                _stackReduction[ply] = 0;
                 _stackStatScore[ply] = 0;
 
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
@@ -3837,7 +3910,8 @@ public sealed class AlphaBetaSearch
                 // halve the count before the cut (reference LMP shape).
                 int lmpThreshold = 3 + depth * depth;
                 if (!improving) lmpThreshold /= 2;
-                if ((depth <= 3 || UseLmpAllDepths) && quietsSearched >= lmpThreshold)
+                if ((depth <= 3 || UseLmpAllDepths)
+                    && (UseLmpCountAllMoves ? searched : quietsSearched) >= lmpThreshold)
                 {
                     if (SearchStats) _stLmp++;
                     continue;
@@ -3967,6 +4041,8 @@ public sealed class AlphaBetaSearch
 
             _stackPiece[ply] = movePieceIdx;
             _stackTo[ply] = move.To;
+            _stackMove[ply] = move;
+            _stackVictim[ply] = victimIdx;
             _stackStatScore[ply] = moveHistory - StatScoreOffset;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
@@ -3987,6 +4063,7 @@ public sealed class AlphaBetaSearch
             {
                 // PVS: the first (best-ordered) move gets the full window and,
                 // as a PV child, is never a cut node.
+                _stackReduction[ply] = 0;
                 score = -Negamax(board, newDepth, -beta, -alpha, ply + 1, allowNull: true,
                                  cutNode: false);
             }
@@ -4144,11 +4221,16 @@ public sealed class AlphaBetaSearch
                     // likely to be good - reduce them one extra ply.
                     if (!improving) r += LmrScale;
 
+                    // CutoffCountLmr: the children of this node keep cutting off.
+                    if (UseCutoffCountLmr && _stackCutoff[ply + 1] > 3) r += LmrScale;
+
                     reduction = r / LmrScale;
                     if (reduction < 0) reduction = 0;
                     if (reduction > newDepth - 1) reduction = newDepth - 1;
                     if (SearchStats && reduction > 0) _stLmrReduced++;
                 }
+
+                _stackReduction[ply] = reduction;
 
                 // PVS null window (cheap refutation attempt), possibly reduced.
                 // A reduced LMR probe is searched as an expected cut node; an
@@ -4159,17 +4241,29 @@ public sealed class AlphaBetaSearch
 
                 // The reduced probe beat alpha: verify at full depth first
                 // (reference re-search flips the parent's node type).
+                int researchDepth = newDepth;
                 if (score > alpha && reduction > 0 && !_stopped)
                 {
                     if (SearchStats) _stLmrResearch++;
-                    score = -Negamax(board, newDepth, -alpha - 1, -alpha,
-                                     ply + 1, allowNull: true, cutNode: !cutNode);
+                    // LmrDeeperResearch: a probe that beat the best score by
+                    // a margin earns one ply more at full depth, one that
+                    // barely beat it one ply less (and no re-search at all
+                    // when that lands on the reduced depth). Margins are the
+                    // reference's 53 and 8 at x0.48.
+                    if (UseLmrDeeperResearch)
+                    {
+                        if (score > bestScore + 25) researchDepth++;
+                        else if (score < bestScore + 4) researchDepth--;
+                    }
+                    if (researchDepth > newDepth - reduction)
+                        score = -Negamax(board, researchDepth, -alpha - 1, -alpha,
+                                         ply + 1, allowNull: true, cutNode: !cutNode);
                 }
 
                 // Still inside the window: it is a genuine PV candidate,
                 // re-search with the real window as a PV (non-cut) child.
                 if (score > alpha && score < beta && !_stopped)
-                    score = -Negamax(board, newDepth, -beta, -alpha,
+                    score = -Negamax(board, researchDepth, -beta, -alpha,
                                      ply + 1, allowNull: true, cutNode: false);
             }
 
@@ -4201,6 +4295,7 @@ public sealed class AlphaBetaSearch
 
                     if (alpha >= beta)
                     {
+                        _stackCutoff[ply] += ttMove == Move.None ? 2 : 1;
                         if (SearchStats)
                         {
                             _stCut++;
@@ -4404,6 +4499,41 @@ public sealed class AlphaBetaSearch
                                     ContextCorrectionKeyA(ply), ContextCorrectionKeyB(ply));
         }
 
+        // PriorFailLowBonus (reference step 20). This node failed low, so
+        // the move that led here refuted its parent's hopes: a quiet one
+        // earns butterfly and continuation history for the side that played
+        // it, a capture earns capture history. Scaled by depth, by the
+        // parent's statScore and by how far under the static eval the node
+        // landed; clamped at zero so a well-reputed parent move gets nothing.
+        if (UsePriorFailLowBonus && excluded == Move.None && bestScore <= originalAlpha
+            && ply >= 1 && _stackPiece[ply - 1] >= 0 && _stackMove[ply - 1] != Move.None)
+        {
+            Move parentMove = _stackMove[ply - 1];
+            Color them = Board.OppositeColor(stm);
+            if (_stackVictim[ply - 1] == 6 && !parentMove.IsPromotion)
+            {
+                int scale = -241 + Math.Min(59 * depth, 420)
+                    - _stackStatScore[ply - 1] / 350
+                    + (!inCheck && bestScore <= staticEval - 51 ? 142 : 0);
+                if (scale > 0)
+                {
+                    int statBonus = Math.Min(133 * depth - 81, 1487);
+                    _history.Add(them, parentMove, (int)((long)statBonus * scale * 215 / 32768));
+                    if (ply >= 2 && _stackPiece[ply - 2] >= 0)
+                        _contHist[0].Add(_stackPiece[ply - 2], _stackTo[ply - 2],
+                                         _stackPiece[ply - 1], _stackTo[ply - 1],
+                                         (int)((long)statBonus * scale * 263 / 16384) / 8);
+                }
+            }
+            else if (_stackVictim[ply - 1] != 6)
+            {
+                // The reference gives a flat 892 (of 10692) here; the same
+                // rail ratio in this table's 4096 range.
+                _captureHistory.AddBonus(_stackPiece[ply - 1], _stackTo[ply - 1], _stackVictim[ply - 1],
+                                         892 * 4096 / 10692);
+            }
+        }
+
         return bestScore;
     }
 
@@ -4480,19 +4610,19 @@ public sealed class AlphaBetaSearch
         if (board.HalfmoveClock >= 100)
         {
             if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
-                return 0;
+                return DrawScore();
             return -MateScore + ply;
         }
         if (UseRepetitionAfterRoot
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
-            return 0;
+            return DrawScore();
         if (GameState.IsDeadPosition(board))
-            return 0;
+            return DrawScore();
 
         if (alpha < 0 && board.HasUpcomingRepetition(ply))
         {
-            alpha = 0;
+            alpha = DrawScore();
             if (alpha >= beta)
                 return alpha;
         }
@@ -4723,6 +4853,8 @@ public sealed class AlphaBetaSearch
             {
                 _stackPiece[ply] = ContinuationHistory.PieceIndex(us, board.PieceTypeAt(move.From));
                 _stackTo[ply] = move.To;
+                _stackMove[ply] = move;
+                _stackVictim[ply] = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
             }
 
             _incremental?.PushMove(board, move);
