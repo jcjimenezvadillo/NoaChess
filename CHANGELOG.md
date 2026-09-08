@@ -13,6 +13,8 @@ Bench 8,071,333 nodes at depth 12 with the shipped defaults (8,134,147 in v5.8.1
 Everything else is v5.8.1 as rebuilt the same night (`TbWinTieBreak` for tablebase-won roots outside
 the tables, the clock-lead scale under the sustainability guard). **Tests: 438** (Core 128, Engine 310).
 
+**Package control (2026-09-08):** the shipped v5.8.2 against the shipped v5.8.0 at 100,000 nodes, defaults against defaults: **+28.8 Elo +/- 17.6, LLR +2.96, H1 over 652 games** (170 wins, 116 losses, 366 draws). The three prunings switched on since v5.8.0 were each measured alone; together they hold, inside the interval of their sum.
+
 ## 2026-09-07 (v5.8.1) - late move pruning at every depth, the stored score in the pruning, a clock lead spent, and a tablebase win no longer bought with pieces
 
 **The release, in one line: two more reference prunings measured and switched on (late move pruning at
