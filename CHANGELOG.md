@@ -81,6 +81,8 @@ and with equal clocks the budget is exactly what it was. On that game's position
 18.9 s to 37.8 s and the search reaches depth 23 instead of 22. Not measurable in self-play, where both
 sides keep the same clock; it ships on the user's call and is confirmed against outside engines next.
 
+**ClockLead against outside engines (2026-09-08):** round-robin at 180+2 with ponder, four threads and tablebases, the bot's own regime, against Iris 2.0, Rice 8.0.0 and Nalwald 19, 48 games per engine: **`ClockLead` on 63.5% (+97 Elo +/- 69, first in the table), the same binary with it off 43.8% (-44 +/- 60)**, no loss on time in 120 games. One disconnect per arm (games 48 and 49) came from an operator kill of unrelated processes that shared the binary; symmetric, and the comparison stands.
+
 **A Debug build allocated 883 KB per search.** The allocation probe failed in Debug (the test explorer's
 default): `Enum.HasFlag` on the castling rights boxes the enum in the castling generator and in the
 transposition-move vetting, and only the Release JIT removes the box. Replaced with bit tests, node-identical;
