@@ -37,7 +37,7 @@ public sealed class UciOptions
     // Root static eval on the search stack (see AlphaBetaSearch.UseRootStaticEval).
     public bool RootStaticEval { get; private set; }
     // Quiescence moves recorded on the search stack (see AlphaBetaSearch.UseQsStackMove).
-    public bool QsStackMove { get; private set; }
+    public bool QsStackMove { get; private set; } = true;
     // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
     public bool CheckExemptFutility { get; private set; }
     // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
@@ -72,7 +72,7 @@ public sealed class UciOptions
     public bool FutilityFailSoft { get; private set; }
     public bool CaptureFutility { get; private set; }
     public bool HistoryPrune { get; private set; }
-    public bool QsContCorrection { get; private set; } = true;
+    public bool QsContCorrection { get; private set; }
     public bool SingularTight { get; private set; }
     public bool QsEntryKey { get; private set; }
     // Spend a clock lead over the opponent (see UciLoop.ParseLimits). ON since
@@ -180,7 +180,7 @@ public sealed class UciOptions
         output.WriteLine("option name PonderMinThink type check default false");
         output.WriteLine("option name EasyMoveWinOnly type check default true");
         output.WriteLine("option name RootStaticEval type check default false");
-        output.WriteLine("option name QsStackMove type check default false");
+        output.WriteLine("option name QsStackMove type check default true");
         output.WriteLine("option name CheckExemptFutility type check default false");
         output.WriteLine("option name MateDistancePruning type check default true");
         output.WriteLine("option name TtNoPvCutoff type check default false");
@@ -206,7 +206,7 @@ public sealed class UciOptions
         output.WriteLine("option name FutilityFailSoft type check default false");
         output.WriteLine("option name CaptureFutility type check default false");
         output.WriteLine("option name HistoryPrune type check default false");
-        output.WriteLine("option name QsContCorrection type check default true");
+        output.WriteLine("option name QsContCorrection type check default false");
         output.WriteLine("option name SingularTight type check default false");
         output.WriteLine("option name QsEntryKey type check default false");
         output.WriteLine("option name ClockLead type check default true");

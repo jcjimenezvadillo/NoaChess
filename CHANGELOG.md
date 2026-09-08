@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## 2026-09-08 (v5.8.3) - the search is deterministic
+
+**The release, in one line: the deterministic quiescence found in the fourth audit pass measured a tight
+zero over 4,109 fixed-node games and ships by the tie criterion, so the same position searched twice from
+a fresh table now gives the same tree, node for node.**
+
+**Deterministic search.** v5.8.1 found that quiescence keyed its stand-pat correction on stack slots the
+previous search had left behind, so no two searches of one position were alike (six bench positions out of
+six differed). The repair writes the quiescence move to the stack and drops the continuation-keyed
+correction of the stand-pat, which with real keys had measured -9.9 +/- 17.1 over 718 games. Measured as a
+package against the published quiescence at 100,000 nodes: **+1.0 Elo +/- 7.1, LLR -3.0, H0 over 4,109
+games** (`sprt_detvsold_100k`); the stack write alone -1.2 +/- 8.9 over 2,673. Cost zero at the tightest
+interval of the campaign, and the benefit is provable: three searches of six bench positions are identical
+to the node with the shipped defaults, and `SearchDeterminismTests` pins it. `QsStackMove` ON,
+`QsContCorrection` OFF. Bench 8,961,530 nodes at depth 12 with the shipped defaults (8,071,333 in v5.8.2; a
+different tree, not a slower one).
+
+**Also.** A regression test pins the tablebase-won tie-break of v5.8.1 (the Farddown_YG position queens at
+depths 12, 14 and 16 with a band score). The UCI score formatter maps every band-derived value, including
+an aspiration bound next to the band: a bot game had recorded `cp -98535`, 337 points short of the band,
+which read as minus 985 pawns. **Tests: 441** (Core 128, Engine 313).
+
+**Measured and left off.** `NmpNonPvOnly` (the null move only at non-PV nodes) sat between +4 and +7 for
+3,000 games and never closed; `CaptureSeePruneDeep` -0.1 +/- 9.6 at 2,408. The deployment control of v5.8.2
+against v5.8.0 at the bot's clock (60+1, four threads, ponder, tablebases) is queued behind the ClockLead
+round-robin.
+
 ## 2026-09-08 (v5.8.2) - quiet moves that lose material are pruned
 
 **The release, in one line: the reference prunes quiet moves whose static exchange loses more than
