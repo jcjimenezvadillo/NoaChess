@@ -11,6 +11,8 @@ short of being seen. Fixed-node SPRT at 100,000 nodes (`QsChecks`): **+6.3 +/- 6
 4,993 games**; it sat between +2 and +5 for 3,000 games and closed only past 3,700, the slowest verdict of
 the campaign. Ships ON. Bench 9,084,675 nodes at depth 12 with the shipped defaults. **Tests: 441.**
 
+**Gauntlet (2026-09-08).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.8.2: **51.9% over 240 games, 3352 CCRL +/- 45** (v5.8.2 3353, v5.6.0 3347, v5.8.0 3328), measured with the box also running four fixed-node SPRT chains. The field's own labels are being re-measured in a 21-engine round-robin at the same time control, so these numbers move together when that lands.
+
 ## 2026-09-08 (v5.8.4) - the tablebase-won root pays scout prices
 
 **The release, in one line: the won-side tie-break of v5.8.1 keeps its conduct and drops its cost, because
