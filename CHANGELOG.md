@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-09-08 (v5.8.4) - the tablebase-won root pays scout prices
+
+**The release, in one line: the won-side tie-break of v5.8.1 keeps its conduct and drops its cost, because
+a root move only has to prove it is band-won, never by how many plies.**
+
+**Band-edge scout.** `TbWinTieBreak` searched every root move of a tablebase-won root with the full window,
+and the self-play cost check read -7.5 Elo +/- 12.7 over 1,293 games with tablebases on both arms (H0, the
+zero inside the interval but the centre below it, as `TbResistance` had measured -3.1 +/- 8.5). The key
+flattens every band-won move to the band's boundary, so all it needs is whether the move IS band-won: a
+null window on the boundary answers that at scout cost; a move that clears it is probed once more above
+the band and only a mate earns the exact search, since a mate outranks every band move; a move that fails
+low cannot beat a band move and its bound is enough. If the first move's exact score has left the band,
+plain PVS takes over for the iteration. Conduct by an independent engine on the 40 tablebase-won positions
+from the bot's games: off 127.9, on 93.7 centipawns of mean loss, moves costing 300 or more from 20.0% to
+12.5% (the full-window version: 167.3 to 83.8, 25.0% to 12.5%). Cost check with the scout, on against off
+at 100,000 nodes with tablebases: **0.0 +/- 9.9 Elo over 2,074 games, LLR -1.94, stopped at a measured zero (455 wins to 455) by the user's call**. The Farddown_YG
+position still queens at every depth from 10 to 20. Bench 8,961,530 at depth 12 (unchanged outside the band).
+**Tests: 441**.
+
 ## 2026-09-08 (v5.8.3) - the search is deterministic
 
 **The release, in one line: the deterministic quiescence found in the fourth audit pass measured a tight
