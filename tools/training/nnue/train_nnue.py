@@ -243,6 +243,12 @@ def main():
     parser.add_argument("--cpu", action="store_true",
                         help="force CPU; for smoke tests while a GPU job runs")
     parser.add_argument("--qat", action="store_true")
+    parser.add_argument("--init-from", default=None,
+                        help="Checkpoint whose weights start this run. The\n"
+                             "architecture switches must match the checkpoint;\n"
+                             "the optimizer and the schedules start fresh, so a\n"
+                             "continued run passes --lr and --start-lambda at the\n"
+                             "values the interrupted schedule had reached.")
     parser.add_argument("--qa", type=int, default=QA, choices=[QA, 127])
     # Legacy salvage flag: drops exactly-0 labels. Was needed only for the old
     # contaminated datasets (an engine hard-stop bug zeroed ~57% of labels,
@@ -459,6 +465,34 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
                     args.qat, args.qa, threats=args.threats,
                     dual=args.dual, l2_out=args.l2_out, psqt_buckets=args.psqt_buckets,
                     coarse=args.coarse).to(device)
+
+    # Warm start (--init-from). A 60-epoch run is 40 hours here, and until this
+    # existed an interrupted one could only be started over: the reboot of
+    # 2026-09-09 killed fqcohuman at epoch 39 of 60 with three days of GPU in
+    # it. The .partial checkpoint written every improving epoch already holds
+    # the best weights, so they are loaded into the fresh model and training
+    # continues from there.
+    #
+    # What this does NOT restore: the optimizer state, the cosine learning-rate
+    # schedule and the lambda ramp all start over. A continuation therefore has
+    # to be launched with --lr and --start-lambda set to the values the original
+    # schedule had reached at the interrupted epoch, and with --epochs set to
+    # the number of epochs that were left. That reproduces the remaining
+    # schedule closely but not exactly, and a net trained this way says so in
+    # its own args (init_from is not None), so nothing downstream can mistake it
+    # for an uninterrupted run.
+    if args.init_from:
+        start = torch.load(args.init_from, map_location=device, weights_only=False)
+        state = start.get("model", start)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            raise SystemExit(
+                f"--init-from {args.init_from} does not match this architecture: "
+                f"{len(missing)} missing, {len(unexpected)} unexpected tensors. "
+                f"missing={list(missing)[:4]} unexpected={list(unexpected)[:4]}")
+        print(f"warm start from {args.init_from} "
+              f"(epoch {start.get('epoch', '?')}, val {start.get('val_loss', float('nan')):.6f})",
+              flush=True)
     # The banner names the architecture this run will EXPORT as, and that is not
     # decoration. It said "export as arch 2/3" while training an arch 5 net on
     # the first --dual run: the shapes were right, the checkpoint was right, and

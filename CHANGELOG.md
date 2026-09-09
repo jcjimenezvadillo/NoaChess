@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## 2026-09-09 - the field's labels are MEASURED, and every CCRL number in this project moves
+
+**No engine change. The instrument changed.** The twenty engines this project rates itself against
+carried labels copied from CCRL lists of different vintages, and every gauntlet performance ever
+published here was solved against those labels. A round-robin of the whole field at the gauntlet's own
+pace measured them directly: **1,680 games at 60+0.6, 160 games per engine, no time losses**, fitted
+with a logistic Bradley-Terry model anchored so the labelled field's mean is unchanged, which leaves
+each engine's discrepancy against its own label as the result.
+
+**The labels claimed a spread of 463 Elo. The games measure 668.** The two worst were wrong in
+opposite directions, one engine 151 points below what it plays and another 136 above, and that pair
+is what compressed the scale. Re-solving every gauntlet against the measured labels:
+
+| version | games | score | published | measured labels | shift |
+| --- | --- | --- | --- | --- | --- |
+| 5.1.0 | 240 | 72.9% | 3242 | 3219 | -23 |
+| 5.2.0 | 240 | 81.7% | 3342 | 3315 | -26 |
+| 5.3.0 | 240 | 47.3% | 3317 | 3284 | -33 |
+| 5.4.0 | 277 | 50.4% | 3337 | 3303 | -33 |
+| 5.5.0 | 240 | 48.8% | 3328 | 3296 | -33 |
+| 5.6.0 | 240 | 51.2% | 3347 | 3315 | -32 |
+| 5.7.0 | 142 | 47.9% | 3320 | 3286 | -34 |
+| 5.8.0 | 240 | 48.8% | 3328 | 3296 | -33 |
+| 5.8.2 | 240 | 52.1% | 3353 | 3321 | -32 |
+| 5.8.5 | 240 | 51.9% | 3352 | 3319 | -32 |
+| 5.8.6 | 240 | 48.8% | 3328 | 3296 | -33 |
+
+**The shift is uniform, so the field was mis-scaled and not mis-ordered: no past promotion decision
+changes.** The 5.1.0 and 5.2.0 rows are mixed, because those gauntlets ran against an earlier field
+and two of their opponents were not in the round-robin and keep their old labels. Version 5.8.6 also
+played in the round-robin itself and measured **3331** there, against 3296 from its gauntlet; both
+carry about 32 to 45 points of uncertainty.
+
+**The measured rating now lives in each executable's filename**, and the cutechess names in every
+tournament script were rewritten to match, so a gauntlet run from here solves against measured labels
+with nothing to remember. A verification pass over all 100 scripts caught the one case where the two
+disagreed: the gauntlets named an engine by a shorter string than the round-robin used, so nine
+scripts kept a stale label while pointing at the renamed executable, which is the dangerous kind of
+error because such a gauntlet still produces a number. The label is now taken from the file, which is
+the single source of truth. The independent judge used for behaviour gates was copied to a path with
+no rating in its name: a judge is an instrument, not a member of the field.
+
+**Also in this commit:** the network trainer accepts `--init-from`, a warm start from a checkpoint.
+A 60-epoch run is 40 hours here and until now an interrupted one could only be restarted from
+scratch. The optimizer state and both schedules are deliberately not restored, and a run started this
+way records it in its own arguments so nothing downstream can mistake it for an uninterrupted one.
+
 ## 2026-09-08 (v5.8.6) - the search corrects a reduction it now regrets
 
 **The release, in one line: a node can look back at the reduction its parent's move was given and, when
