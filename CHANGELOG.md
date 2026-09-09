@@ -19,6 +19,8 @@ reference and then swept the other three engines for mechanisms this one lacks. 
 of that pass and are measured or measuring: `PriorFailLowBonus` (-22.2, H0), `LmpCountAllMoves`,
 `LmrDeeperResearch`, `RfpTtMoveGuard`, `DrawRandom`, `CutoffCountLmr`. **Tests: 441.**
 
+**Gauntlet (2026-09-09).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.8.5: **48.8% over 240 games, 3328 CCRL +/- 44** (v5.8.5 3352, v5.8.2 3353, v5.8.0 3328), measured while a 21-engine round-robin shared the box. The 24 points against v5.8.5 sit inside the +/- 44 of either number, so this does not contradict the +17.0 H1 the same change measured at fixed nodes; it says the gauntlet cannot resolve a difference that size. The field's own labels are being re-measured in that round-robin, and every number in this series moves with them.
+
 ## 2026-09-08 (v5.8.5) - quiescence tries the checks
 
 **The release, in one line: the first ply of quiescence generates checking quiet moves as the reference does,
