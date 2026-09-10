@@ -44,6 +44,8 @@ twenty-one. `WonBandPromoGuard` (default true) counts what the opponent can PROM
 can capture, because in the traced game three checks that all kept their material scored as well as
 taking the pawn that was about to queen.
 
+Gauntlet on field 2, single-threaded, against the twenty engines whose labels were MEASURED on 2026-09-09: **47.5% over 240 games, 3286 CCRL +/- 44**, against v5.8.6's 3296, v5.8.5's 3319 and v5.8.2's 3321 on the same measured labels. Ten points below the previous release and well inside the interval of either number, which is what a neutral change should look like. Measured with the box loaded: the 5.8.6 corpus generation was running on twenty threads throughout, and it is never paused.
+
 **Both measured neutral.** An independent judge over the twenty-nine positions where the band actually
 fires: the options change the chosen move in one and two positions respectively, and the median
 difference is zero. Bench is **8,478,755 nodes at depth 12, identical to v5.8.6 to the node**, so the
