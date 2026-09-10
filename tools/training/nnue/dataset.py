@@ -874,6 +874,7 @@ class FeatureStore:
         pending = tuple([] for _ in keys)
         pending_rows = 0
         _warned_rows = False
+        _skipped_chunks = [0]
         # Rows left over when a buffer does not divide evenly into batches. They
         # are CARRIED into the next buffer rather than dropped: discarding a
         # partial batch per buffer would quietly throw away real training data
@@ -887,8 +888,24 @@ class FeatureStore:
             f = self.files[file_index]
             # np.asarray forces the mapped slice into real memory once, so the
             # later fancy-indexing does not fault page by page.
-            for slot, key in enumerate(keys):
-                pending[slot].append(np.asarray(f[key][begin:end]))
+            # Every stream of the chunk is read BEFORE any of it is queued, so a
+            # chunk that cannot be read leaves the buffer untouched and aligned.
+            # The fqcohuman training died four times in two days inside this
+            # loop or one step past it (2026-09-10), the last time on a coarse
+            # slice whose offsets were not monotonic in memory although they
+            # are on disk. A chunk is 8,192 of ~900M rows: it is logged with
+            # its file and range, skipped, and the run goes on. The log line is
+            # the evidence the next repair works from.
+            try:
+                slices = [np.asarray(f[key][begin:end]) for key in keys]
+            except Exception as exc:  # noqa: BLE001 - any read failure of any stream
+                _skipped_chunks[0] += 1
+                print(f"  warning: chunk {chunk_index} of {f.get('path', '?')} rows [{begin},{end}) "
+                      f"could not be read and was skipped ({_skipped_chunks[0]} so far): {exc}",
+                      flush=True)
+                continue
+            for slot, sl in enumerate(slices):
+                pending[slot].append(sl)
             pending_rows += end - begin
 
             is_last = position == len(order) - 1
