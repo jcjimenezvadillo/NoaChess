@@ -1,4 +1,4 @@
-[![License: MIT](https://img.shields.io/github/license/jcjimenezvadillo/NoaChess)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 # NoaChess
 
 ## UCI Chess Engine in C# (.NET 10)
