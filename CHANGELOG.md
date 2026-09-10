@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## (unreleased, toward v5.9.2) - the training loader survives a machine that reads memory back wrong
+
+**Four training runs died in two days, with three different faces.** An IndexError with an
+impossible permutation index (268,859,706 against an array of 524,288), two CUDA device-side
+asserts from an index kernel, and finally a coarse-feature chunk whose offsets were not monotonic in
+memory although they are on disk. Each of the first three was treated as a loader bug and "fixed";
+the fourth was reproduced outside the trainer: the exact chunk order replayed on the CPU, one
+thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values are all below 144 on disk
+(4,216 is 120 with bit 12 set), and the SAME chunk read back correctly a moment later. A read of an
+in-memory array that is wrong once and right the next time is not a Python bug. The box carries
+eight non-ECC modules from two different kits; a memory test is the next step, and it is the
+user's call because it stops the corpus generation.
+
+**Two guards keep a run alive on such a machine and record the evidence.** In the streaming loader a
+chunk that cannot be read (any stream, any exception) is logged with its file and row range and
+skipped; every stream of a chunk is read before any of it is queued, so a skipped chunk never
+misaligns the buffer. In the trainer every batch is range-checked on the host before it reaches the
+GPU (HalfKA rows below the pad row, coarse ids in -1..143, side-to-move bytes in {0, 1}, one row
+count for every stream); a batch that fails is written to disk whole and skipped, and the epoch
+line reports how many were. A dead CUDA context cannot be caught, so the check has to run before
+the forward pass. Cost: a few min/max reductions over int16 arrays per batch, under a millisecond.
+The 60-epoch completion of fqcohuman (seven epochs left after the 39 + 14 already banked) runs
+under both guards; it will be measured against the shipped epoch-14 net and against fqhuman before
+anything ships, exactly as every net before it.
+
+**The launcher writes a log now** (`CHESSTEST\logs`), runs the trainer with the stderr trap of
+PowerShell 5 disarmed, and passes `--force` past the trainer's own "another python is running"
+refusal, because the judge-based review of the bot's games runs on the same box in three CPU-only
+processes. Every one of those three details cost a relaunch on 2026-09-10.
+
 ## 2026-09-10 (v5.9.1) - a search that crashes answers with the best move it found, not the first legal one
 
 **Found live, in a rated game, by the user watching the board.** The engine had a queen on a6 attacked
