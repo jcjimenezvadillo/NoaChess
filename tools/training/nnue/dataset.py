@@ -896,37 +896,41 @@ class FeatureStore:
                 continue
 
             arrays = [np.concatenate(part) for part in pending]
-            # The permutation must be sized from the array it will index, never
-            # from a counter kept alongside it (2026-09-10). Built from
-            # pending_rows, this line killed a run at epoch 17 of 21 with three
-            # days of GPU in it: "index 268859706 is out of bounds for axis 0
-            # with size 524288". The counter adds up what the chunk table SAYS
-            # each slice holds; the arrays hold what the mapped files actually
-            # returned, and the two can differ - a slice whose end runs past the
-            # rows a shard really has comes back short, silently, and from then
-            # on every buffer is indexed with a permutation that is too long.
+            # The permutation must be sized from the DATA, and every stream must
+            # be cut to the same length before it is applied (2026-09-10).
             #
-            # Taking the length from the data cannot be wrong. The assertion
-            # keeps the underlying disagreement visible instead of hiding it,
-            # and names the numbers rather than failing deep inside numpy.
-            # Warn, do not raise. The rows in the buffer are perfectly good
-            # training data whatever the table claims, so a mismatch is a reason
-            # to say so and carry on, not to throw away the rest of a run that
-            # has days of GPU behind it.
-            rows_now = len(arrays[0])
-            if rows_now != pending_rows and not _warned_rows:
+            # Two crashes taught this in one day. Sizing it from pending_rows, a
+            # counter of what the chunk table SAYS each slice holds, killed a run
+            # at epoch 17 of 21: "index 268859706 is out of bounds for axis 0
+            # with size 524288". Sizing it from arrays[0] alone then killed the
+            # next run inside CUDA, because a permutation valid for the first
+            # stream silently reorders a LONGER one into a different order - the
+            # features of one position paired with the score of another, which is
+            # not a crash, it is training on nonsense until something downstream
+            # trips over it.
+            #
+            # So: one length, the shortest, applied to all of them. Equal lengths
+            # is the normal case and this costs a min() to guarantee.
+            lengths = [len(a) for a in arrays]
+            rows_now = min(lengths)
+            if (max(lengths) != rows_now or rows_now != pending_rows) and not _warned_rows:
                 _warned_rows = True
-                print(f"  warning: the chunk table says {pending_rows} rows and the shards "
-                      f"returned {rows_now}. A chunk range runs past the end of its shard. "
-                      f"Shuffling what is actually there and continuing; this is reported "
-                      f"once per pass.", flush=True)
+                print(f"  warning: the streams of this buffer disagree - lengths {lengths}, "
+                      f"chunk table says {pending_rows}. Cutting all of them to {rows_now} so "
+                      f"they stay aligned, and continuing. Reported once per pass.", flush=True)
+            arrays = [a[:rows_now] for a in arrays]
             perm = rng.permutation(rows_now)
             arrays = [a[perm] for a in arrays]
             if carry is not None:
                 # Prepend before batching, after the shuffle, so carried rows do
                 # not all land together at the head of one batch.
                 arrays = [np.concatenate([c, a]) for c, a in zip(carry, arrays)]
-                mixed = rng.permutation(len(arrays[0]))
+                # Same rule as above: the carried rows go through a second
+                # shuffle, so the same one-length guarantee has to hold here or
+                # it reintroduces exactly the misalignment the first one closed.
+                mixed_rows = min(len(a) for a in arrays)
+                arrays = [a[:mixed_rows] for a in arrays]
+                mixed = rng.permutation(mixed_rows)
                 arrays = [a[mixed] for a in arrays]
                 carry = None
 
