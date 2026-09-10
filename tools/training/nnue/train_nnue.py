@@ -424,6 +424,41 @@ def coarse_views(cabs_t, cstm_t):
     return torch.where(is_black, black, cabs_t), torch.where(is_black, cabs_t, black)
 
 
+def batch_problems(model, stm, opp, stm_t, opp_t, cabs, cstm):
+    """Everything the device would assert on, checked on the host first.
+
+    Three runs of the fqcohuman training died inside a CUDA kernel with a
+    device-side assert, which is what an index gather reports when a feature
+    index lies outside its table - and a dead CUDA context cannot be caught
+    or resumed, so the run is over at that point with nothing to show which
+    batch did it. The tables and their bounds: HalfKA rows below pad_index
+    (-1 is the pad and is mapped, anything past the pad row is not), threat
+    rows below threat_pad, coarse ids -1..143 (the flip table has 145
+    entries and is indexed by id + 1), the coarse side to move 0 or 1, and
+    every stream with the same number of rows. Costs a few min/max
+    reductions over int16 arrays, well under a millisecond per batch.
+    """
+    problems = []
+    rows = {len(stm), len(opp), len(cabs) if cabs is not None else len(stm),
+            len(cstm) if cstm is not None else len(stm),
+            len(stm_t) if stm_t is not None else len(stm),
+            len(opp_t) if opp_t is not None else len(stm)}
+    if len(rows) != 1:
+        problems.append(f"streams disagree on rows: {sorted(rows)}")
+    for name, a, hi in (("stm", stm, model.pad_index), ("opp", opp, model.pad_index),
+                        ("stm_t", stm_t, getattr(model, "threat_pad", None)),
+                        ("opp_t", opp_t, getattr(model, "threat_pad", None)),
+                        ("coarse", cabs, 144)):
+        if a is None or a.size == 0:
+            continue
+        lo, top = int(a.min()), int(a.max())
+        if lo < -1 or top >= hi:
+            problems.append(f"{name} indices in [{lo}, {top}], table allows -1..{hi - 1}")
+    if cstm is not None and cstm.size and (int(cstm.min()) < 0 or int(cstm.max()) > 1):
+        problems.append(f"coarse side to move in [{int(cstm.min())}, {int(cstm.max())}]")
+    return problems
+
+
 def check_coarse_views_once(cabs, cstm, stm_c_t, opp_c_t):
     ref_stm, ref_opp = dataset.coarse_perspectives(cabs, cstm)
     got_stm = stm_c_t.detach().cpu().numpy()
@@ -552,6 +587,10 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
             for batch in prefetch(make_val_batches(), args.prefetch):
                 stm, opp, scores, results, stm_t, opp_t, stm_c, opp_c = \
                     split_batch(batch, coarse=args.coarse)
+                problems = batch_problems(model, stm, opp, stm_t, opp_t, stm_c, opp_c)
+                if problems:
+                    print(f"  validation: BAD BATCH skipped - {'; '.join(problems)}", flush=True)
+                    continue
                 # Validation uses a FIXED lambda even when training schedules it.
                 # A moving objective would make each epoch's number measure a
                 # different thing, and "best epoch" would be picking the epoch
@@ -584,12 +623,27 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
     best_state = None
     best_epoch = 0
 
+    skipped = 0
     for epoch in range(1, args.epochs + 1):
         epoch_losses = []
         for step, batch in enumerate(
                 prefetch(make_train_batches(), args.prefetch)):
             stm, opp, scores, results, stm_t, opp_t, stm_c, opp_c = \
                 split_batch(batch, coarse=args.coarse)
+            problems = batch_problems(model, stm, opp, stm_t, opp_t, stm_c, opp_c)
+            if problems:
+                # Keep the evidence and keep the run: the batch is written out
+                # whole and skipped, and the epoch line reports the count. One
+                # batch in twenty thousand does not change the network; a
+                # dead run at epoch 1 costs the day.
+                skipped += 1
+                dump = f"{args.out}.bad_e{epoch}_s{step}.npz"
+                np.savez(dump, stm=stm, opp=opp, scores=scores, results=results,
+                         **({"stm_t": stm_t, "opp_t": opp_t} if stm_t is not None else {}),
+                         **({"coarse": stm_c, "coarse_stm": opp_c} if stm_c is not None else {}))
+                print(f"  epoch {epoch} step {step}: BAD BATCH skipped - "
+                      f"{'; '.join(problems)} - saved to {dump}", flush=True)
+                continue
             ratio = min(1.0, ((epoch - 1) * steps_per_epoch + step) / max(1, total_steps))
             lam = start_lambda + (end_lambda - start_lambda) * ratio
             stm_cd = opp_cd = None
@@ -636,7 +690,8 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
             torch.save({"model": best_state, "args": vars(args),
                         "dataset": args.data, "epoch": epoch,
                         "val_loss": best_val_loss}, args.out + ".partial")
-        print(f"epoch {epoch}: train {np.mean(epoch_losses):.6f}  val {val_loss:.6f}  lr {current_lr:.2e}{marker}", flush=True)
+        print(f"epoch {epoch}: train {np.mean(epoch_losses):.6f}  val {val_loss:.6f}  lr {current_lr:.2e}{marker}"
+              + (f"  ({skipped} bad batches skipped so far)" if skipped else ""), flush=True)
         scheduler.step()
 
     # Never save a checkpoint without weights. best_state stays None when no
