@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.8.6";
+    public const string Version = "5.8.7";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -263,6 +263,8 @@ public sealed class ChessEngine
             h.UseTbPvCap = _search.UseTbPvCap;
             h.UseTbResistance = _search.UseTbResistance;
             h.UseTbWinTieBreak = _search.UseTbWinTieBreak;
+            h.WonBandMaxMen = _search.WonBandMaxMen;
+            h.UseWonBandPromoGuard = _search.UseWonBandPromoGuard;
             h.UseLostResistance = _search.UseLostResistance;
             h.LostResistanceBound = _search.LostResistanceBound;
             h.UseCaptureLmr = _search.UseCaptureLmr;
@@ -592,6 +594,18 @@ public sealed class ChessEngine
     {
         get => _search.UseLostResistance;
         set => _search.UseLostResistance = value;
+    }
+
+    public bool UseWonBandPromoGuard
+    {
+        get => _search.UseWonBandPromoGuard;
+        set => _search.UseWonBandPromoGuard = value;
+    }
+
+    public int WonBandMaxMen
+    {
+        get => _search.WonBandMaxMen;
+        set => _search.WonBandMaxMen = value;
     }
 
     public int LostResistanceBound

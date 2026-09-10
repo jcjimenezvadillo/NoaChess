@@ -103,6 +103,10 @@ public sealed class UciOptions
     // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
     public bool LostResistance { get; private set; }
     public int LostResistanceBound { get; private set; } = 600;
+    // How near the tablebases the won-band tie-break may decide; 32 is the
+    // 5.8.1 behaviour of always. See AlphaBetaSearch.WonBandMaxMen.
+    public int WonBandMaxMen { get; private set; } = 8;
+    public bool WonBandPromoGuard { get; private set; } = true;
     public bool CaptureLmr { get; private set; }
     public bool NmpPackage { get; private set; }
     // Convert a pondered search in place on "ponderhit" instead of relaunching
@@ -237,6 +241,8 @@ public sealed class UciOptions
         output.WriteLine("option name TbPvCap type check default false");
         output.WriteLine("option name TbResistance type check default true");
         output.WriteLine("option name TbWinTieBreak type check default true");
+        output.WriteLine("option name WonBandMaxMen type spin default 8 min 4 max 32");
+        output.WriteLine("option name WonBandPromoGuard type check default true");
         output.WriteLine("option name LostResistance type check default false");
         output.WriteLine("option name LostResistanceBound type spin default 600 min 100 min 100 max 5000".Replace("min 100 min 100", "min 100"));
         output.WriteLine("option name CaptureLmr type check default false");
@@ -485,6 +491,12 @@ public sealed class UciOptions
             case "lostresistance" when bool.TryParse(value, out bool lrs):
                 LostResistance = lrs;
                 return "LostResistance";
+            case "wonbandpromoguard" when bool.TryParse(value, out bool wpg):
+                WonBandPromoGuard = wpg;
+                return "WonBandPromoGuard";
+            case "wonbandmaxmen" when int.TryParse(value, out int wbm):
+                WonBandMaxMen = Math.Clamp(wbm, 4, 32);
+                return "WonBandMaxMen";
             case "lostresistancebound" when int.TryParse(value, out int lrb):
                 LostResistanceBound = Math.Clamp(lrb, 100, 5000);
                 return "LostResistanceBound";

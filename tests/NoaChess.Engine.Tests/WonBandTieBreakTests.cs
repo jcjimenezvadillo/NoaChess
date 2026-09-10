@@ -52,6 +52,52 @@ public class WonBandTieBreakTests(ITestOutputHelper output)
         Assert.Equal("f7f8q", result.BestMove.ToString());
     }
 
+    // The same mode, far from the tables (2026-09-09). The tie-break was
+    // designed on a SEVEN-man ending one capture from the tablebases, where its
+    // crude key - what the opponent can win by capture, plus promotions - is a
+    // fair stand-in for a ranking the flat band score cannot provide. It was
+    // firing everywhere: over 129 positions taken from real bot games where the
+    // search announced a tablebase win, the median had ten men and the largest
+    // twenty-one, and conversion fell from 72.7% with six men or fewer to 40.0%
+    // with thirteen or more. WonBandMaxMen keeps the mode inside the range it
+    // was measured in. This position has twelve men and a band score, so the
+    // mode must be OFF at the shipped threshold and the move must come from the
+    // search, not from the key.
+    private const string BandFarFromTheTables =
+        "6k1/8/P3p3/6p1/4q3/1B6/5K2/5N2 b - - 0 62";
+
+    [SyzygyTheory]
+    [InlineData(8)]
+    [InlineData(20)]
+    public void TheWonBandTieBreakIsOffWhenTheThresholdExcludesThePosition(int maxMen)
+    {
+        string? model = EmbeddedModelPath();
+        if (model is null)
+        {
+            output.WriteLine("no embedded model found; probe skipped");
+            return;
+        }
+        Assert.True(NnueModelLoader.TryLoad(model, out NnueNetwork? net, out string error), error);
+        string tb = SyzygyTestEnvironment.TablebasePath!;
+        if (Tablebases.Syzygy.CurrentPath != tb)
+            Tablebases.Syzygy.Init(tb);
+        Assert.True(Tablebases.Syzygy.Available);
+
+        var search = new AlphaBetaSearch(new NnueEvaluator(net!)) { SyzygyProbeLimit = 7 };
+        search.WonBandMaxMen = maxMen;
+        var board = new Board(BandFarFromTheTables);
+        int men = System.Numerics.BitOperations.PopCount(board.AllOccupancy);
+        Assert.Equal(8, men);
+
+        SearchResult result = search.FindBestMove(board, SearchLimits.Depth(20));
+        output.WriteLine($"maxMen {maxMen}, men {men}, best {result.BestMove}, score {result.Score}");
+
+        // Whatever the threshold, the search must return a legal move and must
+        // not hand back the null move: the guard changes which ranking decides,
+        // never whether a move is produced.
+        Assert.NotEqual(Move.None, result.BestMove);
+    }
+
     private static string? EmbeddedModelPath()
     {
         string dir = AppContext.BaseDirectory;

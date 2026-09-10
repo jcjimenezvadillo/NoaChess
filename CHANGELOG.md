@@ -1,5 +1,55 @@
 # CHANGELOG
 
+## 2026-09-10 (v5.8.7) - two guards on the tablebase win band, shipped neutral
+
+**The release, in one line: two narrow guards on the won-band tie-break, both measured NEUTRAL, both
+costing nothing, shipped on the user's call after a long investigation that did NOT find the defect it
+set out to find.**
+
+This entry documents a negative result as carefully as a positive one, because the investigation
+behind it consumed a night and produced four measurement errors that are worth recording.
+
+**What was suspected.** From games watched live: the engine draws and loses against clearly weaker
+opposition more than it should. Measured on 4,127 Lichess games, the raw curve did show something. The
+loss rate should fall as the opponent weakens and instead it rose in the 300-to-400-point band, 7.5%
+against 2.9% one band closer. Splitting those losses by how they ended found that 13 of the 20 were
+time forfeits, not defeats over the board, and removing them made the curve monotone again.
+
+**What the forfeits turned out to be.** Two separate faults sharing a label. Fourteen games ended
+within twenty plies, which is the engine never answering: five in July, nine in August, seven of those
+on a single day, and **none in September over 818 games**. The other twenty-one were real games with
+the clock mismanaged: eleven in July, six in August, four in September, all four in bullet. That is
+about 1.2% of bullet games and roughly 1.5 Elo.
+
+**The lead that did not hold.** A rapid game lost on 8 September was traced move by move: the engine
+reported scores of +19979 on four consecutive moves, which is the tablebase win band, while an
+independent judge saw the advantage falling from +455 to -168, and it lost. The board had eight men
+and the tablebases hold six, so the band came from a line deep in the search that the opponent never
+had to enter. That single game is real and verified.
+
+Scaled up, it did not survive. Three successive attempts to count how often an announced win is
+converted gave 65%, then 86%, then 76%, because the log has no game id on its search lines and each
+attempt joined the data differently. Only the third has a check behind it: it scopes each game to its
+own slice of the log and asserts the slices do not overlap, which they do in 2 of 672 cases. And the
+decisive control was never run until last: the same fifty positions, played out by this engine and by
+a reference engine four hundred points stronger, against the same opponent at the same node budget.
+**Noa scored 0.495 and the reference 0.520 over a hundred games each.** The positions are hard. There
+is no engine-specific weakness to fix.
+
+**What ships anyway.** `WonBandMaxMen` (default 8) keeps the won-band tie-break inside the range it
+was designed and measured for, near the tables, where its crude key - what the opponent can win by
+capture, plus promotions - is a fair stand-in for a ranking the flat band score cannot provide. It was
+firing everywhere: over 129 positions taken from real games, the median had ten men and the largest
+twenty-one. `WonBandPromoGuard` (default true) counts what the opponent can PROMOTE alongside what it
+can capture, because in the traced game three checks that all kept their material scored as well as
+taking the pawn that was about to queen.
+
+**Both measured neutral.** An independent judge over the twenty-nine positions where the band actually
+fires: the options change the chosen move in one and two positions respectively, and the median
+difference is zero. Bench is **8,478,755 nodes at depth 12, identical to v5.8.6 to the node**, so the
+cost is measured at zero rather than assumed. They ship because the user asked for them kept after a
+live trial, and the project's rule allows a tie to ship at zero measured cost. **443 tests.**
+
 ## 2026-09-09 - the field's labels are MEASURED, and every CCRL number in this project moves
 
 **No engine change. The instrument changed.** The twenty engines this project rates itself against

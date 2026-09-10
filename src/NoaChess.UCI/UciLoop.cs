@@ -1108,6 +1108,10 @@ public sealed class UciLoop
             _engine.UseTbResistance = _options.TbResistance;
         if (changed == "TbWinTieBreak")
             _engine.UseTbWinTieBreak = _options.TbWinTieBreak;
+        if (changed == "WonBandMaxMen")
+            _engine.WonBandMaxMen = _options.WonBandMaxMen;
+        if (changed == "WonBandPromoGuard")
+            _engine.UseWonBandPromoGuard = _options.WonBandPromoGuard;
         if (changed == "LostResistance")
             _engine.UseLostResistance = _options.LostResistance;
         if (changed == "LostResistanceBound")
