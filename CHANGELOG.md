@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 2026-09-10 (v5.9.1) - a search that crashes answers with the best move it found, not the first legal one
+
+**Found live, in a rated game, by the user watching the board.** The engine had a queen on a6 attacked
+by a knight on c7, reported depth 36 with a score of 0.00 and a principal variation starting Qb6 - a
+correct drawing repetition - and then played c4 and let the queen be taken. Three moves later it did
+the same with a bishop.
+
+**The chess was right; the answer was not.** The log shows what happened between the two:
+
+    info depth 36 score cp 0 nodes 27600733 ... pv a6b6 c7b5 b6a6 d2g5 e5f6 ...
+    info string search error: FileNotFoundException: Could not load file or assembly
+                              'System.IO.MemoryMappedFiles ...'
+    bestmove c5c4
+
+The search threw, and the handler in `UciLoop.RunSearch` answered with
+`GenerateLegalMoves(_board).FirstOrDefault()` - the first move in generation order, which was c4. The
+handler exists for a good reason: a GUI that never receives `bestmove` considers the engine hung, so
+answering something is right. Answering an ARBITRARY something is not, when the search has already
+reported a move it believes in. It now replies with the best move reported so far, falling back to the
+first legal move only when no iteration has completed, and checks that move is legal before sending
+it: an exception means something is already wrong, and an illegal `bestmove` loses the game outright.
+
+**Why the assembly was missing is not the engine's fault, it is ours.** The published binary is
+self-contained and extracts what it needs on demand. The Mac bot's executable was replaced in place
+while that game was still running, so the live process lost the file it had not yet loaded - the
+tablebase memory-mapping assembly, in this case. Seven of those errors landed in that one game. The
+operational rule that follows is simple and now written down: **stop the bot before replacing its
+binary**, never the other way round.
+
+Bench **8,193,088 at depth 12, identical to v5.9.0 to the node**: nothing in the search changed, only
+what is said when it fails. **443 tests.**
+
 ## 2026-09-10 (v5.9.0) - the coarse-lane human net, +11.5 Elo over the champion
 
 **The release, in one line: a new network, fqcohuman, measured +11.5 Elo against the net that had been

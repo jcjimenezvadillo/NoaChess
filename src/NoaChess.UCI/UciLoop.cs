@@ -81,6 +81,16 @@ public sealed class UciLoop
     private const int PonderTrustMargin = 4; // plies the relaunch may fall short by
     private int _ponderDepth;
     private Move _ponderMove = Move.None;
+
+    // The best move the search has reported so far, kept for the one case that
+    // needs it: an exception mid-search (2026-09-10). The handler used to answer
+    // with the first legal move in generation order, which threw a queen away in
+    // a real game - the search had already reported depth 36 with a drawing line
+    // starting Qb6, and the engine sent c4 instead because c4 came first in the
+    // move list. Whatever went wrong, the best move found so far is a far better
+    // answer than an arbitrary one, and it costs a single assignment per
+    // iteration to have it.
+    private Move _bestSoFar = Move.None;
     private volatile bool _suppressBestmove;
 
     private readonly QueuedWriter _queuedOutput;
@@ -1347,6 +1357,7 @@ public sealed class UciLoop
         // WaitForSearchToFinish, and a GUI that never receives "bestmove"
         // considers the engine hung. Report the error and answer with a legal
         // move so the game (and the process) survives.
+        _bestSoFar = Move.None;
         try
         {
             RunSearchCore(limits, token, waitForStop, isPonder, fromPonderhit);
@@ -1356,7 +1367,18 @@ public sealed class UciLoop
             _output.WriteLine($"info string search error: {ex.GetType().Name}: {ex.Message}");
             if (_suppressBestmove)
                 return;
-            Move fallback = MoveGenerator.GenerateLegalMoves(_board).FirstOrDefault();
+            // Answer with the best move the search actually found, not with
+            // whatever the move generator happens to produce first. On
+            // 2026-09-10 this handler fired at depth 36 in a real game, with a
+            // drawing line starting Qb6 already reported, and sent c4 - the
+            // first legal move - hanging the queen. The legality check is
+            // belt and braces: the move came from a search of this very
+            // position, but an exception means something is already wrong and
+            // an illegal bestmove would lose the game outright.
+            var legal = MoveGenerator.GenerateLegalMoves(_board);
+            Move fallback = _bestSoFar != Move.None && legal.Contains(_bestSoFar)
+                ? _bestSoFar
+                : legal.FirstOrDefault();
             _output.WriteLine(fallback == Move.None ? "bestmove 0000" : $"bestmove {fallback}");
         }
     }
@@ -1375,6 +1397,9 @@ public sealed class UciLoop
         var progress = new SynchronousProgress(p =>
         {
             lastPv = p.Pv;
+            // Kept for the exception handler in RunSearch; see _bestSoFar.
+            if (p.BestMove != Move.None)
+                _bestSoFar = p.BestMove;
             // Recorded per ITERATION rather than when the ponder search returns:
             // ponderhit cancels it, and the relaunch would then race the losing
             // thread's final write.
