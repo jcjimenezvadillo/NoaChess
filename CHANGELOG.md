@@ -29,6 +29,8 @@ tablebase memory-mapping assembly, in this case. Seven of those errors landed in
 operational rule that follows is simple and now written down: **stop the bot before replacing its
 binary**, never the other way round.
 
+Gauntlet, single-threaded, against twelve engines of field 2 whose labels were MEASURED on 2026-09-09: **46.2% over 240 games, 3276 CCRL +/- 44**, against v5.8.7's 3286 and v5.8.6's 3296 on the same measured labels. The number belongs to v5.9.0 and v5.9.1 alike: the search is identical to the node (bench 8,193,088) and the 5.9.1 change only decides what is answered when an exception interrupts a search, which never happens in a gauntlet. Measured with the box loaded: the corpus generation ran on twenty-five threads throughout, and it is never paused.
+
 Bench **8,193,088 at depth 12, identical to v5.9.0 to the node**: nothing in the search changed, only
 what is said when it fails. **443 tests.**
 
