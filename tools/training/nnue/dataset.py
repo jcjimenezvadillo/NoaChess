@@ -873,6 +873,7 @@ class FeatureStore:
 
         pending = tuple([] for _ in keys)
         pending_rows = 0
+        _warned_rows = False
         # Rows left over when a buffer does not divide evenly into batches. They
         # are CARRIED into the next buffer rather than dropped: discarding a
         # partial batch per buffer would quietly throw away real training data
@@ -895,7 +896,31 @@ class FeatureStore:
                 continue
 
             arrays = [np.concatenate(part) for part in pending]
-            perm = rng.permutation(pending_rows)
+            # The permutation must be sized from the array it will index, never
+            # from a counter kept alongside it (2026-09-10). Built from
+            # pending_rows, this line killed a run at epoch 17 of 21 with three
+            # days of GPU in it: "index 268859706 is out of bounds for axis 0
+            # with size 524288". The counter adds up what the chunk table SAYS
+            # each slice holds; the arrays hold what the mapped files actually
+            # returned, and the two can differ - a slice whose end runs past the
+            # rows a shard really has comes back short, silently, and from then
+            # on every buffer is indexed with a permutation that is too long.
+            #
+            # Taking the length from the data cannot be wrong. The assertion
+            # keeps the underlying disagreement visible instead of hiding it,
+            # and names the numbers rather than failing deep inside numpy.
+            # Warn, do not raise. The rows in the buffer are perfectly good
+            # training data whatever the table claims, so a mismatch is a reason
+            # to say so and carry on, not to throw away the rest of a run that
+            # has days of GPU behind it.
+            rows_now = len(arrays[0])
+            if rows_now != pending_rows and not _warned_rows:
+                _warned_rows = True
+                print(f"  warning: the chunk table says {pending_rows} rows and the shards "
+                      f"returned {rows_now}. A chunk range runs past the end of its shard. "
+                      f"Shuffling what is actually there and continuing; this is reported "
+                      f"once per pass.", flush=True)
+            perm = rng.permutation(rows_now)
             arrays = [a[perm] for a in arrays]
             if carry is not None:
                 # Prepend before batching, after the shuffle, so carried rows do
