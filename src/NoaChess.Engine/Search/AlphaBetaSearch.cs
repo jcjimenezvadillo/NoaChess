@@ -926,6 +926,33 @@ public sealed class AlphaBetaSearch
     public bool UseTbWinTieBreak = true;
     private bool _rootWonTb;
 
+    // How far from the tablebases the won-band tie-break above is allowed to
+    // decide (2026-09-09). It was designed and measured on a SEVEN-man ending,
+    // one capture from the tables, where the band score is a near-certainty and
+    // the key's crude notion of progress - what the opponent can win by capture,
+    // plus promotions - is a fair substitute for ranking the search cannot do.
+    //
+    // It was firing everywhere. Over 129 positions taken from real bot games in
+    // which the search announced a tablebase win, the median had TEN men and the
+    // largest had TWENTY-ONE: a deep forcing line reaches the tables from almost
+    // any endgame, and every one of those roots switched into a mode that throws
+    // the search's own move ordering away. Conversion fell with distance from
+    // the tables: 72.7% with six men or fewer, 65.4% at seven to eight, 65.7%
+    // at nine to twelve, and 40.0% at thirteen or more. An announced forced win
+    // converted two times in five is not a tie-break problem, it is a mode
+    // running far outside the range where anyone checked it.
+    //
+    // With this at 32 the behaviour is exactly what shipped in 5.8.1.
+    // Ships at 8 in 5.8.7 by the user's call. The measurements are honest about
+    // what that is worth: neutral. See the changelog.
+    public int WonBandMaxMen = 8;
+
+    // The second half of the same repair: inside the won band, count what the
+    // opponent can PROMOTE alongside what it can capture. Independent of
+    // WonBandMaxMen and measured separately, because they fix opposite blind
+    // spots and either could be the one that matters.
+    public bool UseWonBandPromoGuard = true;
+
     // LostResistance: the same idea as TbResistance, for a position that is
     // merely LOST BY A LOT rather than lost to a tablebase (added 2026-09-07
     // from a bot game the user sent).
@@ -2493,7 +2520,12 @@ public sealed class AlphaBetaSearch
         bool lostMode = _rootLostTb;
         bool lostBadlyMode = _rootLostBadly && !lostMode;
         bool drawMode = _rootDrawn && !lostMode && !lostBadlyMode;
-        bool wonMode = _rootWonTb && !lostMode && !lostBadlyMode && !drawMode;
+        // The won-band tie-break only decides while the position is near enough
+        // to the tables for its key to mean anything; see WonBandMaxMen. Far
+        // from them the search's own ordering is the better judge, and taking it
+        // away is what turned announced wins into draws and losses.
+        bool wonMode = _rootWonTb && !lostMode && !lostBadlyMode && !drawMode
+                       && System.Numerics.BitOperations.PopCount(board.AllOccupancy) <= WonBandMaxMen;
         bool fullWindowMode = lostMode || drawMode || lostBadlyMode || wonMode;
         long bestKey = long.MinValue;
 
@@ -2594,6 +2626,24 @@ public sealed class AlphaBetaSearch
                 for (int t = 0; t < _tieMoves.Count; t++)
                 {
                     Move reply = _tieMoves[t];
+                    // What the opponent can PROMOTE counts as much as what the
+                    // opponent can capture (2026-09-09). The key was built to
+                    // stop us handing pieces over to reach the tables sooner,
+                    // and it does that; it was blind in the other direction. In
+                    // the rapid game lost on 2026-09-08 the engine held a queen
+                    // against bishop and knight, announced a forced win, and
+                    // spent three moves giving checks while a passed pawn walked
+                    // from a6 to a8. Each of those checks kept its own material
+                    // and so scored as well as taking the pawn did. A promotion
+                    // the opponent can play next move is worth more than any
+                    // capture in such a position, so it enters the key at about
+                    // a queen's value.
+                    if (UseWonBandPromoGuard && reply.IsPromotion)
+                    {
+                        if (900 > worst)
+                            worst = 900;
+                        continue;
+                    }
                     if (!reply.IsCapture)
                         continue;
                     int gain = StaticExchangeEvaluator.Evaluate(board, reply);
