@@ -1,5 +1,34 @@
 # CHANGELOG
 
+## 2026-09-10 (v5.9.0) - the coarse-lane human net, +11.5 Elo over the champion
+
+**The release, in one line: a new network, fqcohuman, measured +11.5 Elo against the net that had been
+shipping since v5.4.0.**
+
+**The measurement.** Fixed-node SPRT at 100,000 nodes, same binary on both sides with only the model
+file differing: **+11.5 +/- 9.2 Elo, LOS 99.3%, LLR 2.97, H1 accepted over 2,627 games**, with a draw
+ratio of 52.3%. A net swap changes no node counts, so unlike a search change this gain does not have
+to survive a second toll at the clock: the engine searches exactly as fast as before.
+
+**What it is.** The same HalfKA schema, the same 128-wide transformer, the same factorized and
+quantisation-aware recipe, trained further on the same corpus with the coarse lane and the human
+opening arms. It is more training on known ground rather than a new idea, and the size of the gain
+says so: the largest network gains in this project came from changing what the data or the
+representation IS - factorization at +195, corpus scale at +182, deeper labels at +117 - not from
+more epochs. Eleven points is what the last stretch of a schedule pays.
+
+**It survived two crashes to get here.** The original run died at epoch 39 of 60 when the machine
+rebooted, and the trainer had no way to continue one; `--init-from` was added for exactly that, a warm
+start from the best checkpoint. The continuation then died at epoch 17 of 21 on a real defect in the
+streaming loader, which sized its shuffle permutation from a row counter instead of from the array it
+was about to index and blew up inside numpy with three days of GPU behind it. That is fixed and now
+warns instead of aborting. The net that ships is the checkpoint from epoch 14 of that continuation,
+53 of the 60 planned epochs, at a validation loss of 0.005860 - the best of the whole series. The
+remaining seven epochs are training now and will be measured against this one.
+
+**Bench 8,193,088 nodes at depth 12** (v5.8.7: 8,478,755; a different evaluation changes what the
+search prunes, so the count moves). **443 tests.**
+
 ## 2026-09-10 (v5.8.7) - two guards on the tablebase win band, shipped neutral
 
 **The release, in one line: two narrow guards on the won-band tie-break, both measured NEUTRAL, both
