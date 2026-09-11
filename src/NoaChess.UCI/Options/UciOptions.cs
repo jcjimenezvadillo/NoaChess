@@ -115,6 +115,7 @@ public sealed class UciOptions
     // games, with zero time forfeits - it lost on chess, not on the clock.
     // Kept inert; the full record is in AlphaBetaSearch.ApplyClockLimits.
     public bool PonderInPlace { get; private set; }
+    public bool PonderContinue { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -248,6 +249,7 @@ public sealed class UciOptions
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
+        output.WriteLine("option name PonderContinue type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
@@ -509,6 +511,9 @@ public sealed class UciOptions
             case "ponderinplace" when bool.TryParse(value, out bool pip):
                 PonderInPlace = pip;
                 return "PonderInPlace";
+            case "pondercontinue" when bool.TryParse(value, out bool pcn):
+                PonderContinue = pcn;
+                return "PonderContinue";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;

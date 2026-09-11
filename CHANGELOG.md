@@ -1,34 +1,48 @@
 # CHANGELOG
 
-## (unreleased, toward v5.9.2) - the training loader survives a machine that reads memory back wrong
+## 2026-09-11 (v5.9.2) - the complete fqcohuman, sixty epochs, beats the epoch-14 net it replaces
 
-**Four training runs died in two days, with three different faces.** An IndexError with an
-impossible permutation index (268,859,706 against an array of 524,288), two CUDA device-side
-asserts from an index kernel, and finally a coarse-feature chunk whose offsets were not monotonic in
-memory although they are on disk. Each of the first three was treated as a loader bug and "fixed";
-the fourth was reproduced outside the trainer: the exact chunk order replayed on the CPU, one
-thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values are all below 144 on disk
-(4,216 is 120 with bit 12 set), and the SAME chunk read back correctly a moment later. A read of an
-in-memory array that is wrong once and right the next time is not a Python bug. The box carries
-eight non-ECC modules from two different kits; a memory test is the next step, and it is the
-user's call because it stops the corpus generation.
+**The net.** v5.9.0 shipped fqcohuman at epoch 14 of its second stage because that was the best
+checkpoint on disk when the run died, and the remaining seven epochs were still to be trained. They are
+trained now (39 + 14 + 7 = 60), under the loader guards described below, on a machine that reads memory
+back wrong: not one chunk skipped, not one batch dropped. Validation loss 0.005825, 0.005820, 0.005814,
+0.005826, 0.005816, **0.005804**, 0.005804 over the seven; the shipped checkpoint is epoch 6 of the stage
+(the best of the whole series; the epoch-14 net was 0.005860). Against the shipped net at fixed nodes:
+**+21.6 +/- 14.6 Elo, LOS 99.8%, LLR 2.98, H1 over 983 fixed-node games**. Export verified bit-exact against the engine's own probe. Bench **7,793,209 nodes at depth 12**.
 
-**Two guards keep a run alive on such a machine and record the evidence.** In the streaming loader a
-chunk that cannot be read (any stream, any exception) is logged with its file and row range and
-skipped; every stream of a chunk is read before any of it is queued, so a skipped chunk never
-misaligns the buffer. In the trainer every batch is range-checked on the host before it reaches the
-GPU (HalfKA rows below the pad row, coarse ids in -1..143, side-to-move bytes in {0, 1}, one row
-count for every stream); a batch that fails is written to disk whole and skipped, and the epoch
-line reports how many were. A dead CUDA context cannot be caught, so the check has to run before
-the forward pass. Cost: a few min/max reductions over int16 arrays per batch, under a millisecond.
-The 60-epoch completion of fqcohuman (seven epochs left after the 39 + 14 already banked) runs
-under both guards; it will be measured against the shipped epoch-14 net and against fqhuman before
-anything ships, exactly as every net before it.
+**PonderContinue, an option, OFF.** From a user observation on the bot's rapid games: after a ponderhit
+the relaunch reaches the pondered depth in milliseconds over the warm table and the easy-move cut then
+ends it at depth 12 to 17 while the ponder had 23 to 27 in hand and the clock a comfortable lead (lichess
+XEgDFUb0 move 54: depth 13 in 1 ms with 43 s left). With the option on, and only when this side holds at
+least a quarter more clock than the opponent, the easy-move and obvious-move cuts may not fire until the
+relaunch has gone one iteration past the ponder; the soft budget, already scaled by ClockLead, still
+bounds the time. Node counts are untouched (clock mode only). It ships OFF: the measurement it needs is a
+ponder-on match at the clock, and the first attempt at 60+1 ran on a box with the corpus generation on
+twenty-five threads, where both sides were spending fifteen seconds on single moves, so it was stopped as
+invalid. It will be measured when the box is quiet.
 
-**The launcher writes a log now** (`CHESSTEST\logs`), runs the trainer with the stderr trap of
-PowerShell 5 disarmed, and passes `--force` past the trainer's own "another python is running"
-refusal, because the judge-based review of the bot's games runs on the same box in three CPU-only
-processes. Every one of those three details cost a relaunch on 2026-09-10.
+**The training loader survives a machine that reads memory back wrong.** Four training runs died in two
+days with three different faces: an impossible permutation index, two CUDA device-side asserts from an
+index kernel, and a coarse-feature chunk whose offsets were not monotonic in memory although they are on
+disk. The fourth was reproduced outside the trainer - the exact chunk order replayed on the CPU, one
+thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values are all below 144 on disk (120
+with bit 12 set), and the same chunk read back correctly a moment later - and then confirmed by a plain
+memory pattern test in a third process. That is hardware, and the box carries eight non-ECC modules from
+two different kits; a memory test is the next step and it stops the corpus generation, so it is the
+user's call. Two guards keep a run alive and record the evidence: a chunk that cannot be read (any
+stream, any exception) is logged with its file and row range and skipped, every stream read before any of
+it is queued so the buffer never misaligns; and every batch is range-checked on the host before the GPU
+sees it, a failing batch written to disk whole and skipped, the epoch line reporting the count. A dead
+CUDA context cannot be caught, so the check runs before the forward pass, under a millisecond per batch.
+
+**Also since v5.9.1.** The bot's games are now reviewed systematically with an independent judge (4,246
+games, 264,946 moves): 0.4% of moves in live positions lose 300 cp or more, the rate halved since July,
+and the one place it stays high is the losing band (-500 to -1000: 4.7%), which is an evaluation problem
+(the net saturates below -750) and now has a measured gate of 602 real positions for the next idea. Two
+apparent collapses reported from the board turned out, on the judge, to be the only move and a rook trade.
+The bot no longer offers or accepts draws by agreement: it offered in 12 of 25 recent draws, always at an
+exact 0.00 that a stronger judge confirmed, so nothing was lost, but nothing is gained either. **Tests:
+443.**
 
 ## 2026-09-10 (v5.9.1) - a search that crashes answers with the best move it found, not the first legal one
 

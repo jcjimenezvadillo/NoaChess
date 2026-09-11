@@ -183,6 +183,9 @@ public sealed class AlphaBetaSearch
     // instant-moving opponent banked time. Tunable by SPRT.
     private const int EasyMoveMargin = 700;       // |score| (cp) that counts as decisive
     private const int EasyMoveMinDepth = 12;      // do not trust it before this depth
+    // Per search: EasyMoveMinDepth, or the depth a ponderhit relaunch must reach
+    // before it may stop early (SearchLimits.MinEasyDepth, PonderContinue).
+    private int _minEasyDepth = EasyMoveMinDepth;
     private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
 
@@ -1627,6 +1630,7 @@ public sealed class AlphaBetaSearch
         _maxNodes = limits.MaxNodes;
         _elapsedOffsetMs = limits.ElapsedOffsetMs;
         _relaunch = limits.ElapsedOffsetMs > 0;
+        _minEasyDepth = Math.Max(EasyMoveMinDepth, limits.MinEasyDepth);
         _convertedPonder = false;
         _timer.Restart();
 
@@ -2287,7 +2291,7 @@ public sealed class AlphaBetaSearch
                 // banking that the rule exists for is untouched.
                 bool fiftyPressure = UseEasyMoveFiftyGuard
                     && board.HalfmoveClock >= EasyMoveFiftyGuardClock;
-                bool easyMoveEligible = depth >= EasyMoveMinDepth
+                bool easyMoveEligible = depth >= _minEasyDepth
                     && decisive
                     && !fiftyPressure
                     && lastBestMoveDepth + EasyMoveStableDepth <= depth;
@@ -2300,7 +2304,7 @@ public sealed class AlphaBetaSearch
                 // that was made at depth one. See the constants above for the
                 // game this came from.
                 bool obviousMoveEligible = !easyMoveEligible
-                    && depth >= EasyMoveMinDepth
+                    && depth >= _minEasyDepth
                     && lastBestMoveDepth <= ObviousMoveSettledBy
                     && lastBestMoveDepth + ObviousMoveStableDepth <= depth
                     && totBestMoveChanges <= ObviousMoveMaxChanges
