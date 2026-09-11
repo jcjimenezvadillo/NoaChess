@@ -80,6 +80,9 @@ public sealed class UciLoop
     // back far shallower AND disagrees, the pondered move stands.
     private const int PonderTrustMargin = 4; // plies the relaunch may fall short by
     private int _ponderDepth;
+    // PonderContinue fires only when this side holds at least this much of the
+    // opponent's clock, in percent (125 = a quarter more).
+    private const long PonderContinueLeadPercent = 125;
     private Move _ponderMove = Move.None;
 
     // The best move the search has reported so far, kept for the one case that
@@ -1302,6 +1305,29 @@ public sealed class UciLoop
             long maxCredit = Math.Min(limits.SoftTimeMs / 2,
                                       Math.Max(0, limits.HardTimeMs - 100));
             limits = limits with { ElapsedOffsetMs = Math.Min(ponderedMs, maxCredit) };
+
+            // PonderContinue (2026-09-11, from a user observation): the relaunch
+            // reaches the pondered depth in milliseconds over the warm table and
+            // the easy-move cut then ends it at depth 12 to 17 while the ponder had
+            // 23 to 27 in hand and the clock a comfortable lead (XEgDFUb0 move 54:
+            // depth 13 in 1 ms with 43 s left). With the option on, the cuts may
+            // not fire until the relaunch has gone one iteration past the ponder;
+            // the soft budget, already scaled by ClockLead, still bounds the time.
+            // Only with a clock lead: the extra iteration is paid from time the
+            // opponent does not have. With equal clocks the instant reply stays,
+            // which is what the bullet regime wants.
+            if (_options.PonderContinue && _ponderDepth > 0)
+            {
+                static long? Clock(string[] t, string key)
+                {
+                    int i = Array.IndexOf(t, key);
+                    return i >= 0 && i + 1 < t.Length && long.TryParse(t[i + 1], out long v) ? v : null;
+                }
+                long? mine = _board.SideToMove == Color.White ? Clock(tokens, "wtime") : Clock(tokens, "btime");
+                long? theirs = _board.SideToMove == Color.White ? Clock(tokens, "btime") : Clock(tokens, "wtime");
+                if (mine is long t && theirs is long o && o > 0 && t >= o * PonderContinueLeadPercent / 100)
+                    limits = limits with { MinEasyDepth = _ponderDepth + 1 };
+            }
         }
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
