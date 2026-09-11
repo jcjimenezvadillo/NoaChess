@@ -8,7 +8,7 @@ trained now (39 + 14 + 7 = 60), under the loader guards described below, on a ma
 back wrong: not one chunk skipped, not one batch dropped. Validation loss 0.005825, 0.005820, 0.005814,
 0.005826, 0.005816, **0.005804**, 0.005804 over the seven; the shipped checkpoint is epoch 6 of the stage
 (the best of the whole series; the epoch-14 net was 0.005860). Against the shipped net at fixed nodes:
-**+21.6 +/- 14.6 Elo, LOS 99.8%, LLR 2.98, H1 over 983 fixed-node games**. Export verified bit-exact against the engine's own probe. Bench **7,793,209 nodes at depth 12**.
+**+21.6 +/- 14.6 Elo, LOS 99.8%, LLR 2.98, H1 over 983 fixed-node games**. Export verified bit-exact against the engine's own probe. Bench **7,793,209 nodes at depth 12**. Gauntlet, single-threaded, against twelve engines of field 2 whose labels were MEASURED on 2026-09-09: **52.1% over 240 games, 3321 CCRL +/- 45**, against v5.9.0/v5.9.1's 3276, v5.8.7's 3286 and v5.8.6's 3296 on the same measured labels. Measured with the box loaded: the corpus generation ran on twenty-five threads throughout, and it is never paused.
 
 **PonderContinue, an option, OFF.** From a user observation on the bot's rapid games: after a ponderhit
 the relaunch reaches the pondered depth in milliseconds over the warm table and the easy-move cut then
