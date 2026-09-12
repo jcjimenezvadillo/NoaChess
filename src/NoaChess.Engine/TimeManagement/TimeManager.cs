@@ -22,7 +22,8 @@ namespace NoaChess.Engine.TimeManagement;
 public static class TimeManager
 {
     public static SearchLimits FromClock(long remainingMs, long incrementMs, int moveOverheadMs,
-                                         int? movesToGo = null, int gamePly = 0)
+                                         int? movesToGo = null, int gamePly = 0,
+                                         int timeScalePercent = 100)
     {
         long time = Math.Max(1, remainingMs);
 
@@ -98,6 +99,23 @@ public static class TimeManager
         // Bound the target by inc + clock/16 and the hard deadline by
         // inc + clock/4: every move stays affordable, and near-exhausted
         // clocks stabilize around the increment instead of flagging.
+        // TimeScale (audit 2026-09-08): a plain multiplier on the optimum so
+        // the bot's measured under-spend can be priced. Over 483 bot games at
+        // 60+1, 60+2, 180+1 and 180+2 (2026-09-01 to 09-07) the engine ended
+        // with a median 1.5x to 1.96x the opponent's clock and had spent about
+        // 84% of what they spent, which at the measured ~65 Elo per doubling
+        // of time is worth roughly 15 Elo left on the table - IF the hard
+        // deadline keeps the forfeit count at zero, which is what the SPRT at
+        // the deployment control decides. The maximum is never scaled: it is
+        // the safety rail and stays bounded by the clock as before.
+        // The percent may exceed 100 by the clock-lead ratio as well (UciLoop).
+        // Applied BEFORE the sustainability guard (moved 2026-09-08, from a
+        // bot game that reached 0:12 against 3:52): the guard is the brake
+        // that keeps every move affordable, and a scaled optimum has to obey
+        // it like any other.
+        if (timeScalePercent != 100)
+            optimum = Math.Max(1, optimum * timeScalePercent / 100);
+
         if (movesToGo is null or <= 0)
         {
             long sustainableOptimum = incrementMs + time / 16;

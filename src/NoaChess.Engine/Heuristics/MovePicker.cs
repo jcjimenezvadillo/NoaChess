@@ -25,8 +25,15 @@ public static class MovePicker
     private const int GoodCaptureBase = 5_000_000;
     private const int PromotionBase = 4_000_000;
     private const int LosingCaptureBase = -5_000_000;
-    private const int CheckBonus = 16_384;
-    private const int ThreatEscapeWeight = 20;
+    // Settable, not const (audit 2026-09-07): both magnitudes were chosen by
+    // argument, never by measurement, and they sit in a quiet score whose whole
+    // learned range is about +-15k. The reference adds 16384 for a check into
+    // a range ten times wider and its threat terms are a quarter of that
+    // range; here the same numbers dominate everything the tables learned.
+    // The UCI knobs PickerCheckBonus and PickerThreatWeight exist to price
+    // them on the node bench and by SPRT; the defaults are unchanged.
+    public static int CheckBonus = 16_384;
+    public static int ThreatEscapeWeight = 20;
     private const int QuietSortDepthFactor = 3_000;
     private const int CheckSeeThreshold = 75;
 
