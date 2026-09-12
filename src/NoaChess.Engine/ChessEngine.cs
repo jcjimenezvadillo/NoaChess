@@ -1,4 +1,4 @@
-using NoaChess.Core;
+﻿using NoaChess.Core;
 using NoaChess.Engine.Evaluation.Classical;
 using NoaChess.Engine.Evaluation.Nnue;
 using NoaChess.Engine.Search;
@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.6.0";
+    public const string Version = "5.9.2";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -262,6 +262,11 @@ public sealed class ChessEngine
             h.UseKillerShallowing = _search.UseKillerShallowing;
             h.UseTbPvCap = _search.UseTbPvCap;
             h.UseTbResistance = _search.UseTbResistance;
+            h.UseTbWinTieBreak = _search.UseTbWinTieBreak;
+            h.WonBandMaxMen = _search.WonBandMaxMen;
+            h.UseWonBandPromoGuard = _search.UseWonBandPromoGuard;
+            h.UseLostResistance = _search.UseLostResistance;
+            h.LostResistanceBound = _search.LostResistanceBound;
             h.UseCaptureLmr = _search.UseCaptureLmr;
             h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
@@ -279,6 +284,32 @@ public sealed class ChessEngine
             h.UseEasyMoveFiftyGuard = _search.UseEasyMoveFiftyGuard;
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
+            h.UseRepetitionAfterRoot = _search.UseRepetitionAfterRoot;
+            h.UseNmpNonPvOnly = _search.UseNmpNonPvOnly;
+            h.UseTtEvalRefine = _search.UseTtEvalRefine;
+            h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
+            h.UseTtMateReuse = _search.UseTtMateReuse;
+            h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
+            h.UseRazoring = _search.UseRazoring;
+            h.UseNoDecayOnRelaunch = _search.UseNoDecayOnRelaunch;
+            h.UseQsChecks = _search.UseQsChecks;
+            h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
+            h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
+            h.UseCaptureFutility = _search.UseCaptureFutility;
+            h.UseHistoryPrune = _search.UseHistoryPrune;
+            h.UseQsContCorrection = _search.UseQsContCorrection;
+            h.UseSingularTight = _search.UseSingularTight;
+            h.UseQsEntryKey = _search.UseQsEntryKey;
+            h.UseLmpAllDepths = _search.UseLmpAllDepths;
+            h.UseQuietSeePrune = _search.UseQuietSeePrune;
+            h.UsePriorFailLowBonus = _search.UsePriorFailLowBonus;
+            h.UseLmrDeeperResearch = _search.UseLmrDeeperResearch;
+            h.UseRfpTtMoveGuard = _search.UseRfpTtMoveGuard;
+            h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
+            h.UseDrawRandom = _search.UseDrawRandom;
+            h.UseHindsightDepth = _search.UseHindsightDepth;
+            h.UseCutoffCountLmr = _search.UseCutoffCountLmr;
+            h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
             h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
@@ -553,6 +584,35 @@ public sealed class ChessEngine
         get => _search.UseTbResistance;
         set => _search.UseTbResistance = value;
     }
+    public bool UseTbWinTieBreak
+    {
+        get => _search.UseTbWinTieBreak;
+        set => _search.UseTbWinTieBreak = value;
+    }
+
+    public bool UseLostResistance
+    {
+        get => _search.UseLostResistance;
+        set => _search.UseLostResistance = value;
+    }
+
+    public bool UseWonBandPromoGuard
+    {
+        get => _search.UseWonBandPromoGuard;
+        set => _search.UseWonBandPromoGuard = value;
+    }
+
+    public int WonBandMaxMen
+    {
+        get => _search.WonBandMaxMen;
+        set => _search.WonBandMaxMen = value;
+    }
+
+    public int LostResistanceBound
+    {
+        get => _search.LostResistanceBound;
+        set => _search.LostResistanceBound = value;
+    }
 
     public bool UseCaptureLmr
     {
@@ -671,6 +731,156 @@ public sealed class ChessEngine
     {
         get => _search.UseSmpDiversify;
         set => _search.UseSmpDiversify = value;
+    }
+
+    // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
+    public bool UseRepetitionAfterRoot
+    {
+        get => _search.UseRepetitionAfterRoot;
+        set => _search.UseRepetitionAfterRoot = value;
+    }
+
+    public bool UseNmpNonPvOnly
+    {
+        get => _search.UseNmpNonPvOnly;
+        set => _search.UseNmpNonPvOnly = value;
+    }
+
+    public bool UseTtEvalRefine
+    {
+        get => _search.UseTtEvalRefine;
+        set => _search.UseTtEvalRefine = value;
+    }
+
+    public bool UseTtKeepMoveOnFailLow
+    {
+        get => _search.UseTtKeepMoveOnFailLow;
+        set => _search.UseTtKeepMoveOnFailLow = value;
+    }
+
+    public bool UseTtMateReuse
+    {
+        get => _search.UseTtMateReuse;
+        set => _search.UseTtMateReuse = value;
+    }
+
+    public bool UseRootScoreOrdering
+    {
+        get => _search.UseRootScoreOrdering;
+        set => _search.UseRootScoreOrdering = value;
+    }
+
+    public bool UseRazoring
+    {
+        get => _search.UseRazoring;
+        set => _search.UseRazoring = value;
+    }
+
+    public bool UseNoDecayOnRelaunch
+    {
+        get => _search.UseNoDecayOnRelaunch;
+        set => _search.UseNoDecayOnRelaunch = value;
+    }
+
+    public bool UseQsChecks
+    {
+        get => _search.UseQsChecks;
+        set => _search.UseQsChecks = value;
+    }
+
+    public bool UseProbCutAllowNull
+    {
+        get => _search.UseProbCutAllowNull;
+        set => _search.UseProbCutAllowNull = value;
+    }
+
+    public bool UseFutilityFailSoft
+    {
+        get => _search.UseFutilityFailSoft;
+        set => _search.UseFutilityFailSoft = value;
+    }
+
+    public bool UseCaptureFutility
+    {
+        get => _search.UseCaptureFutility;
+        set => _search.UseCaptureFutility = value;
+    }
+
+    public bool UseHistoryPrune
+    {
+        get => _search.UseHistoryPrune;
+        set => _search.UseHistoryPrune = value;
+    }
+
+    public bool UseQsContCorrection
+    {
+        get => _search.UseQsContCorrection;
+        set => _search.UseQsContCorrection = value;
+    }
+
+    public bool UseSingularTight
+    {
+        get => _search.UseSingularTight;
+        set => _search.UseSingularTight = value;
+    }
+
+    public bool UseQsEntryKey
+    {
+        get => _search.UseQsEntryKey;
+        set => _search.UseQsEntryKey = value;
+    }
+
+    public bool UseLmpAllDepths
+    {
+        get => _search.UseLmpAllDepths;
+        set => _search.UseLmpAllDepths = value;
+    }
+
+    public bool UseQuietSeePrune
+    {
+        get => _search.UseQuietSeePrune;
+        set => _search.UseQuietSeePrune = value;
+    }
+    public bool UsePriorFailLowBonus
+    {
+        get => _search.UsePriorFailLowBonus;
+        set => _search.UsePriorFailLowBonus = value;
+    }
+    public bool UseLmrDeeperResearch
+    {
+        get => _search.UseLmrDeeperResearch;
+        set => _search.UseLmrDeeperResearch = value;
+    }
+    public bool UseRfpTtMoveGuard
+    {
+        get => _search.UseRfpTtMoveGuard;
+        set => _search.UseRfpTtMoveGuard = value;
+    }
+    public bool UseLmpCountAllMoves
+    {
+        get => _search.UseLmpCountAllMoves;
+        set => _search.UseLmpCountAllMoves = value;
+    }
+    public bool UseDrawRandom
+    {
+        get => _search.UseDrawRandom;
+        set => _search.UseDrawRandom = value;
+    }
+    public bool UseHindsightDepth
+    {
+        get => _search.UseHindsightDepth;
+        set => _search.UseHindsightDepth = value;
+    }
+    public bool UseCutoffCountLmr
+    {
+        get => _search.UseCutoffCountLmr;
+        set => _search.UseCutoffCountLmr = value;
+    }
+
+    public bool UseCaptureSeePruneDeep
+    {
+        get => _search.UseCaptureSeePruneDeep;
+        set => _search.UseCaptureSeePruneDeep = value;
     }
 
     public bool UseSmpAspDiversify

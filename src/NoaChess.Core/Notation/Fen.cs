@@ -178,10 +178,10 @@ public static class Fen
         }
         else
         {
-            if (board.CastlingRights.HasFlag(CastlingRights.WhiteKingSide)) sb.Append('K');
-            if (board.CastlingRights.HasFlag(CastlingRights.WhiteQueenSide)) sb.Append('Q');
-            if (board.CastlingRights.HasFlag(CastlingRights.BlackKingSide)) sb.Append('k');
-            if (board.CastlingRights.HasFlag(CastlingRights.BlackQueenSide)) sb.Append('q');
+            if ((board.CastlingRights & CastlingRights.WhiteKingSide) != 0) sb.Append('K');
+            if ((board.CastlingRights & CastlingRights.WhiteQueenSide) != 0) sb.Append('Q');
+            if ((board.CastlingRights & CastlingRights.BlackKingSide) != 0) sb.Append('k');
+            if ((board.CastlingRights & CastlingRights.BlackQueenSide) != 0) sb.Append('q');
         }
 
         sb.Append(' ');

@@ -80,7 +80,20 @@ public sealed class UciLoop
     // back far shallower AND disagrees, the pondered move stands.
     private const int PonderTrustMargin = 4; // plies the relaunch may fall short by
     private int _ponderDepth;
+    // PonderContinue fires only when this side holds at least this much of the
+    // opponent's clock, in percent (125 = a quarter more).
+    private const long PonderContinueLeadPercent = 125;
     private Move _ponderMove = Move.None;
+
+    // The best move the search has reported so far, kept for the one case that
+    // needs it: an exception mid-search (2026-09-10). The handler used to answer
+    // with the first legal move in generation order, which threw a queen away in
+    // a real game - the search had already reported depth 36 with a drawing line
+    // starting Qb6, and the engine sent c4 instead because c4 came first in the
+    // move list. Whatever went wrong, the best move found so far is a far better
+    // answer than an arbitrary one, and it costs a single assignment per
+    // iteration to have it.
+    private Move _bestSoFar = Move.None;
     private volatile bool _suppressBestmove;
 
     private readonly QueuedWriter _queuedOutput;
@@ -1025,6 +1038,63 @@ public sealed class UciLoop
             _engine.UseDrawTieBreak = _options.DrawTieBreak;
         if (changed == "SmpOvershootTaper")
             _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
+        if (changed == "RepetitionAfterRoot")
+            _engine.UseRepetitionAfterRoot = _options.RepetitionAfterRoot;
+        if (changed == "NmpNonPvOnly")
+            _engine.UseNmpNonPvOnly = _options.NmpNonPvOnly;
+        if (changed == "TtEvalRefine")
+            _engine.UseTtEvalRefine = _options.TtEvalRefine;
+        if (changed == "TtKeepMoveOnFailLow")
+            _engine.UseTtKeepMoveOnFailLow = _options.TtKeepMoveOnFailLow;
+        if (changed == "TtMateReuse")
+            _engine.UseTtMateReuse = _options.TtMateReuse;
+        if (changed == "RootScoreOrdering")
+            _engine.UseRootScoreOrdering = _options.RootScoreOrdering;
+        if (changed == "Razoring")
+            _engine.UseRazoring = _options.Razoring;
+        if (changed == "PickerCheckBonus")
+            NoaChess.Engine.Heuristics.MovePicker.CheckBonus = _options.PickerCheckBonus;
+        if (changed == "PickerThreatWeight")
+            NoaChess.Engine.Heuristics.MovePicker.ThreatEscapeWeight = _options.PickerThreatWeight;
+        if (changed == "NoDecayOnRelaunch")
+            _engine.UseNoDecayOnRelaunch = _options.NoDecayOnRelaunch;
+        if (changed == "QsChecks")
+            _engine.UseQsChecks = _options.QsChecks;
+        if (changed == "ProbCutAllowNull")
+            _engine.UseProbCutAllowNull = _options.ProbCutAllowNull;
+        if (changed == "FutilityFailSoft")
+            _engine.UseFutilityFailSoft = _options.FutilityFailSoft;
+        if (changed == "CaptureFutility")
+            _engine.UseCaptureFutility = _options.CaptureFutility;
+        if (changed == "HistoryPrune")
+            _engine.UseHistoryPrune = _options.HistoryPrune;
+        if (changed == "QsContCorrection")
+            _engine.UseQsContCorrection = _options.QsContCorrection;
+        if (changed == "SingularTight")
+            _engine.UseSingularTight = _options.SingularTight;
+        if (changed == "QsEntryKey")
+            _engine.UseQsEntryKey = _options.QsEntryKey;
+        // ClockLead is read by ParseLimits directly; nothing to push.
+        if (changed == "LmpAllDepths")
+            _engine.UseLmpAllDepths = _options.LmpAllDepths;
+        if (changed == "PriorFailLowBonus")
+            _engine.UsePriorFailLowBonus = _options.PriorFailLowBonus;
+        if (changed == "LmrDeeperResearch")
+            _engine.UseLmrDeeperResearch = _options.LmrDeeperResearch;
+        if (changed == "RfpTtMoveGuard")
+            _engine.UseRfpTtMoveGuard = _options.RfpTtMoveGuard;
+        if (changed == "LmpCountAllMoves")
+            _engine.UseLmpCountAllMoves = _options.LmpCountAllMoves;
+        if (changed == "DrawRandom")
+            _engine.UseDrawRandom = _options.DrawRandom;
+        if (changed == "HindsightDepth")
+            _engine.UseHindsightDepth = _options.HindsightDepth;
+        if (changed == "CutoffCountLmr")
+            _engine.UseCutoffCountLmr = _options.CutoffCountLmr;
+        if (changed == "QuietSeePrune")
+            _engine.UseQuietSeePrune = _options.QuietSeePrune;
+        if (changed == "CaptureSeePruneDeep")
+            _engine.UseCaptureSeePruneDeep = _options.CaptureSeePruneDeep;
         if (changed == "SmpDiversify")
             _engine.UseSmpDiversify = _options.SmpDiversify;
         if (changed == "SmpAspDiversify")
@@ -1049,6 +1119,16 @@ public sealed class UciLoop
             _engine.UseTbPvCap = _options.TbPvCap;
         if (changed == "TbResistance")
             _engine.UseTbResistance = _options.TbResistance;
+        if (changed == "TbWinTieBreak")
+            _engine.UseTbWinTieBreak = _options.TbWinTieBreak;
+        if (changed == "WonBandMaxMen")
+            _engine.WonBandMaxMen = _options.WonBandMaxMen;
+        if (changed == "WonBandPromoGuard")
+            _engine.UseWonBandPromoGuard = _options.WonBandPromoGuard;
+        if (changed == "LostResistance")
+            _engine.UseLostResistance = _options.LostResistance;
+        if (changed == "LostResistanceBound")
+            _engine.LostResistanceBound = _options.LostResistanceBound;
         if (changed == "CaptureLmr")
             _engine.UseCaptureLmr = _options.CaptureLmr;
         if (changed == "NmpPackage")
@@ -1225,6 +1305,29 @@ public sealed class UciLoop
             long maxCredit = Math.Min(limits.SoftTimeMs / 2,
                                       Math.Max(0, limits.HardTimeMs - 100));
             limits = limits with { ElapsedOffsetMs = Math.Min(ponderedMs, maxCredit) };
+
+            // PonderContinue (2026-09-11, from a user observation): the relaunch
+            // reaches the pondered depth in milliseconds over the warm table and
+            // the easy-move cut then ends it at depth 12 to 17 while the ponder had
+            // 23 to 27 in hand and the clock a comfortable lead (XEgDFUb0 move 54:
+            // depth 13 in 1 ms with 43 s left). With the option on, the cuts may
+            // not fire until the relaunch has gone one iteration past the ponder;
+            // the soft budget, already scaled by ClockLead, still bounds the time.
+            // Only with a clock lead: the extra iteration is paid from time the
+            // opponent does not have. With equal clocks the instant reply stays,
+            // which is what the bullet regime wants.
+            if (_options.PonderContinue && _ponderDepth > 0)
+            {
+                static long? Clock(string[] t, string key)
+                {
+                    int i = Array.IndexOf(t, key);
+                    return i >= 0 && i + 1 < t.Length && long.TryParse(t[i + 1], out long v) ? v : null;
+                }
+                long? mine = _board.SideToMove == Color.White ? Clock(tokens, "wtime") : Clock(tokens, "btime");
+                long? theirs = _board.SideToMove == Color.White ? Clock(tokens, "btime") : Clock(tokens, "wtime");
+                if (mine is long t && theirs is long o && o > 0 && t >= o * PonderContinueLeadPercent / 100)
+                    limits = limits with { MinEasyDepth = _ponderDepth + 1 };
+            }
         }
 
         // UCI: during "go ponder" / "go infinite" the engine must NOT send
@@ -1258,7 +1361,13 @@ public sealed class UciLoop
         // reads the score, including the bot's resign and draw-offer rules.
         // Report the conventional saturated value, keeping the ply ordering so
         // a win found sooner still scores higher.
-        const int tbBand = AlphaBetaSearch.TbWin - 256;
+        // The margin below the band is wide (4,096) because an aspiration
+        // window that fails high or low next to the band reports its bound,
+        // which sits a widening delta outside it: a bot game of 2026-09-07
+        // recorded "cp -98535", 337 points short of the band, and the eval
+        // annotation read minus 985 pawns. No heuristic score comes anywhere
+        // near this range, so everything above it is band-derived.
+        const int tbBand = AlphaBetaSearch.TbWin - 4_096;
         if (score > tbBand)
             return $"cp {20_000 - (AlphaBetaSearch.TbWin - score)}";
         if (score < -tbBand)
@@ -1274,6 +1383,7 @@ public sealed class UciLoop
         // WaitForSearchToFinish, and a GUI that never receives "bestmove"
         // considers the engine hung. Report the error and answer with a legal
         // move so the game (and the process) survives.
+        _bestSoFar = Move.None;
         try
         {
             RunSearchCore(limits, token, waitForStop, isPonder, fromPonderhit);
@@ -1283,7 +1393,18 @@ public sealed class UciLoop
             _output.WriteLine($"info string search error: {ex.GetType().Name}: {ex.Message}");
             if (_suppressBestmove)
                 return;
-            Move fallback = MoveGenerator.GenerateLegalMoves(_board).FirstOrDefault();
+            // Answer with the best move the search actually found, not with
+            // whatever the move generator happens to produce first. On
+            // 2026-09-10 this handler fired at depth 36 in a real game, with a
+            // drawing line starting Qb6 already reported, and sent c4 - the
+            // first legal move - hanging the queen. The legality check is
+            // belt and braces: the move came from a search of this very
+            // position, but an exception means something is already wrong and
+            // an illegal bestmove would lose the game outright.
+            var legal = MoveGenerator.GenerateLegalMoves(_board);
+            Move fallback = _bestSoFar != Move.None && legal.Contains(_bestSoFar)
+                ? _bestSoFar
+                : legal.FirstOrDefault();
             _output.WriteLine(fallback == Move.None ? "bestmove 0000" : $"bestmove {fallback}");
         }
     }
@@ -1302,6 +1423,9 @@ public sealed class UciLoop
         var progress = new SynchronousProgress(p =>
         {
             lastPv = p.Pv;
+            // Kept for the exception handler in RunSearch; see _bestSoFar.
+            if (p.BestMove != Move.None)
+                _bestSoFar = p.BestMove;
             // Recorded per ITERATION rather than when the ponder search returns:
             // ponderhit cancels it, and the relaunch would then race the losing
             // thread's final write.
@@ -1435,7 +1559,24 @@ public sealed class UciLoop
             // Game ply (halfmoves elapsed) drives the optimum-time curve: the
             // engine spends a growing share of its clock as the game advances.
             int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
-            limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly);
+            // ClockLead (2026-09-07, from a user observation): when this side
+            // holds more clock than the opponent, the optimum grows by the
+            // ratio of the two clocks, capped at 2x. In the bot's games the
+            // engine ends with a median 1.5x to 2x the opponent's time (and
+            // far more at rapid: 8:08 against 2:26 at move 24 of a 10-minute
+            // game), which is depth left unused. The hard maximum and the
+            // sustainability rails are untouched, so the extra spend can only
+            // come out of a lead we demonstrably have; with equal clocks the
+            // budget is exactly what it was.
+            int scalePercent = _options.TimeScale;
+            long? oppTime = _board.SideToMove == Color.White ? Value("btime") : Value("wtime");
+            if (_options.ClockLead && oppTime is long opp && opp > 0 && time > opp)
+            {
+                double lead = Math.Min(2.0, time / (double)opp);
+                scalePercent = (int)Math.Round(scalePercent * lead);
+            }
+            limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly,
+                                           scalePercent);
             hasLimit = true;
         }
 

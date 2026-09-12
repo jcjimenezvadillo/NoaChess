@@ -873,6 +873,8 @@ class FeatureStore:
 
         pending = tuple([] for _ in keys)
         pending_rows = 0
+        _warned_rows = False
+        _skipped_chunks = [0]
         # Rows left over when a buffer does not divide evenly into batches. They
         # are CARRIED into the next buffer rather than dropped: discarding a
         # partial batch per buffer would quietly throw away real training data
@@ -886,8 +888,24 @@ class FeatureStore:
             f = self.files[file_index]
             # np.asarray forces the mapped slice into real memory once, so the
             # later fancy-indexing does not fault page by page.
-            for slot, key in enumerate(keys):
-                pending[slot].append(np.asarray(f[key][begin:end]))
+            # Every stream of the chunk is read BEFORE any of it is queued, so a
+            # chunk that cannot be read leaves the buffer untouched and aligned.
+            # The fqcohuman training died four times in two days inside this
+            # loop or one step past it (2026-09-10), the last time on a coarse
+            # slice whose offsets were not monotonic in memory although they
+            # are on disk. A chunk is 8,192 of ~900M rows: it is logged with
+            # its file and range, skipped, and the run goes on. The log line is
+            # the evidence the next repair works from.
+            try:
+                slices = [np.asarray(f[key][begin:end]) for key in keys]
+            except Exception as exc:  # noqa: BLE001 - any read failure of any stream
+                _skipped_chunks[0] += 1
+                print(f"  warning: chunk {chunk_index} of {f.get('path', '?')} rows [{begin},{end}) "
+                      f"could not be read and was skipped ({_skipped_chunks[0]} so far): {exc}",
+                      flush=True)
+                continue
+            for slot, sl in enumerate(slices):
+                pending[slot].append(sl)
             pending_rows += end - begin
 
             is_last = position == len(order) - 1
@@ -895,13 +913,41 @@ class FeatureStore:
                 continue
 
             arrays = [np.concatenate(part) for part in pending]
-            perm = rng.permutation(pending_rows)
+            # The permutation must be sized from the DATA, and every stream must
+            # be cut to the same length before it is applied (2026-09-10).
+            #
+            # Two crashes taught this in one day. Sizing it from pending_rows, a
+            # counter of what the chunk table SAYS each slice holds, killed a run
+            # at epoch 17 of 21: "index 268859706 is out of bounds for axis 0
+            # with size 524288". Sizing it from arrays[0] alone then killed the
+            # next run inside CUDA, because a permutation valid for the first
+            # stream silently reorders a LONGER one into a different order - the
+            # features of one position paired with the score of another, which is
+            # not a crash, it is training on nonsense until something downstream
+            # trips over it.
+            #
+            # So: one length, the shortest, applied to all of them. Equal lengths
+            # is the normal case and this costs a min() to guarantee.
+            lengths = [len(a) for a in arrays]
+            rows_now = min(lengths)
+            if (max(lengths) != rows_now or rows_now != pending_rows) and not _warned_rows:
+                _warned_rows = True
+                print(f"  warning: the streams of this buffer disagree - lengths {lengths}, "
+                      f"chunk table says {pending_rows}. Cutting all of them to {rows_now} so "
+                      f"they stay aligned, and continuing. Reported once per pass.", flush=True)
+            arrays = [a[:rows_now] for a in arrays]
+            perm = rng.permutation(rows_now)
             arrays = [a[perm] for a in arrays]
             if carry is not None:
                 # Prepend before batching, after the shuffle, so carried rows do
                 # not all land together at the head of one batch.
                 arrays = [np.concatenate([c, a]) for c, a in zip(carry, arrays)]
-                mixed = rng.permutation(len(arrays[0]))
+                # Same rule as above: the carried rows go through a second
+                # shuffle, so the same one-length guarantee has to hold here or
+                # it reintroduces exactly the misalignment the first one closed.
+                mixed_rows = min(len(a) for a in arrays)
+                arrays = [a[:mixed_rows] for a in arrays]
+                mixed = rng.permutation(mixed_rows)
                 arrays = [a[mixed] for a in arrays]
                 carry = None
 
