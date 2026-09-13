@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## 2026-09-13 (v5.9.3) - a 74-minute freeze traced and closed, two clock-management options ship, and the bot spends less of its budget the slower the clock runs
+
+**The freeze.** A live bot game hung for 74 minutes with the search never returning. Root cause: one
+Lazy SMP helper thread stuck inside the Syzygy decompressor's symbol-tree walk, the only one of its four
+loops that has no bound and can spin forever on corrupt data, with `_done.Wait()` blocking the whole
+engine on it with no timeout. Three fixes, no option, since correctness has no toggle: a watchdog
+(`HelperWatchdogMs`, 3000 ms) that quarantines any helper still running past its deadline instead of
+waiting on it forever; `SyzygyTable.DecompressPairs` rewritten with a bound on every data-driven step
+(sparse index, block walk, Huffman code length, decoded symbol, symbol-tree walk), returning failure
+instead of looping on bad bytes; and the dead `Syzygy.Hits` counter removed (written by 32 threads with
+no synchronization, never read anywhere). Verified with node-identity: 7/7 benchmark positions, including
+two with millions of tablebase hits, return byte-identical nodes, tbhits and best move before and after
+the guards - a search that never hits corrupt data cannot tell the difference.
+
+**The bot spends less of its clock the slower the control gets, which is backwards.** A user
+observation, checked against real games rather than intuition: parsing the `%clk` timestamps of 302
+recent games, the fraction of a flat nominal per-move budget (base/40 + increment) NoaBot actually spends
+falls monotonically from bullet to classical - 0.567, 0.460, 0.426, 0.380 - and far more sharply in the
+back half of the game (own move 40+): 0.427, 0.283, 0.261, 0.173. A prior, independent audit
+(2026-09-08, documented in `TimeManager.cs`) had already found the same shape at faster controls: over
+483 games at 60+1/60+2/180+1/180+2 the engine ends with a median 1.5x to 1.96x the opponent's clock,
+about 15 Elo left unused at this project's measured ~65 Elo per doubling of time, and had proposed a
+`TimeScale` option (already in the binary, default 100 = no effect) at 125 for 60+1 - never deployed to
+any bot config since. `TimeScale` stays undeployed this release; its own SPRT never ran (see below).
+
+**ClockDeficitBrake, an option, ships ON.** Mirrors the existing `ClockLead` (which scales the target
+time up when ahead on the opponent's clock) for the opposite, previously unhandled case: nothing pulled
+back when behind. Measured against a CCRL reference field (Nalwald, Iris, Rice, 180+2, round-robin, same
+method used to validate `ClockLead`), cut short by user judgment at 126 of 200 games with a clear,
+consistent gap: the option +14 Elo against the field (52.1% score) versus -44 Elo without it (43.8%).
+
+**SlowTcEasyMoveDamp, an option, ships ON as a judged tie of bounded risk.** Blends the fixed-percentage
+`EasyMoveFraction`/`ObviousMoveFraction` time cuts back toward "no cut" as the nominal per-move budget
+grows past a 5 s floor to a 60 s ceiling (at most 60% of the way back) - the same cut that, measured at
+a real clock, gives up a growing absolute amount of time as the control slows down. An open-ended
+self-play SPRT at 15+10 was abandoned after nine hours and 27 games: real-clock games at that pace would
+have taken days regardless of concurrency, since the bottleneck is wall-clock time per game, not CPU.
+Replaced with a faster, different method: 200 real positions and real clock context sampled from recent
+blitz/rapid/classical games (bullet excluded - its budget rarely crosses the 5 s floor), the engine's own
+move requested twice at the same wtime/btime with the option off and on, and where the move changed (49
+of 200, 24.5%) both resulting positions judged independently (Renegade, depth 12, same method as the
+game-review tool). Result: 19 judged better, 20 worse, 10 equal - a coin flip at this judge depth, not a
+measured win. It ships anyway on the strength of the underlying finding above and because the option
+cannot spend less than before, only blend toward the un-cut baseline, bounded by the same sustainability
+guard as every other time-management path.
+
+**Method note.** `damp_position_test.py` (not in this repo, lives with the rest of the test tooling)
+parallelizes across independent one-move decisions instead of playing full games, which is what makes it
+fast: 18 positions across 7 workers took 85 s in a smoke test, the full 200 about 13 minutes, instead of
+the days a real-clock SPRT at a slow control would need for the same question.
+
+443 tests (128 + 315), all passing, same count as v5.9.2.
+
 ## 2026-09-11 (v5.9.2) - the complete fqcohuman, sixty epochs, beats the epoch-14 net it replaces
 
 **The net.** v5.9.0 shipped fqcohuman at epoch 14 of its second stage because that was the best
