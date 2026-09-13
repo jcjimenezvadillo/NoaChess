@@ -34,6 +34,8 @@ public sealed class UciOptions
     public bool PonderMinThink { get; private set; }
     // Easy-move cut only when winning (see AlphaBetaSearch.UseEasyMoveWinOnly).
     public bool EasyMoveWinOnly { get; private set; } = true;
+    // Damp the easy/obvious-move cuts at slow controls (see AlphaBetaSearch.UseSlowTcEasyMoveDamp).
+    public bool SlowTcEasyMoveDamp { get; private set; } = true;
     // Root static eval on the search stack (see AlphaBetaSearch.UseRootStaticEval).
     public bool RootStaticEval { get; private set; }
     // Quiescence moves recorded on the search stack (see AlphaBetaSearch.UseQsStackMove).
@@ -86,6 +88,13 @@ public sealed class UciOptions
     // v5.8.1 at the user's explicit request: the bot ends games with up to twice
     // the opponent's clock, which is depth left unused.
     public bool ClockLead { get; private set; } = true;
+    // 12-09, SPRT candidate: ClockLead only ever SCALES UP when this side holds
+    // more clock than the opponent - there was no symmetric brake for the
+    // opposite case. Observed live (vs Bothev, a strong/sharp opponent): once
+    // slightly behind on the clock, nothing pulls back, and repeated
+    // "unstable position, extend" moves compound the deficit move after move.
+    // Mirrors ClockLead's own ratio/cap, just downward.
+    public bool ClockDeficitBrake { get; private set; } = true;
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
@@ -191,6 +200,7 @@ public sealed class UciOptions
         output.WriteLine("option name RootSafetyNet type check default false");
         output.WriteLine("option name PonderMinThink type check default false");
         output.WriteLine("option name EasyMoveWinOnly type check default true");
+        output.WriteLine("option name SlowTcEasyMoveDamp type check default true");
         output.WriteLine("option name RootStaticEval type check default false");
         output.WriteLine("option name QsStackMove type check default true");
         output.WriteLine("option name CheckExemptFutility type check default false");
@@ -229,6 +239,7 @@ public sealed class UciOptions
         output.WriteLine("option name SingularTight type check default false");
         output.WriteLine("option name QsEntryKey type check default false");
         output.WriteLine("option name ClockLead type check default true");
+        output.WriteLine("option name ClockDeficitBrake type check default true");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
@@ -337,6 +348,9 @@ public sealed class UciOptions
             case "easymovewinonly" when bool.TryParse(value, out bool emw):
                 EasyMoveWinOnly = emw;
                 return "EasyMoveWinOnly";
+            case "slowtceasymovedamp" when bool.TryParse(value, out bool stcd):
+                SlowTcEasyMoveDamp = stcd;
+                return "SlowTcEasyMoveDamp";
             case "rootstaticeval" when bool.TryParse(value, out bool rse):
                 RootStaticEval = rse;
                 return "RootStaticEval";
@@ -421,6 +435,9 @@ public sealed class UciOptions
             case "clocklead" when bool.TryParse(value, out bool cld):
                 ClockLead = cld;
                 return "ClockLead";
+            case "clockdeficitbrake" when bool.TryParse(value, out bool cdb):
+                ClockDeficitBrake = cdb;
+                return "ClockDeficitBrake";
             case "lmpalldepths" when bool.TryParse(value, out bool lad):
                 LmpAllDepths = lad;
                 return "LmpAllDepths";

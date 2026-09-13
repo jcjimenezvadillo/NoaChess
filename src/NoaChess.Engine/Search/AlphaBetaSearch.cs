@@ -1179,6 +1179,29 @@ public sealed class AlphaBetaSearch
     // fixed-node searches are untouched, so node counts stay identical.
     public bool UseEasyMoveWinOnly = true;
 
+    // Slow-control damp (12-09, SPRT candidate, OFF). EasyMoveFraction and
+    // ObviousMoveFraction were each measured at fast controls (5+5 and 180+2
+    // respectively - see their own comments below): a FIXED SHARE of the
+    // optimum. At a much slower control (15+10 and beyond) the same share is
+    // many real seconds banked on a single recapture, repeatedly flagged
+    // watching slow games live - the user's own long-standing complaint, and
+    // the project's own audit already priced roughly 15 Elo left on the table
+    // this way (2026-09-08). Below SlowTcDampFloorMs of NOMINAL per-move
+    // budget - the regime the fractions were actually measured in - nothing
+    // changes at all, so blitz stays exactly as measured.
+    public bool UseSlowTcEasyMoveDamp;
+    private const double SlowTcDampFloorMs = 5000;  // below this, unchanged (the measured regime)
+    private const double SlowTcDampCeilMs = 60000;  // at/above this, damped toward the full cap
+    private const double SlowTcDampMaxBlend = 0.6;  // never blends more than 60% of the way to "no cut"
+
+    private double SlowTcDamp(double fraction)
+    {
+        if (!UseSlowTcEasyMoveDamp || _softTimeMs <= SlowTcDampFloorMs)
+            return fraction;
+        double t = Math.Min(1.0, (_softTimeMs - SlowTcDampFloorMs) / (SlowTcDampCeilMs - SlowTcDampFloorMs));
+        return fraction + (1.0 - fraction) * t * SlowTcDampMaxBlend;
+    }
+
     // Record the root's static evaluation on the search stack (audit find,
     // 2026-09-06). SearchRoot never wrote _stackEval[0], so a node at ply 2
     // compared its evaluation against a permanent ZERO instead of against the
@@ -2296,7 +2319,7 @@ public sealed class AlphaBetaSearch
                     && !fiftyPressure
                     && lastBestMoveDepth + EasyMoveStableDepth <= depth;
                 if (easyMoveEligible)
-                    totalTime = Math.Min(totalTime, _softTimeMs * EasyMoveFraction);
+                    totalTime = Math.Min(totalTime, _softTimeMs * SlowTcDamp(EasyMoveFraction));
 
                 // Obvious move: the score says nothing, but twelve iterations
                 // have agreed on the same move and not one worker has changed
@@ -2314,7 +2337,7 @@ public sealed class AlphaBetaSearch
                     double share = BestMoveNodeShare >= ObviousMoveUnanimousShare
                         ? EasyMoveFraction
                         : ObviousMoveFraction;
-                    totalTime = Math.Min(totalTime, _softTimeMs * share);
+                    totalTime = Math.Min(totalTime, _softTimeMs * SlowTcDamp(share));
                 }
 
                 // Diagnostic for the time manager, off unless NOA_TM_DEBUG=1.

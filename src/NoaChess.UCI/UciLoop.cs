@@ -112,6 +112,7 @@ public sealed class UciLoop
         // write so it keeps reading stdin no matter what.
         _queuedOutput = new QueuedWriter(output, this);
         _output = _queuedOutput;
+        _engine.Diagnostic += message => _output.WriteLine("info string " + message);
     }
 
     // Loads the .noannue model compiled into the exe as an embedded resource
@@ -1022,6 +1023,8 @@ public sealed class UciLoop
             _engine.UsePonderMinThink = _options.PonderMinThink;
         if (changed == "EasyMoveWinOnly")
             _engine.UseEasyMoveWinOnly = _options.EasyMoveWinOnly;
+        if (changed == "SlowTcEasyMoveDamp")
+            _engine.UseSlowTcEasyMoveDamp = _options.SlowTcEasyMoveDamp;
         if (changed == "RootStaticEval")
             _engine.UseRootStaticEval = _options.RootStaticEval;
         if (changed == "QsStackMove")
@@ -1574,6 +1577,18 @@ public sealed class UciLoop
             {
                 double lead = Math.Min(2.0, time / (double)opp);
                 scalePercent = (int)Math.Round(scalePercent * lead);
+            }
+            // ClockDeficitBrake (12-09, SPRT candidate, OFF): the symmetric
+            // case ClockLead never covered - when this side holds LESS clock
+            // than the opponent, shrink the optimum by the same ratio, capped
+            // at half. The hard maximum and sustainability rails are untouched
+            // exactly as with ClockLead; only the target share shrinks, so a
+            // brief deficit against a sharp opponent does not compound move
+            // after move with nothing pulling back.
+            else if (_options.ClockDeficitBrake && oppTime is long opp2 && opp2 > 0 && time < opp2)
+            {
+                double deficit = Math.Max(0.5, time / (double)opp2);
+                scalePercent = (int)Math.Round(scalePercent * deficit);
             }
             limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly,
                                            scalePercent);

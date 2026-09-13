@@ -451,12 +451,32 @@ internal sealed class SyzygyTable : IDisposable
 
     // Reference decompress_pairs(): walk the sparse index to the right block,
     // then decode canonical Huffman symbols until the wanted offset is reached.
+    //
+    // Returns -1 when the walk leaves the table's own arrays. On well-formed
+    // data none of the guards can trigger: a valid idx lands inside the sparse
+    // index, the block walks stay inside the block-length array, a canonical
+    // code always matches within Base64, a decoded symbol always indexes
+    // SymLen, and a symbol-tree walk never visits more nodes than the tree
+    // has. They exist because every step is driven by bytes read back from
+    // the mapped file, and one wrong byte sends the walk anywhere - this
+    // machine has read memory back wrong under load (three reproductions in
+    // the training loader, 2026-09). Three of the loops still terminate on
+    // garbage (their offsets move monotonically, and an out-of-range read
+    // throws, which the search survives); the symbol-tree walk does not: a
+    // cycle in garbage tree data spins forever, with no exception, no node
+    // counted and no stop check ever reached. A helper stuck like that held
+    // the whole engine, and the bot behind it, for 74 minutes on 2026-09-12
+    // (ChessEngine.HelperWatchdogMs now bounds that wait; the main worker has
+    // no watchdog at all). A failed probe is the right answer to bad data: the
+    // callers already fall back to plain search on ProbeState.Fail.
     public int DecompressPairs(PairsData d, ulong idx)
     {
         if ((d.Flags & (int)TbFlag.SingleValue) != 0)
             return d.MinSymLen;
 
         ulong k = idx / (ulong)d.Span;
+        if (k >= d.SparseIndexSize)
+            return -1;
 
         long sparseEntry = checked(d.SparseIndexOffset + checked((long)k) * 6);
         uint block = U32LE(sparseEntry);
@@ -466,10 +486,26 @@ internal sealed class SyzygyTable : IDisposable
         offset += diff;
 
         while (offset < 0)
-            offset += U16LE(d.BlockLengthOffset + (long)(--block) * 2) + 1;
+        {
+            if (block == 0)
+                return -1;
+            block--;
+            offset += U16LE(d.BlockLengthOffset + (long)block * 2) + 1;
+        }
 
-        while (offset > U16LE(d.BlockLengthOffset + (long)block * 2))
-            offset -= U16LE(d.BlockLengthOffset + (long)block++ * 2) + 1;
+        while (true)
+        {
+            if (block >= d.BlockLengthSize)
+                return -1;
+            int blockLength = U16LE(d.BlockLengthOffset + (long)block * 2);
+            if (offset <= blockLength)
+                break;
+            offset -= blockLength + 1;
+            block++;
+        }
+
+        if (block >= d.BlocksNum)
+            return -1;
 
         long ptr = checked(d.DataOffset + (long)block * d.SizeofBlock);
         ulong buf64 = U64BE(ptr);
@@ -481,10 +517,13 @@ internal sealed class SyzygyTable : IDisposable
         {
             int len = 0;
             while (buf64 < d.Base64[len])
-                len++;
+                if (++len >= d.Base64.Length)
+                    return -1;
 
             sym = (int)((buf64 - d.Base64[len]) >> (64 - len - d.MinSymLen));
             sym += U16LE(d.LowestSymOffset + len * 2);
+            if ((uint)sym >= (uint)d.SymLen.Length)
+                return -1;
 
             if (offset < d.SymLen[sym] + 1)
                 break;
@@ -502,16 +541,25 @@ internal sealed class SyzygyTable : IDisposable
             }
         }
 
-        // Expand the symbol down to the single value we want.
+        // Expand the symbol down to the single value we want. A valid walk
+        // visits each node at most once, so more steps than nodes is a cycle.
+        int steps = d.SymLen.Length;
         while (d.SymLen[sym] != 0)
         {
+            if (--steps < 0)
+                return -1;
             int left = BtreeLeft(d, sym);
+            if ((uint)left >= (uint)d.SymLen.Length)
+                return -1;
             if (offset < d.SymLen[left] + 1)
                 sym = left;
             else
             {
                 offset -= d.SymLen[left] + 1;
-                sym = BtreeRight(d, sym);
+                int right = BtreeRight(d, sym);
+                if ((uint)right >= (uint)d.SymLen.Length)
+                    return -1;
+                sym = right;
             }
         }
 
