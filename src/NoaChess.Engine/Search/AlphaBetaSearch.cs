@@ -1290,6 +1290,25 @@ public sealed class AlphaBetaSearch
     // draws against opponents rated 50+ points lower were repetitions.
     public bool UseRepetitionAfterRoot = false;
 
+    // The reference rule only while the root is WORSE (2026-09-14). The two
+    // rules pull in opposite directions and the sign of the root decides which
+    // one pays. Scoring any single repetition as a draw is an anti-repetition
+    // drive when ahead: the search steers away from every position it has
+    // seen once, and against a weaker opponent that is worth real points
+    // (gauntlet 2026-09-14, 60+1, four engines 2978-3283 CCRL: the reference
+    // rule alone scored 73.4% with 42% draws against 78.1% with 34% draws for
+    // the single-repetition rule, -44 Elo). Behind, the same rule is a false
+    // hope: walking into a position seen once counts as 0.00 although the
+    // opponent may simply decline the cycle. In 5 of the bot's 16 losses of
+    // 2026-09-13 the search reported 0.00 at depth 40 to 128 (a tree collapsed
+    // onto such claims) in positions an arbiter scores -2 to -20, and the
+    // opponent did not repeat. Gated on the root's static evaluation, which
+    // every worker computes identically from the same root, so the pool
+    // agrees on the rule without any cross-thread plumbing.
+    public bool UseRepetitionStrictWhenWorse = true;
+    private const int StrictRepetitionMargin = 100;
+    private bool _strictRepetition;
+
     // Null move pruning only off the principal variation. The reference (and
     // every audited engine) never nulls at a PV node; this engine nulled
     // everywhere, so a null cutoff could end a PV node on a heuristic and hand
@@ -1782,6 +1801,11 @@ public sealed class AlphaBetaSearch
         // Anchor the incremental evaluator's state (NNUE accumulators) at
         // the new root position.
         _incremental?.Reset(board);
+
+        // Which repetition rule this search plays by (see UseRepetitionStrictWhenWorse).
+        _strictRepetition = UseRepetitionAfterRoot;
+        if (!_strictRepetition && UseRepetitionStrictWhenWorse && !board.IsInCheck())
+            _strictRepetition = _evaluator.Evaluate(board) <= -StrictRepetitionMargin;
 
         SearchResult best = default;
         int previousScore = 0;
@@ -3211,7 +3235,7 @@ public sealed class AlphaBetaSearch
                 return DrawScore();
             return -MateScore + ply;
         }
-        if (UseRepetitionAfterRoot
+        if (_strictRepetition
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
             return DrawScore();
@@ -4690,7 +4714,7 @@ public sealed class AlphaBetaSearch
                 return DrawScore();
             return -MateScore + ply;
         }
-        if (UseRepetitionAfterRoot
+        if (_strictRepetition
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
             return DrawScore();

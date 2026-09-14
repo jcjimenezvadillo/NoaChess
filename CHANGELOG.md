@@ -1,5 +1,61 @@
 # CHANGELOG
 
+## 2026-09-14 (v5.9.4) - the helper watchdog could crash the process; the repetition rule turns strict only when behind; why the bot draws so much, measured
+
+**The crash, no option.** The watchdog shipped in v5.9.3 quarantines a helper thread that does not
+honour cancellation within 3 s. When that helper finally returned it still signalled the shared
+countdown - the countdown of a LATER search, or one already at zero - and a signal below zero throws
+on the worker thread and terminates the process: `InvalidOperationException: Invalid attempt made to
+decrement the event's count below zero` in `WorkerLoop`, recorded by the .NET runtime at 05:02 during
+the second gauntlet below (game 117, four threads, our engine disconnected and lost the game). A
+quarantined slot now never signals again; the quarantine mark and the signal are ordered by one lock,
+so a helper is either counted as on time or quarantined, never both. This one cannot be measured, only
+proven by construction: the crash needs a stuck helper, and the fix changes nothing until one exists.
+
+**Why the bot draws so much, measured before touching anything.** 188 rated games of 2026-09-12 and
+09-13 (lichess API, PGN with clocks), Stockfish 15.1 as arbiter. Overall the bot scores 29-30% against a
+field averaging about 2950 - what its rating predicts (30-32%): draws against stronger opponents gain
+rating and are not the problem. Against opponents rated within 50 points or below it scores 50% with
+80% draws (5 wins, 40 draws, 5 losses in 50 games), the same on three different days and configurations.
+Those draws are 29 threefold repetitions, 7 fifty-move and 3 insufficient-material endings, and every one
+of them is level by the arbiter at the moment of repeating (best case +24 for the bot); the fifty-move
+and material draws were 0.00 thirty plies before the end as well. The bot does not throw won games
+against these opponents; it does not build an advantage against them in the first place (its own
+evaluation peaked below +1.00 in most of those games). That is evaluation strength, and the lever is the
+net, not the search. The opening book leaves it at +1 cp on average (Stockfish, 37 games); ultra-fast
+moves do not concentrate the blunders (5.7% of moves losing 100 cp or more when thinking under a tenth
+of the fair budget, 4.3-5.4% for the rest); the one +10 position that ended drawn (3bo5bjnM, bullet)
+was a genuine horizon, 34...f6 valued +3.89 at depth 21 with a forced perpetual that the arbiter sees at
+depth 27.
+
+**The losses, and the repetition rule.** In 5 of the 16 losses of 2026-09-13 the engine reported 0.00 at
+depth 40 to 128 - a tree collapsed onto repetition claims - in positions the arbiter scores -2 to -20,
+and the opponent, being better, simply did not repeat. This engine scores ANY single repetition as a
+draw, including a repetition of a position from the game history; the reference counts one only inside
+the search tree and demands a genuine threefold in the history (`RepetitionAfterRoot`, an option since
+the 2026-09-08 audit, whose fixed-node self-play SPRT gave H0: both sides share the illusion, so
+self-play cannot see it). Measured now the right way, against other engines: a gauntlet at 60+1, four
+threads, ponder, Winter 1.0, Pedone 1.5, Defenchess 2.2 and Nalwald 19 (2978-3283 CCRL), 256 games.
+The reference rule alone LOSES: 73.4% with 42% draws against 78.1% with 34% draws for the current rule,
+-44 Elo, worse in all four pairings. Scoring any repetition as a draw is an anti-repetition drive when
+ahead - the search steers away from every position it has seen once - and against a weaker opponent
+that is worth real points. Behind, the same rule is the false hope above.
+
+**RepetitionStrictWhenWorse, an option, ships ON.** The reference rule while the root's static
+evaluation is -1.00 or worse, the current rule otherwise; decided once per search from the root, so
+every worker of the pool applies the same rule. Reproduced deterministically before measuring: the five
+losing games replayed move by move in one process (persistent transposition table, 150k nodes a move)
+show the current rule claiming 0.00 at depth 23 to 41 in seven positions worth -1.8 to -10.0 (Zms04TKV
+moves 71, 75, 95; QSQrWzSi 83, 91; Aumejgk8 51, 52) and the strict rule reporting the real score in all
+seven. Gauntlet, same field and control, 192 games: 73.4% against 75.0% with the option off, -14 Elo
+with error bars of 55 each way, one of the option's losses being the crash above. A tie at zero measured
+cost with the failure it targets reproduced: it enters under the tie rule.
+
+**Also measured this round, not shipped.** `ClockDeficitBrake` and `SlowTcEasyMoveDamp` (v5.9.3) were
+on in all of the above; nothing new. `TimeScale` stays at its default.
+
+443 tests (128 + 315), all passing.
+
 ## 2026-09-13 (v5.9.3) - a 74-minute freeze traced and closed, two clock-management options ship, and the bot spends less of its budget the slower the clock runs
 
 **The freeze.** A live bot game hung for 74 minutes with the search never returning. Root cause: one

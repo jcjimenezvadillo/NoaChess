@@ -53,6 +53,8 @@ public sealed class UciOptions
     public bool SmpOvershootTaper { get; private set; }
     // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
     public bool RepetitionAfterRoot { get; private set; }
+    // The reference repetition rule only while the root is worse (see AlphaBetaSearch.UseRepetitionStrictWhenWorse).
+    public bool RepetitionStrictWhenWorse { get; private set; } = true;
     public bool NmpNonPvOnly { get; private set; }
     public bool TtEvalRefine { get; private set; } = true;
     public bool TtKeepMoveOnFailLow { get; private set; } = true;
@@ -210,6 +212,7 @@ public sealed class UciOptions
         output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name RepetitionAfterRoot type check default false");
+        output.WriteLine("option name RepetitionStrictWhenWorse type check default true");
         output.WriteLine("option name NmpNonPvOnly type check default false");
         output.WriteLine("option name TtEvalRefine type check default true");
         output.WriteLine("option name TtKeepMoveOnFailLow type check default true");
@@ -378,6 +381,9 @@ public sealed class UciOptions
             case "repetitionafterroot" when bool.TryParse(value, out bool rar):
                 RepetitionAfterRoot = rar;
                 return "RepetitionAfterRoot";
+            case "repetitionstrictwhenworse" when bool.TryParse(value, out bool rsw):
+                RepetitionStrictWhenWorse = rsw;
+                return "RepetitionStrictWhenWorse";
             case "nmpnonpvonly" when bool.TryParse(value, out bool nnp):
                 NmpNonPvOnly = nnp;
                 return "NmpNonPvOnly";
