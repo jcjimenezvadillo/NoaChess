@@ -3,6 +3,74 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
+**Current state (v5.9.4, 2026-09-14).** The embedded net is `fqcohuman3`, the complete 60-epoch
+fqcohuman recipe shipped in v5.9.2 (entry below). Architecture is HalfKAv2_hm with factorized
+features, 128-wide feature transformer, quantization-aware training - unchanged since fq60/v4.7.0
+(see the 2026-08-11 status entry further down). Last measured CCRL: **3321 +/- 45** (v5.9.2
+gauntlet, measured field labels, 52.1% over 240 games). v5.9.3 and v5.9.4 shipped no new net and
+no new gauntlet - both are search and time-management releases (a Lazy SMP helper watchdog and a
+bounded Syzygy decompressor in v5.9.3; a crash fix for that same watchdog plus a repetition-rule
+option in v5.9.4) - so 3321 is the number that stands until the net is regauntleted. 443 tests.
+
+> **Note on the CCRL numbers below.** On 2026-09-09 the project measured, rather than assumed, the
+> rating of its own CCRL reference field (a 1,680-game round-robin) and found it had been
+> systematically mislabeled: every gauntlet performance published before that date (fq60's 3271,
+> fq594's 3317, fqmix's 3342, fqwd0's 3242, and so on) was solved against ratings that read roughly
+> 30-34 points too high, uniformly, so no promotion decision changes but the absolute figures are
+> not directly comparable to anything from v5.9.0 onward. Those older figures are left as originally
+> published below rather than restated; the first numbers on the corrected scale are fqcohuman's
+> 3276 (v5.9.0/v5.9.1) and 3321 (v5.9.2). See CHANGELOG.md, 2026-09-09.
+
+---
+
+## The complete fqcohuman ships as v5.9.2 (2026-09-11): +21.6 Elo over the epoch-14 net
+
+The two stages that died young (below) are finished: 39 + 14 + 7 = 60 epochs, trained under new
+loader guards on a machine that reads memory back wrong (see below). Validation loss over the final
+seven epochs: 0.005825, 0.005820, 0.005814, 0.005826, 0.005816, **0.005804**, 0.005804 - the shipped
+checkpoint is epoch 6 of this stage, the best of the whole series (the epoch-14 net that shipped in
+v5.9.0 was 0.005860). Against that shipped net, at fixed nodes: **+21.6 +/- 14.6 Elo, LOS 99.8%,
+LLR 2.98, H1 over 983 games**. Export verified bit-exact against the engine's own probe. Bench
+7,793,209 nodes at depth 12. Gauntlet, single-threaded, field 2, measured labels: **52.1% over 240
+games, 3321 +/- 45 CCRL**, against v5.9.0/v5.9.1's 3276, v5.8.7's 3286 and v5.8.6's 3296 on the same
+measured labels. Internally this final checkpoint is referred to as `fqcohuman3` and is the net
+currently embedded in the engine (see "Current state" above).
+
+**The training loader now survives a machine that reads memory back wrong.** Four training runs died
+in two days with three different faces: an impossible permutation index, two CUDA device-side
+asserts from an index kernel, and a coarse-feature chunk whose offsets were not monotonic in memory
+although they are on disk. The fourth was reproduced outside the trainer - the same chunk order
+replayed on the CPU, one thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values
+are all below 144 on disk, and the same chunk read back correctly a moment later - and then confirmed
+by a plain memory-pattern test in a third process. That points at hardware (the box carries eight
+non-ECC modules from two different kits); a memory test is the next step and it stops the corpus
+generation, so it is the user's call. Two guards keep a run alive and record the evidence instead of
+dying: a chunk that cannot be read is logged with its file and row range and skipped, and every batch
+is range-checked on the host before the GPU sees it, a failing batch written to disk whole and
+skipped.
+
+## fqcohuman ships as v5.9.0 (2026-09-10): +11.5 Elo, an interrupted training run
+
+**+11.5 +/- 9.2 Elo, LOS 99.3%, LLR 2.97, H1 over 2,627 fixed-node games against fqhuman**, the net
+shipping since v5.4.0, draw ratio 52.3%. Same HalfKA schema, same 128-wide transformer, same
+factorized and quantization-aware recipe as every net since fq60, trained further on the same corpus
+with the coarse threat lane and the human opening arms together for the first time (the recipe
+`fqcoarse` announced below, on the fqhuman corpus). A net swap changes no node counts, so the
+fixed-node verdict carries to the clock as is.
+
+**It survived two crashes to get here.** The original run died at epoch 39 of 60 when the machine
+rebooted, and the trainer had no way to continue one; `--init-from` (a warm start from a checkpoint)
+was added for exactly that. The continuation then died at epoch 17 of 21 on a real defect in the
+streaming loader, which sized its shuffle permutation from a row counter instead of from the array it
+was about to index; fixed to warn instead of abort. The net that shipped is the checkpoint from
+epoch 14 of that continuation, 53 of the 60 planned epochs, validation loss 0.005860 - the best of
+the series at the time. The remaining seven epochs trained afterward and shipped as the complete
+fqcohuman / `fqcohuman3` in v5.9.2, above.
+
+Bench 8,193,088 nodes at depth 12. 443 tests. Gauntlet (shared with v5.9.1, identical search and
+net): single-threaded, field 2, measured labels: **46.2% over 240 games, 3276 +/- 44 CCRL**, against
+v5.8.7's 3286 and v5.8.6's 3296.
+
 ---
 
 ## fqcoarse (2026-09-05): the coarse threat features win their attribution
@@ -20,6 +88,37 @@ against fqhuman. `fqcohuman` (this recipe plus the human corpus segments, the tw
 together for the first time) is training; every one of the champion's 190 shards already has its
 coarse companion, so no data generation was needed.
 
+## The headroom guard that cried wolf (2026-09-02)
+
+After 40 hours of training, `fqhuman` failed the exporter's accumulator headroom check by three units: worst int16 lane 32,770 against the 32,767 limit. The first instinct - tighten the clipping, or worse, retrain - would have been wrong both ways, because **the guard's bound was loose, not the net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over the whole feature table, freely mixing combinations the schema cannot produce. Two exact properties tighten it:
+
+1. A feature index is `bucket * 704 + plane * 64 + square`, and one accumulator belongs to one perspective whose king square fixes ONE bucket - rows from different king buckets never share an accumulator.
+2. Inside a bucket the layout is plane-major over 64 squares, and a square holds at most one piece, so at most one plane can be active per square.
+
+| bound | fqhuman | verdict |
+|---|---|---|
+| global tail (the old guard) | 32,770 | false positive |
+| per king bucket | 31,052 | passes |
+| per bucket and per square (now) | 30,995 | passes |
+| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
+
+The control that justifies trusting the change: re-exporting the shipping champion under the new guard produces a **byte-identical** file, so the fix touches only the check, never the payload. The lesson generalizes the negative-control rule: **a guard that aborts is also a measurement, and its bound must be interrogated for reachability before it is obeyed.** Asked against the corpus, this one overstated reality by 2.4x. The limit itself was never raised - a silent int16 accumulator overflow does not error, it just plays worse, which is exactly why the guard exists.
+
+## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
+
+**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
+fq594.** The champion recipe verbatim; the single variable is the corpus,
+extended ~594M -> ~924M by adding the human game segments from datascale2
+(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
+closes the provenance-bug debt: the human datagen had silently never run,
+so every earlier belief about human seeding was untested. The honest
+confounder, recorded as ever: volume also rose, like every corpus decision
+in the series. Fourth consecutive net promotion by the same protocol
+(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
+fixed-node SPRTs whose verdicts carry to the clock by construction. It
+shipped as v5.4.0; the SMP investigation and transposition-table fixes
+from the same release are search-side, not NNUE, and are documented in
+CHANGELOG.md.
 
 ## 2026-08-31 - the coarse-threat pipeline closes end to end; fqhuman in flight
 
@@ -855,48 +954,6 @@ Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
 
-## The headroom guard that cried wolf (2026-09-02)
-
-After 40 hours of training, `fqhuman` failed the exporter's accumulator
-headroom check by three units: worst int16 lane 32,770 against the 32,767
-limit. The first instinct - tighten the clipping, or worse, retrain - would
-have been wrong both ways, because **the guard's bound was loose, not the
-net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over
-the whole feature table, freely mixing combinations the schema cannot
-produce. Two exact properties tighten it:
-
-1. A feature index is `bucket * 704 + plane * 64 + square`, and one
-   accumulator belongs to one perspective whose king square fixes ONE
-   bucket - rows from different king buckets never share an accumulator.
-2. Inside a bucket the layout is plane-major over 64 squares, and a square
-   holds at most one piece, so at most one plane can be active per square.
-
-| bound | fqhuman | verdict |
-|---|---|---|
-| global tail (the old guard) | 32,770 | false positive |
-| per king bucket | 31,052 | passes |
-| per bucket and per square (now) | 30,995 | passes |
-| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
-
-The control that justifies trusting the change: re-exporting the shipping
-champion under the new guard produces a **byte-identical** file, so the fix
-touches only the check, never the payload. The lesson generalizes the
-negative-control rule: **a guard that aborts is also a measurement, and its
-bound must be interrogated for reachability before it is obeyed.** Asked
-against the corpus, this one overstated reality by 2.4x. The limit itself
-was never raised - a silent int16 accumulator overflow does not error, it
-just plays worse, which is exactly why the guard exists.
-
-## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
-
-**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
-fq594.** The champion recipe verbatim; the single variable is the corpus,
-extended ~594M -> ~924M by adding the human game segments from datascale2
-(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
-closes the provenance-bug debt: the human datagen had silently never run,
-so every earlier belief about human seeding was untested. The honest
-confounder, recorded as ever: volume also rose, like every corpus decision
-in the series. Fourth consecutive net promotion by the same protocol
-(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
-fixed-node SPRTs whose verdicts carry to the clock by construction.
+**The headroom guard and fqhuman's promotion (v5.4.0, 2026-09-02) are documented earlier in this
+file, right after the fqcoarse entry, in their correct chronological place.**
 

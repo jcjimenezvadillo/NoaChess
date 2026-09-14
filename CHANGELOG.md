@@ -17,7 +17,7 @@ proven by construction: the crash needs a stuck helper, and the fix changes noth
 field averaging about 2950 - what its rating predicts (30-32%): draws against stronger opponents gain
 rating and are not the problem. Against opponents rated within 50 points or below it scores 50% with
 80% draws (5 wins, 40 draws, 5 losses in 50 games), the same on three different days and configurations.
-Those draws are 29 threefold repetitions, 7 fifty-move and 3 insufficient-material endings, and every one
+Those draws are 29 threefold repetitions, 7 fifty-move, 3 insufficient-material and 1 agreed endings, and every one
 of them is level by the arbiter at the moment of repeating (best case +24 for the bot); the fifty-move
 and material draws were 0.00 thirty plies before the end as well. The bot does not throw won games
 against these opponents; it does not build an advantage against them in the first place (its own
@@ -96,8 +96,8 @@ have taken days regardless of concurrency, since the bottleneck is wall-clock ti
 Replaced with a faster, different method: 200 real positions and real clock context sampled from recent
 blitz/rapid/classical games (bullet excluded - its budget rarely crosses the 5 s floor), the engine's own
 move requested twice at the same wtime/btime with the option off and on, and where the move changed (49
-of 200, 24.5%) both resulting positions judged independently (Renegade, depth 12, same method as the
-game-review tool). Result: 19 judged better, 20 worse, 10 equal - a coin flip at this judge depth, not a
+of 200, 24.5%) both resulting positions judged independently (an independent judge engine, depth 12,
+same method as the game-review tool). Result: 19 judged better, 20 worse, 10 equal - a coin flip at this judge depth, not a
 measured win. It ships anyway on the strength of the underlying finding above and because the option
 cannot spend less than before, only blend toward the un-cut baseline, bounded by the same sustainability
 guard as every other time-management path.
