@@ -23,9 +23,9 @@
 
 > **CORRECTION (2026-08-11): the NNUE capacity axis is NOT closed.** v4.5.0 recorded width 512 at -76 and -93 and eight output buckets at -15.2, and concluded "the NNUE capacity axis is closed in both directions". That measurement predates feature factorization by two days, when 85.6% of the transformer quantised to exactly zero - and widening makes precisely that defect worse, because the same signal spread over more neurons gives smaller per-weight magnitudes and small weights are what rounding removes. A 512-wide net under that defect is not more capacity, it is more capacity discarded, which is the shape of the -93. The same broken instrument produced the "self-play is exhausted" conclusion, and re-running the other experiment it invalidated was worth +128 in the field. A second unexplained contradiction points the same way: those eight buckets scored -15.2 here and **+20.1 with LOS 99.8%** in v4.2.0 on a different corpus. **[RESOLVED 2026-08-25: the clean rerun - both arms arch 3, QA=127, 60 epochs each, one variable - measured -49.7 [-76.7, -23.3] H0 over 366 games. The +20.1 is superseded; buckets are closed.]** Width 256 and 512 are back in the training queue, 256 first - the net is measured to be data-starved, so if 256 gains and 512 does not, the ceiling is the corpus rather than the architecture. **[RESOLVED 2026-08-25: both converged and both measured. 512 wins +38.4 at fixed nodes and loses -27.0 at the clock; 256 loses -31.9 at the clock. Capacity is closed; the binding constraint is speed, calibrated at ~65 Elo per NPS doubling at 180+2.]**
 >
-> **NEXT MAJOR ATTACK: threat features.** The reference no longer evaluates from HalfKA alone; it carries a second feature set of 60,720 dimensions with 128 simultaneously active, encoding which piece attacks which. Our HalfKA schema matches theirs exactly (22,528, 32 active), so this is not a correction but a whole input the network has never had - evaluation content rather than capacity. Cost is weeks, not a night: incremental updates in the C# hot path at four times the active features, the encoder on the Python side, a new file schema, and C#/Python parity verified before anything ships.
+> **NEXT MAJOR ATTACK: threat features.** The reference no longer evaluates from HalfKA alone; it carries a second feature set of 60,720 dimensions with 128 simultaneously active, encoding which piece attacks which. Our HalfKA schema matches theirs exactly (22,528, 32 active), so this is not a correction but a whole input the network has never had - evaluation content rather than capacity. Cost is weeks, not a night: incremental updates in the C# hot path at four times the active features, the encoder on the Python side, a new file schema, and C#/Python parity verified before anything ships. **[RESOLVED 2026-08-23/24: built end to end (arch 4) and measured +47.8 Elo at fixed nodes against fq60, the first thing to beat it since August - and then measured -14.9 at the clock (180+2, H0), because the full feature set costs about two thirds of the speed. The fine set does not ship as designed.** A 144-bucket coarse aggregate of the same relations (12 attacker classes by 12 victim classes) was built as the cheaper alternative and measured +17.7 at fixed nodes and a clock-neutral +2.6 over 406 games (`fqcoarse`, 2026-09-05); merged with the human corpus into `fqcohuman`, it is what shipped in v5.9.0/v5.9.2 and is embedded today as `fqcohuman3`. See [NNUE_HISTORY.md](NNUE_HISTORY.md) for the full chain.]**
 
-## ACTIVE CAMPAIGN - BLOCK 12, NNUE architecture overhaul (branch `4.6.2`)
+## BLOCK 12 - NNUE architecture overhaul (v4.x) - DONE (concluded 2026-08-11, fq60/v4.6.2-v4.7.0)
 
 > **Golden training-pipeline rule (added 2026-08-10):** a training flag is only real if the CALL
 > SITE reads it. `--max-records` had a documented default and no effect whatsoever in the streaming
@@ -42,10 +42,19 @@
 > Two nets matched on loss, correlation and quantisation error and were 108 Elo apart. Only an SPRT
 > ranks nets.
 
-Everything below v4.0.0 is history. The current work is the **v4.x campaign**: the network is 8x
-narrower than reference-class nets and trained on ~100x less data, which is why five consecutive
-generations landed flat. Order is **foundation -> data -> capacity -> search**, and no width increase
-is attempted before the evaluation profile exists. Full plan in **BLOCK 12**.
+Everything below v4.0.0, and BLOCK 12 itself, is now history: the campaign ran **foundation ->
+data -> capacity -> search** as planned and closed with fq60 measuring 3271 +/-40 CCRL, +128 over
+v4.5.0 (2026-08-11, detail two sections below). No version after that shipped under a "BLOCK 12"
+label.
+
+**Current work (v5.x) has no single campaign name** and runs on three fronts at once, detailed in
+the **Current status** table right below and in [CHANGELOG.md](CHANGELOG.md): further NNUE training
+generations on an expanding corpus (fqwd0 -> fqmix -> fq594 -> fqhuman -> fqcohuman -> the currently
+embedded `fqcohuman3`; full detail in [NNUE_HISTORY.md](NNUE_HISTORY.md)), a line-by-line audit of
+the search against the reference engine and several other open engines (the source of most of the
+Elo shipped since v5.6.0), and reliability work on the clock and the Lazy SMP worker pool
+(`ClockLead`/`ClockDeficitBrake`/`SlowTcEasyMoveDamp`, the v5.9.3 helper watchdog). The last measured
+CCRL figure is v5.9.2's **3321 +/- 45**; v5.9.3 and v5.9.4 have not been regauntleted.
 
 **Retired on 2026-07-31:** further self-play generations at 13 M positions, lambda sweeps, NNUE
 eval-scale recalibration (measured -61.7), and the competition opening book (deferred to v4.9.0).
@@ -838,10 +847,12 @@ python tools/training/nnue/train_nnue.py --data data/gen6_human.noadata ...
 
 ---
 
-## BLOCK 12 - NNUE architecture overhaul (v4.x) - THE ACTIVE CAMPAIGN
+## BLOCK 12 - NNUE architecture overhaul (v4.x) - DONE
 
-**Status: PLANNED (opened 2026-07-31); Branch `4.0.0`; Supersedes blocks 7, 8 and the "more
-generations" strategy entirely**
+**Status: DONE (opened 2026-07-31, closed 2026-08-11 with fq60/v4.6.2-v4.7.0 at 3271 +/-40 CCRL);
+Branch `4.0.0`; Supersedes blocks 7, 8 and the "more generations" strategy entirely. All four
+sub-phases below completed; the "Original plan, for the record" notes are kept for history and the
+lines above each of them record what actually happened.**
 
 ### Why a major version
 
@@ -966,7 +977,7 @@ yields no batches -> `nan` loss -> no epoch "improves" -> the checkpoint was wri
   machine-checked is a claim that will eventually be false.
 - Format version bump; parity test between scalar and SIMD retained as the correctness gate.
 
-### v4.1.0 - Data scale - PIPELINE DONE (2026-07-31), corpus generation pending
+### [DONE] v4.1.0 - Data scale - DONE (pipeline 2026-07-31, corpus generation run repeatedly since)
 
 **Gate: = 300 M positions on disk, manifest-verified provenance, and a 128-wide control net trained
 on it to isolate the data axis from the capacity axis.** The tooling is shipped and verified end to
@@ -1038,11 +1049,16 @@ hours.
 - The 128-wide control net answers the question BLOCK 8 failed to answer: **does data alone move
   strength?** Whatever it measures is honest, because the manifest now proves what went in.
 
-### v4.2.0 - Capacity - ARCHITECTURE DONE (2026-08-01), nets pending
+### [DONE] v4.2.0 - Capacity - DONE, and the axis CLOSED negative (architecture 2026-08-01)
 
-**Gate: SPRT vs v4.1.0 at the real time control, with NPS reported alongside Elo.** The architecture,
-the cross-language verification and the width measurement are shipped; the nets themselves need
-training. Strength unchanged so far: **exactly 193,746 nodes**, the same as v4.0.0 and v4.1.0.
+**Gate: SPRT vs v4.1.0 at the real time control, with NPS reported alongside Elo.** The architecture
+and the cross-language verification shipped as planned; the nets were trained and measured, and both
+levers lost. Width 256 measured -30.3 to -31.9 (converged, both at fixed nodes and at the clock);
+width 512 won +38.4 at fixed nodes but lost -27.0 at 180+2, eaten by its own speed cost; output
+buckets, re-measured cleanly (both arms arch 3, one variable), measured -49.7 H0. **The capacity axis
+is closed as of 2026-08-26**, in the opposite direction from the "Expected outcome" table below - see
+the correction note near the top of this file and NNUE_HISTORY.md's 2026-08-11 and 2026-08-26 status
+entries for the full chain.
 
 **Output buckets (architecture 3).** The head is replicated per bucket, selected by piece count, so
 the net gets a per-phase readout instead of one linear map serving a 32-piece opening and a 4-piece
@@ -1091,7 +1107,7 @@ which would confound buckets with gen7's different hyperparameters.
 - Deeper head with squared clipped activation if the profile permits.
 - Re-freeze the C#<->Python contract at this point, parity-verified as before.
 
-### v4.3.0 - Search
+### [DONE] v4.3.0 - Search - DONE (shipped 2026-08-01, +25.7 +/-16.4 Elo H1 over 921 games)
 
 **Gate: the BLOCK measured as a block, then ablated. Not one SPRT per term.**
 
@@ -1154,6 +1170,16 @@ which would confound buckets with gen7's different hyperparameters.
 Realistic destination: **~3080 -> 3300-3450 CCRL.** The overwhelming majority of the remaining gap
 to reference-class strength lives in the network and the data, not in the search and not in the
 implementation language.
+
+**[RESOLVED, against this table]:** data scale measured +104.6 to +182 Elo depending on method -
+inside the predicted range. Capacity measured NEGATIVE and closed by 2026-08-26 (width and output
+buckets both lose once trained to convergence and measured at the clock) - the opposite of the
+predicted +150 to +300, and the gain that made the destination believable came instead from feature
+factorization plus quantization-aware training (+128 in the field, v4.6.2/v4.7.0) and further corpus
+growth (fqwd0, fqmix, fq594, fqhuman, fqcohuman - see NNUE_HISTORY.md). The search bundle as planned
+was withdrawn (above); complete correction histories alone measured +25.7. The destination band was
+still reached, by a different route: `fqcohuman3`, the currently embedded net (v5.9.2), gauntlets at
+**3321 +/- 45 CCRL**.
 
 ---
 
@@ -1297,8 +1323,8 @@ NoaChess's book **doesn't seek variety-it seeks to win**. If one variation score
 | **3.3.0** | **Cut by matte tested - [DONE] DONE** - matte at 1: 1074 ms -> 22 ms. NNUE scale **CUTTED** (-61.7, H0) | +3.3 +/-23.1 (523p, neutral); published by behavior | = ~3080 |
 | **3.4.0** | **Block 11: Elite Data - Infrastructure DONE, Data in Generation.** Two Independent Paths: **(C)** Middlegame Seeds (`pgnbook --min-ply 20 --max-ply 40`) so that self-play starts where games are decided, not just in openings - it didn't need code, the flags already existed; **(C+)** **elite WDL anchoring**: `pgnbook --with-result` writes `FEN;R` and the new mode `datagen --label-book` It labels each position with **(score from our search, ACTUAL result of the human game)**, without self-play. This is the only pipeline signal the engine cannot generate on its own: the self-play WDL is its own opinion played to the end, which is why the lambda sweep found it useless (0.750 -> 0.338). **This is NOT learning by imitation**: the human contributes neither evaluation nor play, only the position and who won. The manifest records `mode` and `wdlSource` so that a labeled dataset is never confused with self-play | TBD | - |
 | **4.0.0** | **BLOCK 12 - Foundation - [DONE] DONE.** Measured the cost model and overturned it (L1 dot 26.2%, FT row traffic 73.8%). int8 L1 arch 2 (eval -25%, QA->127 forced by the VPMADDUBSW saturation bound, arch 1 still byte-identical). Accumulator cache 40-52x cheaper refreshes. Accumulator updates 1.9-2.5x faster in isolation with NO end-to-end change - the bottleneck is memory latency, not instructions. Streaming dataset removes the 120 M-record RAM ceiling. Provenance gate (`--require-book`) turns the BLOCK 8 failure into a machine check. Pre-existing checkpoint-loss bug fixed | **no Elo claim** - gate MET (streaming val 0.052585 vs 0.052003; 193,746 nodes unchanged) | = ~3080 |
-| **4.1.0** | **BLOCK 12 - Data scale - PIPELINE DONE, corpus pending.** Vectorised feature decoding (12x: 6 h -> 29 min for 300M) removed the wall; sharded/resumable datagen removed the multi-day crash cliff; `corpus` audits provenance off disk; `Noa-DataScale.ps1` phases 0->4 with phase 0 testing the volume-beats-depth premise before days are spent | infrastructure only, no Elo claim yet | +80 to +150 expected once the corpus is built |
-| **4.2.0** | **BLOCK 12 - Capacity - ARCHITECTURE DONE, nets pending.** Output buckets (arch 3, head replicated per bucket, only one evaluated per call), cross-language verification (`verify_export.py`, exact agreement 18/80/62 across buckets), and `nnuewidth` which prices width from shapes alone: **256 = 1.51x, 512 = 2.64x, sub-linear**. Buckets measurable now on existing data via `Noa-Buckets.ps1` | architecture only, no Elo claim yet | **+150 to +300 expected once trained** |
-| **4.3.0** | **BLOCK 12 - Search (PLANNED).** Complete correction histories (minor/major/non-pawn/continuation - only pawn exists today), then re-enter statScore, cutNode, double extensions and multi-level continuation history **as a bundle**, per the golden coupling rule | TBD | +60 to +110 expected |
-| 4.9.0 | Competition Opening Book - DEFERRED behind BLOCK 12 (the reference does not have its own book; tournaments use neutral books, so it does not move the primary metric) | - | tournament |
-| 5.0.0+ | Strength Extras (competition profiles, reproducible release manifest, deterministic bench checksum) | - | - |
+| **4.1.0** | **BLOCK 12 - Data scale - DONE.** Vectorised feature decoding (12x: 6 h -> 29 min for 300M) removed the wall; sharded/resumable datagen removed the multi-day crash cliff; `corpus` audits provenance off disk; `Noa-DataScale.ps1` phases 0->4 with phase 0 testing the volume-beats-depth premise before days are spent. Corpus generation itself ran repeatedly after this shipped, growing to ~924M positions by fqhuman (v5.4.0) | phase 0: +182.2 +/-16.6 LOS 100% | +104.6 to +182 measured (method-dependent, see NNUE_HISTORY.md) |
+| **4.2.0** | **BLOCK 12 - Capacity - DONE, axis closed NEGATIVE.** Output buckets (arch 3, head replicated per bucket, only one evaluated per call), cross-language verification (`verify_export.py`, exact agreement 18/80/62 across buckets), and `nnuewidth` which prices width from shapes alone: **256 = 1.51x, 512 = 2.64x, sub-linear**. Both buckets and width were trained and measured after this shipped and both LOST (buckets -49.7 H0, width 256 -31.9, width 512 +38.4 at fixed nodes but -27.0 at the clock) | see NNUE_HISTORY.md 2026-08-26 | closed, not the predicted +150 to +300 |
+| **4.3.0** | **BLOCK 12 - Search - DONE.** Complete correction histories (minor/major/non-pawn/continuation) shipped; the planned "as a bundle" re-entry of statScore/cutNode/double extensions/multi-level continuation history was withdrawn before being built (evidence already in this document said no) | **+25.7 +/-16.4 H1, 921 games** | measured, not the predicted +60 to +110 |
+| 4.9.0 | Competition Opening Book - still DEFERRED as of v5.9.4 (the reference does not have its own book; tournaments use neutral books, so it does not move the primary metric) | - | tournament |
+| 5.0.0+ | Everything since (search correctness audits, SMP reliability, further NNUE training generations) - see the **Current status** table near the top of this file and [CHANGELOG.md](CHANGELOG.md); this table was not maintained past v4.9.0 | - | v5.9.2 gauntlet: 3321 +/- 45 CCRL |
