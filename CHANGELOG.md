@@ -13,7 +13,7 @@ so a helper is either counted as on time or quarantined, never both. This one ca
 proven by construction: the crash needs a stuck helper, and the fix changes nothing until one exists.
 
 **Why the bot draws so much, measured before touching anything.** 188 rated games of 2026-09-12 and
-09-13 (lichess API, PGN with clocks), Stockfish 15.1 as arbiter. Overall the bot scores 29-30% against a
+09-13 (lichess API, PGN with clocks), an independent 3764 CCRL engine as arbiter. Overall the bot scores 29-30% against a
 field averaging about 2950 - what its rating predicts (30-32%): draws against stronger opponents gain
 rating and are not the problem. Against opponents rated within 50 points or below it scores 50% with
 80% draws (5 wins, 40 draws, 5 losses in 50 games), the same on three different days and configurations.
@@ -22,7 +22,7 @@ of them is level by the arbiter at the moment of repeating (best case +24 for th
 and material draws were 0.00 thirty plies before the end as well. The bot does not throw won games
 against these opponents; it does not build an advantage against them in the first place (its own
 evaluation peaked below +1.00 in most of those games). That is evaluation strength, and the lever is the
-net, not the search. The opening book leaves it at +1 cp on average (Stockfish, 37 games); ultra-fast
+net, not the search. The opening book leaves it at +1 cp on average (arbiter, 37 games); ultra-fast
 moves do not concentrate the blunders (5.7% of moves losing 100 cp or more when thinking under a tenth
 of the fair budget, 4.3-5.4% for the rest); the one +10 position that ended drawn (3bo5bjnM, bullet)
 was a genuine horizon, 34...f6 valued +3.89 at depth 21 with a forced perpetual that the arbiter sees at
