@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.3";
+    public const string Version = "5.9.4";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -66,6 +66,13 @@ public sealed class ChessEngine
     private const int HelperWatchdogMs = 3000;
     private bool[] _helperQuarantined = [];
     private bool[] _workerFinished = [];
+    // Orders "the watchdog quarantines this slot" against "this slot signals
+    // _done" (2026-09-14): a helper quarantined after the timeout used to
+    // signal the countdown of a LATER search when it finally returned, and a
+    // signal on a countdown already at zero throws on the worker thread and
+    // takes the whole process down (unhandled InvalidOperationException in
+    // WorkerLoop, gauntlet game 117, 60+1, four threads).
+    private readonly object _quarantineGate = new();
 
     // Raised with a plain diagnostic line when something abnormal happens
     // that the UCI host should surface as "info string" (the engine facade
@@ -248,14 +255,17 @@ public sealed class ChessEngine
         linked.Cancel();
         if (!_done.Wait(HelperWatchdogMs))
         {
-            for (int i = 0; i < n - 1; i++)
+            lock (_quarantineGate)
             {
-                if (_helperQuarantined[i] || _workerFinished[i])
-                    continue;
-                _helperQuarantined[i] = true;
-                Diagnostic?.Invoke(
-                    $"helper thread {i + 1} did not honour cancellation within "
-                  + $"{HelperWatchdogMs} ms - quarantined for the rest of this process");
+                for (int i = 0; i < n - 1; i++)
+                {
+                    if (_helperQuarantined[i] || _workerFinished[i])
+                        continue;
+                    _helperQuarantined[i] = true;
+                    Diagnostic?.Invoke(
+                        $"helper thread {i + 1} did not honour cancellation within "
+                      + $"{HelperWatchdogMs} ms - quarantined for the rest of this process");
+                }
             }
         }
 
@@ -337,6 +347,7 @@ public sealed class ChessEngine
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseRepetitionAfterRoot = _search.UseRepetitionAfterRoot;
+            h.UseRepetitionStrictWhenWorse = _search.UseRepetitionStrictWhenWorse;
             h.UseNmpNonPvOnly = _search.UseNmpNonPvOnly;
             h.UseTtEvalRefine = _search.UseTtEvalRefine;
             h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
@@ -467,11 +478,16 @@ public sealed class ChessEngine
             {
                 // MUST run on every path. A missed signal used to hang the
                 // engine forever on the next _done.Wait() - _done.Wait() is
-                // bounded now, but a late signal after the watchdog already
-                // quarantined this slot must not be mistaken for "on time" by
-                // whichever future search happens to be reading the array.
-                _workerFinished[index] = true;
-                _done!.Signal();
+                // bounded now. Under the gate: a slot the watchdog has already
+                // quarantined never signals again - its countdown belongs to a
+                // search that stopped waiting for it, and the next search has
+                // reset the count without it (see _quarantineGate).
+                lock (_quarantineGate)
+                {
+                    _workerFinished[index] = true;
+                    if (!_helperQuarantined[index])
+                        _done!.Signal();
+                }
             }
         }
     }
@@ -811,6 +827,12 @@ public sealed class ChessEngine
     {
         get => _search.UseRepetitionAfterRoot;
         set => _search.UseRepetitionAfterRoot = value;
+    }
+
+    public bool UseRepetitionStrictWhenWorse
+    {
+        get => _search.UseRepetitionStrictWhenWorse;
+        set => _search.UseRepetitionStrictWhenWorse = value;
     }
 
     public bool UseNmpNonPvOnly

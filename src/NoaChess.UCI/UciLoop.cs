@@ -1043,6 +1043,8 @@ public sealed class UciLoop
             _engine.UseSmpOvershootTaper = _options.SmpOvershootTaper;
         if (changed == "RepetitionAfterRoot")
             _engine.UseRepetitionAfterRoot = _options.RepetitionAfterRoot;
+        if (changed == "RepetitionStrictWhenWorse")
+            _engine.UseRepetitionStrictWhenWorse = _options.RepetitionStrictWhenWorse;
         if (changed == "NmpNonPvOnly")
             _engine.UseNmpNonPvOnly = _options.NmpNonPvOnly;
         if (changed == "TtEvalRefine")
