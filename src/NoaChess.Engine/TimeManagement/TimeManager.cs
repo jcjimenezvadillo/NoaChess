@@ -120,6 +120,27 @@ public static class TimeManager
         {
             long sustainableOptimum = incrementMs + time / 16;
             long sustainableMaximum = Math.Max(1, incrementMs + time / 4 - moveOverheadMs);
+
+            // A genuine clock lead (timeScalePercent > 100, from ClockLead in
+            // UciLoop) widened `optimum` a few lines up, and this guard then
+            // clawed nearly all of it back: both bounds only ever looked at
+            // OUR OWN clock, so a 20x lead and an even clock produced almost
+            // the same ceiling (measured 2026-09-15 in a real 25+5 game: the
+            // ratio was capped to 2x by ClockLead, then this guard alone cut
+            // that already-capped target by roughly a third). The guard's job
+            // is "stay affordable relative to what is actually on the clock",
+            // and a real lead makes more affordable, not less, so widen it by
+            // the same ratio ClockLead already computed. A deficit
+            // (timeScalePercent < 100, from ClockDeficitBrake) is left alone
+            // on purpose: tightening this guard further on top of the brake
+            // buys no safety margin worth measuring, since the guard already
+            // bounds `optimum` from above regardless.
+            if (timeScalePercent > 100)
+            {
+                sustainableOptimum = sustainableOptimum * timeScalePercent / 100;
+                sustainableMaximum = sustainableMaximum * timeScalePercent / 100;
+            }
+
             optimum = Math.Min(optimum, sustainableOptimum);
             maximum = Math.Min(maximum, sustainableMaximum);
         }

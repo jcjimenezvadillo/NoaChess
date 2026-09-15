@@ -1189,7 +1189,16 @@ public sealed class AlphaBetaSearch
     // this way (2026-09-08). Below SlowTcDampFloorMs of NOMINAL per-move
     // budget - the regime the fractions were actually measured in - nothing
     // changes at all, so blitz stays exactly as measured.
-    public bool UseSlowTcEasyMoveDamp;
+    // Missing "= true" here until 2026-09-15: every other "ships ON" flag in
+    // this file has an explicit initializer, this one silently defaulted to
+    // false. UciLoop only pushes an option into the engine when a client
+    // actually sends "setoption" for it (UciOptions.cs Set(), dispatched from
+    // HandleSetOption) - it never applies its own declared UCI defaults on
+    // startup. A host that trusts "option ... default true" and never resends
+    // it therefore ran with the damp permanently off, capping every easy/
+    // obvious move at a flat 12%/30% of the budget at EVERY time control,
+    // not just fast ones - the opposite of what the option exists to do.
+    public bool UseSlowTcEasyMoveDamp = true;
     private const double SlowTcDampFloorMs = 5000;  // below this, unchanged (the measured regime)
     private const double SlowTcDampCeilMs = 60000;  // at/above this, damped toward the full cap
     private const double SlowTcDampMaxBlend = 0.6;  // never blends more than 60% of the way to "no cut"
