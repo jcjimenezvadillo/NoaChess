@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## 2026-09-15 (v5.9.5) - the clock-lead sustainability guard now scales with a real lead
+
+**The bug, from a real game.** A rated classical game (25+5, lichess 3VOX5n7V, 2026-09-15): by move
+44 the bot held 10:27 on the clock against an opponent down to 0:29, a 21.6x lead, and it kept
+spending an average of about 11 seconds a move regardless - the opponent effectively could not
+think for the last 20-plus moves and the bot never pressed the advantage. `ClockLead` (shipped
+2026-09-07, confirmed against three outside engines the next day, +97 vs -44 Elo) does read the
+opponent's clock and does widen the target - capped at 2x the raw ratio - but the sustainability
+guard added underneath it (`inc + clock/16` for the target, `inc + clock/4` for the deadline) only
+ever read OUR OWN clock, so it clawed back nearly all of what ClockLead had just computed: in this
+game the raw lead was 21.6x, ClockLead capped it to 2x, and the guard alone then cut that
+already-capped budget by roughly a third before any easy-move damping even ran. The guard now
+widens by the same ratio whenever the lead is real (`timeScalePercent > 100`); a deficit
+(`ClockDeficitBrake`) is left untouched on purpose, since tightening the guard further there buys
+no measurable safety.
+
+**A second, unrelated bug found while reading the same file.** `UseSlowTcEasyMoveDamp` (shipped ON
+in v5.9.3) had no `= true` initializer, the only "ships ON" flag in `AlphaBetaSearch.cs` missing
+one; a host that never resends the option explicitly ran with it permanently off despite the
+UCI-declared default. The Mac bot's own config sends it explicitly, so this did not explain the
+game above, but a bare engine (or Windows, once restarted) would be affected. Given the
+initializer now.
+
+**Validation.** 2 new tests anchored on this game's own numbers
+(`SustainabilityGuard_WidensWithAGenuineClockLead`,
+`SustainabilityGuard_UnaffectedByAClockDeficit`), 445/445 total. An SPRT against v5.9.4 (60+1,
+ponder, the bot's own regime) was cut short by explicit decision rather than run to a conclusion:
+111 games, +6.3 +/- 34.0 Elo, LLR 0.04, no sign of harm. Shipped on the strength of the code fix
+and its regression tests, not a concluded SPRT - recorded here as exactly that.
+
 ## 2026-09-14 (v5.9.4) - the helper watchdog could crash the process; the repetition rule turns strict only when behind; why the bot draws so much, measured
 
 **The crash, no option.** The watchdog shipped in v5.9.3 quarantines a helper thread that does not
