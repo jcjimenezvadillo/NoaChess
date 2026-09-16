@@ -1134,8 +1134,8 @@ public sealed class UciLoop
             _engine.UseLostResistance = _options.LostResistance;
         if (changed == "LostResistanceBound")
             _engine.LostResistanceBound = _options.LostResistanceBound;
-        if (changed == "Contempt")
-            _engine.ContemptCp = _options.Contempt;
+        if (changed is "Contempt" or "ContemptOwnRating" or "UCI_Opponent")
+            _engine.ContemptCp = EffectiveContempt();
         if (changed == "CaptureLmr")
             _engine.UseCaptureLmr = _options.CaptureLmr;
         if (changed == "NmpPackage")
@@ -1532,6 +1532,44 @@ public sealed class UciLoop
         _output.WriteLine(ponderHint == Move.None
             ? $"bestmove {result.BestMove}"
             : $"bestmove {result.BestMove} ponder {ponderHint}");
+    }
+
+    // How much contempt this game actually gets.
+    //
+    // A FLAT contempt is the wrong shape, measured 2026-09-16 over a 141-game
+    // round-robin against three outside engines with the same binary on both
+    // arms, Contempt 25 against Contempt 0:
+    //
+    //     Nalwald 3283 (weakest)   33.3% -> 50.0%   (+16.7)
+    //     Rice 3394                35.4% -> 39.6%   ( +4.2)
+    //     Iris 3405 (strongest)    36.4% -> 25.0%   (-11.4)
+    //
+    // Each cell is noisy at ~24 games, but the ORDER is monotone in the
+    // opponent's strength and it is the order theory predicts: refusing draws
+    // pays against opponents you outplay and costs against opponents you do
+    // not. So the scale follows the rating gap instead of being a constant.
+    //
+    // Zero own rating (the default) means "no scaling", which reproduces the
+    // flat behaviour exactly; an unknown opponent rating does the same, since
+    // guessing is worse than not scaling. The gap reaches full contempt at
+    // +100, which is the band the bot's own measured problem lives in - it
+    // scores 50% with 80% draws against opponents within 50 points or below.
+    // Never negative: being happy to draw when outrated is a different bet and
+    // it has not been measured.
+    private int EffectiveContempt()
+        => ScaleContempt(_options.Contempt, _options.ContemptOwnRating, _options.OpponentRating);
+
+    // Split out as a pure function so the scaling can be tested without
+    // driving a whole UCI session.
+    internal static int ScaleContempt(int contempt, int ownRating, int? opponentRating)
+    {
+        if (contempt == 0 || ownRating <= 0 || opponentRating is not int opp)
+            return contempt;
+
+        int gap = ownRating - opp;
+        if (gap <= 0)
+            return 0;
+        return contempt * Math.Min(gap, 100) / 100;
     }
 
     internal SearchLimits ParseLimits(string[] tokens)

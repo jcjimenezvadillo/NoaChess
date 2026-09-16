@@ -119,6 +119,18 @@ public sealed class UciOptions
     // AlphaBetaSearch.ContemptCp for why the mechanism exists and why it
     // cannot be measured by self-play.
     public int Contempt { get; private set; }
+    // Our own rating, which UCI has no way to tell the engine. Zero (the
+    // default) means "apply Contempt flat", which is the behaviour that
+    // existed before rating scaling. Set it and Contempt is scaled by how far
+    // we outrate the opponent - see UciLoop.EffectiveContempt for why.
+    public int ContemptOwnRating { get; private set; }
+    // The raw "UCI_Opponent" string the GUI sent, kept only so the rating can
+    // be parsed out of it. lichess-bot sends this for every game when the
+    // engine declares the option.
+    public string UciOpponent { get; private set; } = "";
+    // The opponent's rating parsed out of UciOpponent, or null when the GUI
+    // sent "none" or nothing at all.
+    public int? OpponentRating { get; private set; }
     // How near the tablebases the won-band tie-break may decide; 32 is the
     // 5.8.1 behaviour of always. See AlphaBetaSearch.WonBandMaxMen.
     public int WonBandMaxMen { get; private set; } = 8;
@@ -266,6 +278,8 @@ public sealed class UciOptions
         output.WriteLine("option name LostResistance type check default false");
         output.WriteLine("option name LostResistanceBound type spin default 600 min 100 min 100 max 5000".Replace("min 100 min 100", "min 100"));
         output.WriteLine("option name Contempt type spin default 0 min -100 max 100");
+        output.WriteLine("option name ContemptOwnRating type spin default 0 min 0 max 4000");
+        output.WriteLine("option name UCI_Opponent type string default <empty>");
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
@@ -534,6 +548,28 @@ public sealed class UciOptions
             case "contempt" when int.TryParse(value, out int cont):
                 Contempt = Math.Clamp(cont, -100, 100);
                 return "Contempt";
+
+            case "contemptownrating" when int.TryParse(value, out int own):
+                ContemptOwnRating = Math.Clamp(own, 0, 4000);
+                return "ContemptOwnRating";
+
+            // "UCI_Opponent value <title> <elo> <computer|human> <name>", where
+            // title and elo are both allowed to be the literal "none". Only the
+            // rating is used, and anything unparseable leaves it null rather
+            // than guessing - a wrong rating would silently mis-scale contempt,
+            // which is worse than not scaling it at all.
+            case "uci_opponent":
+                UciOpponent = value;
+                OpponentRating = null;
+                foreach (string token in value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (int.TryParse(token, out int elo) && elo is > 0 and <= 4000)
+                    {
+                        OpponentRating = elo;
+                        break;
+                    }
+                }
+                return "UCI_Opponent";
             case "capturelmr" when bool.TryParse(value, out bool clm):
                 CaptureLmr = clm;
                 return "CaptureLmr";
