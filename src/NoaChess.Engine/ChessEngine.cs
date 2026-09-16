@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.5";
+    public const string Version = "5.9.6";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -328,6 +328,10 @@ public sealed class ChessEngine
             h.UseWonBandPromoGuard = _search.UseWonBandPromoGuard;
             h.UseLostResistance = _search.UseLostResistance;
             h.LostResistanceBound = _search.LostResistanceBound;
+            // Helpers MUST carry the same contempt as the main thread: they
+            // share one transposition table, and two threads scoring the same
+            // draw differently would write disagreeing bounds into it.
+            h.ContemptCp = _search.ContemptCp;
             h.UseCaptureLmr = _search.UseCaptureLmr;
             h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
@@ -695,6 +699,12 @@ public sealed class ChessEngine
     {
         get => _search.LostResistanceBound;
         set => _search.LostResistanceBound = value;
+    }
+
+    public int ContemptCp
+    {
+        get => _search.ContemptCp;
+        set => _search.ContemptCp = value;
     }
 
     public bool UseCaptureLmr

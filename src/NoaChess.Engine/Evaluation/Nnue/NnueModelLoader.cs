@@ -282,6 +282,14 @@ public static class NnueModelLoader
                 result[i] = BinaryPrimitives.ReadInt32LittleEndian(src[offset..]);
             return result;
         }
+        static bool RowIsZero(short[] weights, int row, int width)
+        {
+            int start = row * width;
+            for (int i = 0; i < width; i++)
+                if (weights[start + i] != 0)
+                    return false;
+            return true;
+        }
 
         sbyte[] ReadInt8Array(ReadOnlySpan<byte> src, int count)
         {
@@ -336,9 +344,24 @@ public static class NnueModelLoader
 
         // The coarse lane, the true last block.
         short[]? coarseWeights = null;
+        bool[]? coarseRowDead = null;
         if (hasCoarse)
+        {
             coarseWeights = ReadInt16Array(payload,
                 NnueModelHeader.CoarseRows * ftOutputs);
+
+            // A bucket is dead only when its own row AND its colour mirror are
+            // both all zero - the lane adds one of each per changed bucket, so
+            // one live row is enough to make the pass necessary.
+            coarseRowDead = new bool[NnueModelHeader.CoarseRows];
+            for (int pair = 0; pair < NnueModelHeader.CoarseRows; pair++)
+            {
+                int attCode = pair / 12, vicCode = pair % 12;
+                int mirror = ((attCode + 6) % 12) * 12 + (vicCode + 6) % 12;
+                coarseRowDead[pair] = RowIsZero(coarseWeights, pair, ftOutputs)
+                                   && RowIsZero(coarseWeights, mirror, ftOutputs);
+            }
+        }
 
         // Built once at load: see NnueNetwork.SquaredActivation for why the
         // activation must not divide at evaluation time.
@@ -373,6 +396,7 @@ public static class NnueModelLoader
             ThreatWeights = threatWeights,
             PsqtWeights = psqtWeights,
             CoarseWeights = coarseWeights,
+            CoarseRowDead = coarseRowDead,
             PsqtBuckets = psqtBuckets,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };

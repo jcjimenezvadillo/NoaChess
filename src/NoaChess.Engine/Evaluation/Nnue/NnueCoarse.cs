@@ -60,12 +60,20 @@ public sealed class NnueCoarseLane
         NnueCoarse.Classify(board, _counts);
 
         short[] weights = net.CoarseWeights!;
+        bool[]? dead = net.CoarseRowDead;
         for (int pair = 0; pair < Buckets; pair++)
         {
             int delta = _counts[pair] - _previous[pair];
             if (delta == 0)
                 continue;
             _previous[pair] = _counts[pair];
+            // Both this bucket's row and its mirror are all zero: the two
+            // AddRows passes below would add nothing over 2 x ftOut lanes. 62
+            // of the 144 buckets are dead this way in the shipping net, so
+            // this is the common case, not a corner. _previous is still kept
+            // in step above, so nothing downstream can tell the difference.
+            if (dead is not null && dead[pair])
+                continue;
             int attCode = pair / 12, vicCode = pair % 12;
             int whiteRow = pair * ftOut;
             int blackRow = (((attCode + 6) % 12) * 12 + (vicCode + 6) % 12) * ftOut;

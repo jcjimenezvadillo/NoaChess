@@ -1413,7 +1413,37 @@ public sealed class AlphaBetaSearch
     // node have cut off more than three times, the remaining moves are
     // reduced one ply more - most of what this node tries is being refuted.
     public bool UseCutoffCountLmr = false;
-    private int DrawScore() => UseDrawRandom ? 1 - (int)(_nodes & 2) : 0;
+    // Contempt: what a draw COSTS the side that started the search, in
+    // centipawns. Zero reproduces the previous behaviour exactly - every draw
+    // is worth exactly nothing to both sides - and zero is what it ships at,
+    // because this is a mechanism and not yet a measured setting.
+    //
+    // Why the mechanism is worth having at all: measured over 188 rated games
+    // (2026-09-14), against opponents rated within 50 points or below this bot
+    // scores 50% with 80% DRAWS, and an independent arbiter puts every one of
+    // those draws at level at the moment of repeating. It does not throw won
+    // games against that band; it agrees to split the point in positions it
+    // has no reason to fear. Refusing the first repetition by a few centipawns
+    // is the classical answer and it costs nothing per node.
+    //
+    // It cannot be measured by self-play SPRT: both sides would carry the same
+    // contempt and it cancels. It has to be measured against an outside field
+    // or with the bot itself, the same way ClockLead was.
+    public int ContemptCp;
+
+    // Negamax scores are from the SIDE TO MOVE's point of view, so the sign has
+    // to follow whose turn it is rather than being a constant. At an even ply
+    // the side to move is the side that started the search, and the draw costs
+    // it ContemptCp; at an odd ply the score is returned from the opponent's
+    // point of view, where that same draw is worth exactly what it costs us.
+    // Getting this sign wrong makes the engine seek draws when it means to
+    // avoid them, which is why it is written as one expression and not as a
+    // flag that some call site could forget to flip.
+    private int DrawScore(int ply)
+    {
+        int contempt = (ply & 1) == 0 ? -ContemptCp : ContemptCp;
+        return UseDrawRandom ? contempt + 1 - (int)(_nodes & 2) : contempt;
+    }
 
     // SEE pruning of captures at every depth with a margin that grows with
     // it (reference: see_ge(-157 * depth) in its units, 75 per ply here),
@@ -3241,22 +3271,22 @@ public sealed class AlphaBetaSearch
         if (board.HalfmoveClock >= 100)
         {
             if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
-                return DrawScore();
+                return DrawScore(ply);
             return -MateScore + ply;
         }
         if (_strictRepetition
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
-            return DrawScore();
+            return DrawScore(ply);
         if (GameState.IsDeadPosition(board))
-            return DrawScore();
+            return DrawScore(ply);
 
         // A reversible move may be about to enter a repeated position even
         // though the current key itself is new. Raising alpha to draw avoids
         // searching for a loss below a cycle the side can force immediately.
         if (alpha < 0 && board.HasUpcomingRepetition(ply))
         {
-            alpha = DrawScore();
+            alpha = DrawScore(ply);
             if (alpha >= beta)
                 return alpha;
         }
@@ -3597,6 +3627,7 @@ public sealed class AlphaBetaSearch
             if (SearchStats) _stNullTry++;
             _incremental?.PushNull();
             board.MakeNullMove();
+            _tt.Prefetch(board.ZobristKey);
             int nullScore = -Negamax(board, depth - r, -beta, -beta + 1,
                                      ply + 1, allowNull: false, cutNode: false);
             board.UnmakeNullMove();
@@ -3688,6 +3719,7 @@ public sealed class AlphaBetaSearch
                 int probVictim = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
                 _incremental?.PushMove(board, move);
                 board.MakeMove(move);
+                _tt.Prefetch(board.ZobristKey);
                 if (board.IsSquareAttacked(board.KingSquare(mover), board.SideToMove))
                 {
                     board.UnmakeMove();
@@ -4156,6 +4188,7 @@ public sealed class AlphaBetaSearch
             _stackStatScore[ply] = moveHistory - StatScoreOffset;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
+            _tt.Prefetch(board.ZobristKey);
 
             // Lazy legality: a pseudo-legal move that leaves our king attacked
             // is discarded here, at the only make it will ever get.
@@ -4720,19 +4753,19 @@ public sealed class AlphaBetaSearch
         if (board.HalfmoveClock >= 100)
         {
             if (!board.IsInCheck() || MoveGenerator.HasLegalMove(board, _moveLists[ply]))
-                return DrawScore();
+                return DrawScore(ply);
             return -MateScore + ply;
         }
         if (_strictRepetition
                 ? board.IsRepetition(ply)
                 : board.HalfmoveClock >= 4 && board.CountRepetitions() >= 1)
-            return DrawScore();
+            return DrawScore(ply);
         if (GameState.IsDeadPosition(board))
-            return DrawScore();
+            return DrawScore(ply);
 
         if (alpha < 0 && board.HasUpcomingRepetition(ply))
         {
-            alpha = DrawScore();
+            alpha = DrawScore(ply);
             if (alpha >= beta)
                 return alpha;
         }
@@ -4969,6 +5002,7 @@ public sealed class AlphaBetaSearch
 
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
+            _tt.Prefetch(board.ZobristKey);
 
             // Discard moves that leave our own king in check.
             if (board.IsSquareAttacked(board.KingSquare(us), board.SideToMove))
