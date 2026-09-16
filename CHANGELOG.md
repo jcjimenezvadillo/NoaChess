@@ -1,5 +1,51 @@
 # CHANGELOG
 
+## 2026-09-16 (v5.9.8) - the shipping architecture's output layer was still scalar, and two corrections
+
+**The output layer.** `FinishOutput` runs the last stage of every arch-1/2/3 evaluation and was a
+thirty-two iteration scalar loop: a bounds-checked span read, a bounds-checked weight read, a
+sign-extending 64-bit multiply and a thirty-two deep chain of `long` adds, all of it after the L1
+dot had already finished. The identical construct for architecture 5 - which nothing ships - was
+vectorised two versions ago and sits a hundred lines above it in the same file. The architecture
+that actually plays never got it. int32 accumulation is exact here rather than merely close: the
+activation is clamped to [0, QA] with QA at most 255 and the weight is an int16, so one product is
+at most 8,355,840 and thirty-two of them at most 267,386,880, an eighth of what int32 holds.
+**+3.87%** [3.42%, 4.04%], faster on 266 of 293 positions. Two smaller things in the same kernel,
+**+1.29%** together: the accumulator clip was the last use in the engine of
+`new Vector<short>(array, index)` plus `CopyTo(Span)` - the exact idiom v4.0.0 measured 2.5x slower
+elsewhere - and the quad-row fold extracted four totals with `GetElement` and added four
+bounds-checked biases where one load, one add and one store do it.
+
+**CORRECTION, and the reason it matters: the headline speed number is measured, not composed.**
+Multiplying this session's five separate A/B ratios gives +14.6%, and that figure is wrong.
+Composing ratios measured at different times against different bases accumulates each one's bias
+and ignores where the gains overlap. Measured end to end instead - this build against the v5.9.5
+baseline, three interleaved pairs, 450 paired positions - the night is worth **+8.01%**
+[7.14%, 7.68%], faster on 443 of 450, p < 0.00001. About 7 Elo at 65 Elo per doubling. The earlier
+entries in this file quote the composed figures; this is the number to trust. And the whole set is
+**BYTE-IDENTICAL to the v5.9.5 baseline**: 29,268,779 nodes on both sides, no position differing in
+node count or best move. Five changes to the hottest code in the engine and the search still walks
+exactly the same tree.
+
+**CORRECTION: the contempt gradient reported under v5.9.6 does not survive more games.** That entry
+reports a monotone pattern from a 141-game round-robin - +16.7 points against the weakest engine of
+the field, -11.4 against the strongest - and concludes a flat contempt is the wrong shape. A second
+experiment, concentrated on the one opponent that matters (Nalwald 3283 against our 3321, a 38-point
+gap, which is the band where the bot measurably draws 80% of its games), ran 145 games on that
+pairing alone and came back the other way: `Contempt` 25 scored **34.7% against `Contempt` 0's
+41.8%**. Pooled over both experiments, 217 games on that pairing, it is 38.9% against 39.9% - no
+difference at all. The gradient was noise. What DOES reproduce in both experiments is that contempt
+lowers the draw rate (46.4% to 39.1% in the first, 34.2% to 30.6% in the second): the mechanism
+does exactly what it is built to do, and converting those draws into decisive games splits them
+about evenly between wins and losses. That is consistent with what this project measured on
+2026-09-06 about its own drawn positions - the static evaluation cannot see a win there, the
+quiescence search sees the position and still returns zero, and it returns zero because the position
+IS drawn. **Contempt stays at zero, and the recommendation is not to enable it.** The rating-scaled
+mechanism stays in the binary, inert, because it costs nothing and the question can be reopened with
+the bot's own games if anyone wants to.
+
+456 tests.
+
 ## 2026-09-16 (v5.9.7) - SEE stops rebuilding the attacker set it already had
 
 The swap loop called `AttackersTo` on every iteration, and that function rebuilt the whole attacker
