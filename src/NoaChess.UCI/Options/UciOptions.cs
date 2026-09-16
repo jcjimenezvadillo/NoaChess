@@ -114,6 +114,11 @@ public sealed class UciOptions
     // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
     public bool LostResistance { get; private set; }
     public int LostResistanceBound { get; private set; } = 600;
+    // What a draw costs the side that started the search, in centipawns.
+    // Zero is the historical behaviour and the default. See
+    // AlphaBetaSearch.ContemptCp for why the mechanism exists and why it
+    // cannot be measured by self-play.
+    public int Contempt { get; private set; }
     // How near the tablebases the won-band tie-break may decide; 32 is the
     // 5.8.1 behaviour of always. See AlphaBetaSearch.WonBandMaxMen.
     public int WonBandMaxMen { get; private set; } = 8;
@@ -260,6 +265,7 @@ public sealed class UciOptions
         output.WriteLine("option name WonBandPromoGuard type check default true");
         output.WriteLine("option name LostResistance type check default false");
         output.WriteLine("option name LostResistanceBound type spin default 600 min 100 min 100 max 5000".Replace("min 100 min 100", "min 100"));
+        output.WriteLine("option name Contempt type spin default 0 min -100 max 100");
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
@@ -525,6 +531,9 @@ public sealed class UciOptions
             case "lostresistancebound" when int.TryParse(value, out int lrb):
                 LostResistanceBound = Math.Clamp(lrb, 100, 5000);
                 return "LostResistanceBound";
+            case "contempt" when int.TryParse(value, out int cont):
+                Contempt = Math.Clamp(cont, -100, 100);
+                return "Contempt";
             case "capturelmr" when bool.TryParse(value, out bool clm):
                 CaptureLmr = clm;
                 return "CaptureLmr";
