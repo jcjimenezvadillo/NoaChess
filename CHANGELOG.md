@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-09-16 (v5.9.7) - SEE stops rebuilding the attacker set it already had
+
+The swap loop called `AttackersTo` on every iteration, and that function rebuilt the whole attacker
+set each time: twelve piece-bitboard reads, four attack-table lookups and two magic lookups. Only
+the slider half can ever change - taking a piece out of the virtual occupancy can open a line, it
+cannot change what a pawn, a knight or a king attacks - so the fixed half is computed once into
+five plain locals and only the two magic lookups stay in the loop. **+4.14%** [3.46%, 4.48%],
+faster on 252 of 292 positions, p < 0.00001, and BYTE-IDENTICAL: 29,268,779 nodes both sides, no
+position differing in node count or best move.
+
+**The same idea lost by 1.64% four hours earlier**, and the difference is worth recording. That
+version cached all twelve piece bitboards into a `stackalloc` span behind a twelve-iteration loop.
+It was correct - byte-identical on the same oracle - and it was slower, because it charged a fixed
+setup cost to every call and most SEE calls end after one or two iterations: it optimised the body
+of a loop that does not spin. Five locals charge nothing at all. Only the timed A/B separates those
+two, which is exactly what this project's rule about profiles and A/Bs is for.
+
+With the two wins in v5.9.6 the three together are **1.0262 x 1.0193 x 1.0414 = +8.9% of search
+speed**, about 8 Elo at the measured 65 Elo per doubling, none of it changing a decision the search
+makes. 456 tests.
+
 ## 2026-09-16 (v5.9.6) - the first search-wide profile, and the two free speed wins it found
 
 **The map came first.** Every previous measurement of where this engine spends its time covered
