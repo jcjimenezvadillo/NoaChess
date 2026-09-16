@@ -44,13 +44,33 @@ at zero - the mechanism only - because it CANNOT be measured by self-play SPRT: 
 carry the same contempt and it cancels. A round-robin against an outside field is the measurement
 that decides whether it is ever switched on.
 
+**And then contempt stopped being a constant.** A round-robin against three outside engines with
+the same binary on both arms, `Contempt` 25 against `Contempt` 0, 20+0.2, about 24 games per cell,
+says a flat value is the wrong shape:
+
+| opponent | contempt 0 | contempt 25 | delta |
+|---|---|---|---|
+| Nalwald 3283 (weakest) | 33.3% | 50.0% | +16.7 |
+| Rice 3394 | 35.4% | 39.6% | +4.2 |
+| Iris 3405 (strongest) | 36.4% | 25.0% | -11.4 |
+
+Any single cell is noise at that size; the ORDER is not. It is monotone in the opponent's strength
+and it is the order theory predicts, because refusing a draw pays against opponents you outplay and
+costs against opponents you do not. So `UCI_Opponent` is now declared and parsed (lichess-bot sends
+it for every game once the engine declares it) and `ContemptOwnRating` carries the one number UCI
+has no way to tell an engine - its own. Contempt then follows the gap: the full value at +100,
+linear below, zero at level or worse, never negative, since being glad to draw when outrated is a
+different bet and nobody has measured it. A rating that will not parse leaves the value unset
+rather than guessed. Verified end to end over UCI on a dead-drawn position: a +100 gap gives -25,
++50 gives -12, being outrated gives 0.
+
 **Measured and rejected the same night.** An SEE rewrite that hoisted the piece sets out of the
 swap loop was correct - byte-identical over the same 29.3M nodes, which is the check an earlier
 SEE rewrite failed on 2026-08-07 - and 1.64% SLOWER [-2.25%, -1.09%]. It adds fixed setup cost to
 a function that usually terminates after one or two iterations: it optimised the body of a loop
 that does not spin. Reverted.
 
-449 tests.
+456 tests.
 
 ## 2026-09-15 (v5.9.5) - the clock-lead sustainability guard now scales with a real lead
 
