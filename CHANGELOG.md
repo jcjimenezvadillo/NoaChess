@@ -1,5 +1,57 @@
 # CHANGELOG
 
+## 2026-09-16 (v5.9.6) - the first search-wide profile, and the two free speed wins it found
+
+**The map came first.** Every previous measurement of where this engine spends its time covered
+the NNUE evaluation only (`nnueprofile`). This release starts from the first CPU-sampling profile
+of the WHOLE search (`audit/profile_search.py`, the cached 150-position set at depth 14, quiet
+box): NNUE evaluation 43.1% of self time, search control 28.9% (Negamax 19.7, quiescence 9.1),
+move ordering 12.1%, SEE 7.0%, move generation 3.9%, make/unmake 1.2%, transposition table 0.08%.
+Three things that intuition would have chased turned out to be already solved and are recorded
+here so nobody spends a night on them again: the accumulator is lazy (only 34.7% of the eager
+updates are ever applied) with a finny table hitting 99.9%, the L1 dot product already does four
+output rows per pass with one horizontal reduction instead of four, and make/unmake plus the
+table are together under 1.4%. R2R versus JIT was also settled by measurement rather than
+argument: identical node counts, 44.1 s against 44.3 s, so the published build costs no speed.
+
+**Transposition-table prefetch, +2.62%.** The child's cluster is now brought into L1 the instant
+a move is made, hundreds of cycles before the child node probes it, at all four sites (null move,
+ProbCut, the main move loop, quiescence). Measured with paired interleaved runs and a sign test
+because totals decide nothing here - two passes of the SAME binary drift up to 4.2% on this box:
++2.62% [1.84%, 3.26%], faster on 204 of 293 positions, p < 0.00001, node counts BYTE-IDENTICAL
+over 29,268,779 nodes.
+
+**The coarse lane stops adding zero, +1.93%.** 62 of the 144 coarse relation buckets have their
+own weight row AND its colour mirror entirely zero in the shipping fqcohuman3 net - 43% of them,
+because the trainer found no signal in those relation types. Every time one of those relations
+changed, the lane ran two full passes over 128 int16 lanes adding nothing at all. The loader now
+precomputes `NnueNetwork.CoarseRowDead` and the lane skips those buckets while keeping its diff
+state in step, so the result is bit-identical by construction: +1.93% [1.29%, 2.50%], faster on
+197 of 292 positions, p < 0.00001, again BYTE-IDENTICAL. Together the two wins are +4.6%, which
+at this project's measured 65 Elo per doubling of speed is worth about 4 Elo, and neither changes
+a single decision the search makes.
+
+**Contempt exists now, and ships at zero.** The engine had no contempt mechanism at all and never
+parsed `UCI_Opponent`: `DrawScore` returned a flat zero, so a draw was worth exactly nothing to
+both sides in every position. That sits directly under the symptom measured on 2026-09-14 -
+against opponents rated within 50 points or below the bot scores 50% with 80% draws, every one of
+them level by an independent arbiter at the moment of repeating. `Contempt` is a spin option in
+centipawns; the value flips sign with the ply because negamax scores are from the side to move's
+point of view, and it is copied to the helper threads, which share one table and must not score
+the same draw differently. Four tests pin the sign, since getting it backwards would make the
+engine seek the draws it was asked to avoid and nothing would look broken while it did. It ships
+at zero - the mechanism only - because it CANNOT be measured by self-play SPRT: both arms would
+carry the same contempt and it cancels. A round-robin against an outside field is the measurement
+that decides whether it is ever switched on.
+
+**Measured and rejected the same night.** An SEE rewrite that hoisted the piece sets out of the
+swap loop was correct - byte-identical over the same 29.3M nodes, which is the check an earlier
+SEE rewrite failed on 2026-08-07 - and 1.64% SLOWER [-2.25%, -1.09%]. It adds fixed setup cost to
+a function that usually terminates after one or two iterations: it optimised the body of a loop
+that does not spin. Reverted.
+
+447 tests.
+
 ## 2026-09-15 (v5.9.5) - the clock-lead sustainability guard now scales with a real lead
 
 **The bug, from a real game.** A rated classical game (25+5, lichess 3VOX5n7V, 2026-09-15): by move
