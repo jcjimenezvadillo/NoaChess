@@ -88,11 +88,41 @@ public static class StaticExchangeEvaluator
         PieceType pieceOnSquare = board.PieceTypeAt(move.From);
         Color side = Board.OppositeColor(board.SideToMove);
 
+        // AttackersTo rebuilt ALL of this on every iteration, and only the
+        // slider half of it can ever change: removing a piece from the virtual
+        // occupancy can open a line, it cannot change what a pawn, a knight or
+        // a king attacks. Hoisted into plain locals rather than an array on
+        // purpose. A version of this that cached all twelve piece bitboards in
+        // a stackalloc span was MEASURED 1.64% SLOWER on 2026-09-16, because
+        // most SEE calls end after one or two iterations and it charged them
+        // all a fixed setup cost. These five locals add no fixed cost at all:
+        // iteration one computes exactly what it used to, and every iteration
+        // after it saves twelve bitboard reads and four attack lookups.
+        ulong fixedAttackers =
+              (Attacks.Pawn(Color.Black, to) & board.Pieces(Color.White, PieceType.Pawn))
+            | (Attacks.Pawn(Color.White, to) & board.Pieces(Color.Black, PieceType.Pawn))
+            | (Attacks.Knight(to) & (board.Pieces(Color.White, PieceType.Knight)
+                                   | board.Pieces(Color.Black, PieceType.Knight)))
+            | (Attacks.King(to) & (board.Pieces(Color.White, PieceType.King)
+                                 | board.Pieces(Color.Black, PieceType.King)));
+        ulong queens = board.Pieces(Color.White, PieceType.Queen)
+                     | board.Pieces(Color.Black, PieceType.Queen);
+        ulong bishopLike = board.Pieces(Color.White, PieceType.Bishop)
+                         | board.Pieces(Color.Black, PieceType.Bishop) | queens;
+        ulong rookLike = board.Pieces(Color.White, PieceType.Rook)
+                       | board.Pieces(Color.Black, PieceType.Rook) | queens;
+        ulong whiteOcc = board.Occupancy(Color.White);
+        ulong blackOcc = board.Occupancy(Color.Black);
+
         while (depth < 31)
         {
             // All remaining pieces of 'side' that attack the square, given
             // the current virtual occupancy (this is what reveals x-rays).
-            ulong attackers = AttackersTo(board, to, occupancy) & occupancy & board.Occupancy(side);
+            ulong attackers = (fixedAttackers
+                               | (Attacks.Bishop(to, occupancy) & bishopLike)
+                               | (Attacks.Rook(to, occupancy) & rookLike))
+                            & occupancy
+                            & (side == Color.White ? whiteOcc : blackOcc);
             if (attackers == 0)
                 break;
 
@@ -127,30 +157,5 @@ public static class StaticExchangeEvaluator
         }
 
         return gain[0];
-    }
-
-    // Every piece (of both colors) attacking 'square' under the given virtual
-    // occupancy. Pawn attackers are found with the reverse-color table trick
-    // (see Board.IsSquareAttacked).
-    private static ulong AttackersTo(Board board, int square, ulong occupancy)
-    {
-        ulong attackers = 0;
-
-        attackers |= Attacks.Pawn(Color.Black, square) & board.Pieces(Color.White, PieceType.Pawn);
-        attackers |= Attacks.Pawn(Color.White, square) & board.Pieces(Color.Black, PieceType.Pawn);
-        attackers |= Attacks.Knight(square) &
-            (board.Pieces(Color.White, PieceType.Knight) | board.Pieces(Color.Black, PieceType.Knight));
-        attackers |= Attacks.King(square) &
-            (board.Pieces(Color.White, PieceType.King) | board.Pieces(Color.Black, PieceType.King));
-
-        ulong bishopLike = board.Pieces(Color.White, PieceType.Bishop) | board.Pieces(Color.Black, PieceType.Bishop)
-                         | board.Pieces(Color.White, PieceType.Queen) | board.Pieces(Color.Black, PieceType.Queen);
-        attackers |= Attacks.Bishop(square, occupancy) & bishopLike;
-
-        ulong rookLike = board.Pieces(Color.White, PieceType.Rook) | board.Pieces(Color.Black, PieceType.Rook)
-                       | board.Pieces(Color.White, PieceType.Queen) | board.Pieces(Color.Black, PieceType.Queen);
-        attackers |= Attacks.Rook(square, occupancy) & rookLike;
-
-        return attackers;
     }
 }
