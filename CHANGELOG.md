@@ -50,7 +50,7 @@ SEE rewrite failed on 2026-08-07 - and 1.64% SLOWER [-2.25%, -1.09%]. It adds fi
 a function that usually terminates after one or two iterations: it optimised the body of a loop
 that does not spin. Reverted.
 
-447 tests.
+449 tests.
 
 ## 2026-09-15 (v5.9.5) - the clock-lead sustainability guard now scales with a real lead
 
