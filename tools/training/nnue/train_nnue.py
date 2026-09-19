@@ -114,6 +114,22 @@ def make_loss(args):
     return reference_loss
 
 
+def parse_reweight(spec):
+    """"a=1.5,b=0.4" -> {"a": 1.5, "b": 0.4}. Empty/None -> {} (no reweighting)."""
+    if not spec:
+        return {}
+    weights = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        substr, _, value = part.partition("=")
+        if not value:
+            raise SystemExit(f"--reweight: '{part}' is not 'substring=weight'")
+        weights[substr.strip()] = float(value)
+    return weights
+
+
 def refuse_to_share_the_machine(args):
     """Stops BEFORE any work when another python job owns the machine.
 
@@ -274,6 +290,15 @@ def main():
     parser.add_argument("--prefetch", type=int, default=4,
                         help="batches built ahead on a background thread (0 disables); "
                              "batches are identical either way, only faster")
+    # Per-source sampling weight (2026-09-18): without this, each --data file's
+    # share of every epoch is whatever its on-disk record count happens to be,
+    # so a newer/smaller/higher-quality generation is silently outnumbered by
+    # an older/bigger one. Format: "substr1=weight1,substr2=weight2", the first
+    # substring found in a path's name sets that file's weight (default 1.0).
+    # Example: --reweight "datascale2=0.4,datascale4=1.5" leans the epoch
+    # toward datascale4 without dropping datascale2 entirely.
+    parser.add_argument("--reweight", type=str, default="",
+                        help='per-source sampling weight, e.g. "datascale2=0.4,datascale4=1.5"')
     args = parser.parse_args()
     refuse_to_share_the_machine(args)
 
@@ -349,7 +374,8 @@ def train_streaming(args, rng):
     at all.
     """
     store = dataset.FeatureStore(args.data, val_fraction=args.val_fraction,
-                                threats=args.threats, coarse=args.coarse)
+                                threats=args.threats, coarse=args.coarse,
+                                weights=parse_reweight(args.reweight))
     print(f"train: {store.train_total:,}  val: {store.val_total:,} "
           f"from {len(args.data)} files (streaming, "
           f"chunk={args.chunk} buffer={args.buffer_chunks})")

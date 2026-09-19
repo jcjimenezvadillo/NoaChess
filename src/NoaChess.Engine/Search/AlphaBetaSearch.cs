@@ -1669,14 +1669,22 @@ public sealed class AlphaBetaSearch
     // this object" and, crucially, RETRACTS it on every exit path. Without the
     // finally a search that threw would leave the flag set and the next
     // ponderhit would install a clock on nothing.
+    // 'excludedRootMoves' (default null, added 2026-09-18 for self-play root
+    // diversity - see NoaChess.DataGen): when set, those moves are removed
+    // from consideration BEFORE the search runs, so the result is the best
+    // move among everything ELSE at the root. Every existing caller passes
+    // null and gets byte-identical behaviour to before this parameter
+    // existed - it is filtered in exactly one place, right after the root's
+    // legal moves are generated, and nowhere else in the search reads it.
     public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
                                      IProgress<SearchProgress>? progress = null,
-                                     bool newSearch = true)
+                                     bool newSearch = true,
+                                     MoveList? excludedRootMoves = null)
     {
         try
         {
-            return FindBestMoveCore(board, limits, cancellation, progress, newSearch);
+            return FindBestMoveCore(board, limits, cancellation, progress, newSearch, excludedRootMoves);
         }
         finally
         {
@@ -1687,7 +1695,8 @@ public sealed class AlphaBetaSearch
     private SearchResult FindBestMoveCore(Board board, SearchLimits limits,
                                           CancellationToken cancellation,
                                           IProgress<SearchProgress>? progress,
-                                          bool newSearch)
+                                          bool newSearch,
+                                          MoveList? excludedRootMoves = null)
     {
         if (limits.MaxDepth < 1)
             throw new ArgumentOutOfRangeException(nameof(limits), "Minimum depth is 1.");
@@ -1742,6 +1751,30 @@ public sealed class AlphaBetaSearch
         if (_rootMoves.Count == 0)
             return new SearchResult(Move.None, board.IsInCheck() ? -MateScore : 0, 0);
         int legalRootMoveCount = _rootMoves.Count;
+
+        // Root exclusion (see the parameter's own comment above FindBestMove):
+        // applied here, once, on the freshly generated list - everything below
+        // this point (forced-move shortcut, TB filtering, the iterative
+        // search itself) only ever sees the already-filtered _rootMoves, same
+        // as if the excluded moves were simply not legal. If exclusion leaves
+        // nothing to search (the position's only legal move was excluded),
+        // there is no alternative to report: return Move.None rather than
+        // pretending one exists.
+        if (excludedRootMoves is { Count: > 0 })
+        {
+            // MoveList has no RemoveAt; swap the match to the tail and
+            // truncate, same pattern the picker uses elsewhere in this file.
+            for (int i = 0; i < _rootMoves.Count; i++)
+            {
+                if (!excludedRootMoves.Contains(_rootMoves[i]))
+                    continue;
+                _rootMoves.Swap(i, _rootMoves.Count - 1);
+                _rootMoves.Truncate(_rootMoves.Count - 1);
+                i--; // the tail element just moved into slot i - recheck it
+            }
+            if (_rootMoves.Count == 0)
+                return new SearchResult(Move.None, 0, 0);
+        }
 
         // ---- Illegal root: the side NOT to move is in check ----
         // No game reaches this, but a GUI can set such a position up by hand
@@ -2593,6 +2626,22 @@ public sealed class AlphaBetaSearch
             _stackEval[0] = board.IsInCheck()
                 ? NoEval
                 : _corrections.Correct(board, _evaluator.Evaluate(board) + OptimismTerm(board), 0);
+        }
+        else
+        {
+            // Bug fixed 2026-09-18: with the flag off (the shipped default),
+            // this slot was simply never written, so it kept the array's
+            // default 0 forever - not the NoEval sentinel the "no history
+            // means NOT improving" semantics above require. Every ply==2 node
+            // in every search (one move by each side - a huge node class)
+            // read _stackEval[0] as 0, which passed the "!= NoEval" check and
+            // silently substituted "improvement = staticEval - 0" for the
+            // documented, validated "no history -> not improving" rule. This
+            // makes the OFF path actually implement what it already claims
+            // to implement; it is NOT the same change as turning the flag
+            // on (using the root's real corrected eval instead), which stays
+            // a separate, still-unmeasured experiment.
+            _stackEval[0] = NoEval;
         }
 
         int bestScore = -Infinity;

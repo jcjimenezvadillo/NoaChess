@@ -478,7 +478,7 @@ public sealed class UciLoop
                         bool converted = false;
                         if (_options.PonderInPlace)
                         {
-                            SearchLimits timedLimits = ParseLimits(timedTokens);
+                            SearchLimits timedLimits = ParseLimits(timedTokens, ponderElapsedMs: ponderedMs);
                             lock (_ponderGate)
                             {
                                 if (!_ponderSearchDone
@@ -1278,7 +1278,7 @@ public sealed class UciLoop
 
         SearchLimits limits = ponder
             ? SearchLimits.Unlimited()
-            : ParseLimits(tokens);
+            : ParseLimits(tokens, ponderElapsedMs: ponderedMs);
 
         // Clock-managed searches only (soft < hard): movetime/depth/nodes
         // budgets are explicit GUI requests and stay untouched.
@@ -1572,7 +1572,19 @@ public sealed class UciLoop
         return contempt * Math.Min(gap, 100) / 100;
     }
 
-    internal SearchLimits ParseLimits(string[] tokens)
+    // 'ponderElapsedMs' (ponderhit relaunch only, default 0): how long the
+    // preceding ponder search actually ran. Bug fixed 2026-09-18 (audit
+    // find): wtime/btime below come straight from 'tokens', which for a
+    // ponderhit relaunch is the ORIGINAL "go ponder ..." command's tokens,
+    // snapshotted before the ponder started. Our own clock genuinely does
+    // not move during a ponder (it is the opponent's turn), so 'time' needs
+    // no correction, but the OPPONENT'S clock has been ticking down for
+    // real for 'ponderElapsedMs' the whole time - oppTime below was stale by
+    // that amount for as long as this fix did not exist, systematically
+    // overstating the opponent's remaining clock right after every
+    // ponderhit and under-firing ClockLead (or spuriously firing
+    // ClockDeficitBrake) for however long the ponder ran.
+    internal SearchLimits ParseLimits(string[] tokens, long ponderElapsedMs = 0)
     {
         // Reads the numeric value following a keyword ("wtime 60000" -> 60000).
         long? Value(string keyword)
@@ -1606,21 +1618,36 @@ public sealed class UciLoop
             int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
             // ClockLead (2026-09-07, from a user observation): when this side
             // holds more clock than the opponent, the optimum grows by the
-            // ratio of the two clocks, capped at 2x. In the bot's games the
-            // engine ends with a median 1.5x to 2x the opponent's time (and
-            // far more at rapid: 8:08 against 2:26 at move 24 of a 10-minute
-            // game), which is depth left unused. The hard maximum and the
-            // sustainability rails are untouched, so the extra spend can only
-            // come out of a lead we demonstrably have; with equal clocks the
-            // budget is exactly what it was.
+            // ratio of the two clocks. The hard maximum and the sustainability
+            // rails are untouched (both are functions of OUR OWN clock, never
+            // the opponent's), so the extra spend can only come out of a lead
+            // we demonstrably have; with equal clocks the budget is exactly
+            // what it was.
+            //
+            // REVISED 2026-09-17: the cap was 2.0, sized from bullet/blitz bot
+            // games where the median lead was 1.5x-2x. A real classical game
+            // (FJW7GJCP, 1800+10) reached a 9x-15x lead (30:42 vs 2:04 at one
+            // point) and the cap threw away everything past 2x, so the spend
+            // per move tracked the UNSCALED formula almost exactly (~78-110s,
+            // matching a hand computation of optScale with no lead applied at
+            // all) despite the opponent being nearly out of clock. Raised to
+            // 6.0 - the same order of magnitude as this file's own maxScale
+            // ceilings a few lines below (Math.Min(7.0, ...) and
+            // Math.Min(6.3, ...)) - so a genuinely large lead can actually be
+            // spent instead of silently discarded past 2x.
             int scalePercent = _options.TimeScale;
             long? oppTime = _board.SideToMove == Color.White ? Value("btime") : Value("wtime");
+            if (ponderElapsedMs > 0 && oppTime is long oppRaw)
+                oppTime = Math.Max(0, oppRaw - ponderElapsedMs);
             if (_options.ClockLead && oppTime is long opp && opp > 0 && time > opp)
             {
-                double lead = Math.Min(2.0, time / (double)opp);
+                double lead = Math.Min(6.0, time / (double)opp);
                 scalePercent = (int)Math.Round(scalePercent * lead);
             }
-            // ClockDeficitBrake (12-09, SPRT candidate, OFF): the symmetric
+            // ClockDeficitBrake (12-09, shipped ON by default since - this
+            // comment was stale, caught 2026-09-18 during an audit that
+            // almost re-flagged an already-shipped feature as an untested
+            // candidate): the symmetric
             // case ClockLead never covered - when this side holds LESS clock
             // than the opponent, shrink the optimum by the same ratio, capped
             // at half. The hard maximum and sustainability rails are untouched

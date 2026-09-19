@@ -144,6 +144,33 @@ public static class TimeManager
             optimum = Math.Min(optimum, sustainableOptimum);
             maximum = Math.Min(maximum, sustainableMaximum);
         }
+        else
+        {
+            // Sustainability guard for "x moves in y seconds" (added
+            // 2026-09-18, audit find): the block above only ever applied to
+            // sudden death, so raising ClockLead's cap to 6x today (UciLoop)
+            // had nothing bounding a persistent lead's repeated spend here -
+            // classical/movestogo has its own maxScale reaching 6.3x with no
+            // equivalent brake. Unlike sudden death, this format already has
+            // a precise, GUI-reported "moves remaining" (mtg), so the bound
+            // is phrased in that unit instead of borrowing sudden death's
+            // assumed-infinite-game fixed fractions (clock/16, clock/4):
+            // optimum cannot exceed roughly 2 average per-move shares,
+            // maximum roughly 4 - the same 4x optimum:maximum ratio the
+            // sudden-death guard uses, just denominated in mtg. A genuine
+            // lead can still meaningfully widen the budget; it just cannot
+            // spend a double-digit fraction of the whole remaining clock on
+            // one move the way an unbounded 6.3x scale otherwise could.
+            long sustainableOptimum = incrementMs + time * 2 / mtg;
+            long sustainableMaximum = Math.Max(1, incrementMs + time * 4 / mtg - moveOverheadMs);
+            if (timeScalePercent > 100)
+            {
+                sustainableOptimum = sustainableOptimum * timeScalePercent / 100;
+                sustainableMaximum = sustainableMaximum * timeScalePercent / 100;
+            }
+            optimum = Math.Min(optimum, sustainableOptimum);
+            maximum = Math.Min(maximum, sustainableMaximum);
+        }
 
         if (optimum > maximum)
             optimum = maximum;

@@ -769,12 +769,26 @@ class FeatureStore:
     because the record format is ordered by game.
     """
 
-    def __init__(self, paths, val_fraction=0.05, threats=False, coarse=False):
+    def __init__(self, paths, val_fraction=0.05, threats=False, coarse=False, weights=None):
         # Threat shards are OPTIONAL and live in their own directory, so a run
         # without them never touches - or builds - that cache.
         self.threats = bool(threats)
         self.coarse = bool(coarse)
         self.files = []
+        # Per-file sampling weight (2026-09-18, audit find): stream_batches used
+        # to build its chunk list straight from every file's own record count,
+        # so the mix between sources was implicitly whatever their on-disk sizes
+        # happened to be - a newer, higher-quality generation could be
+        # outnumbered 3:1 by an older one with nobody having decided that.
+        # `weights` is a dict {substring: weight}; the first substring found in
+        # a path sets that file's weight (default 1.0, i.e. today's behaviour
+        # when weights is None or nothing matches).
+        weights = weights or {}
+        def weight_for(path):
+            for substr, w in weights.items():
+                if substr in path:
+                    return w
+            return 1.0
         for path in paths:
             directory = build_feature_shards(path)
             shards = _shard_paths(directory)
@@ -797,6 +811,7 @@ class FeatureStore:
                 "path": path, "stm": stm, "opp": opp,
                 "scores": scores, "results": results,
                 "count": count, "train_count": train_count,
+                "weight": weight_for(path),
             }
             if self.threats:
                 tdir = build_threat_shards(path)
@@ -825,8 +840,9 @@ class FeatureStore:
                         f"but the HalfKA shards hold {count:,}. They describe "
                         f"different data.")
             self.files.append(entry)
+            weight_note = f", weight {entry['weight']:g}x" if entry["weight"] != 1.0 else ""
             print(f"dataset: {count:,} records from {path} "
-                  f"(train {train_count:,} / val {count - train_count:,})")
+                  f"(train {train_count:,} / val {count - train_count:,}){weight_note}")
 
     @property
     def train_total(self):
@@ -854,8 +870,22 @@ class FeatureStore:
         """
         chunks = []
         for file_index, (f, start, stop) in enumerate(self._spans(split)):
-            for begin in range(start, stop, chunk):
-                chunks.append((file_index, begin, min(begin + chunk, stop)))
+            file_chunks = [(file_index, begin, min(begin + chunk, stop))
+                            for begin in range(start, stop, chunk)]
+            w = f.get("weight", 1.0)
+            if w == 1.0 or not file_chunks:
+                chunks.extend(file_chunks)
+                continue
+            # Resample this file's own chunk list to w times its natural
+            # count: w>1 oversamples (with replacement, since there is
+            # nothing further to draw from), w<1 undersamples (without
+            # replacement - never invent rows that were never read).
+            target = max(1, int(round(len(file_chunks) * w)))
+            if w > 1.0:
+                idx = rng.integers(0, len(file_chunks), size=target)
+            else:
+                idx = rng.choice(len(file_chunks), size=target, replace=False)
+            chunks.extend(file_chunks[i] for i in idx)
         if not chunks:
             return
 

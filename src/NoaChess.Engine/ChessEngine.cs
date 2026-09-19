@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.8";
+    public const string Version = "5.9.11";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -111,11 +111,17 @@ public sealed class ChessEngine
     // slow: interactive consumers (GUI) must invoke it from a background
     // thread and use the token to be able to cancel it. 'progress' (optional)
     // receives a snapshot after each completed search depth.
+    // 'excludedRootMoves' (default null): forwarded to the single-threaded
+    // search only (see AlphaBetaSearch.FindBestMove) - DataGen's self-play
+    // loop, the only caller that uses this, always runs Threads=1 per game
+    // instance. Passing it with Threads>1 is a no-op, not an error: the
+    // Lazy-SMP vote path does not thread exclusion through the helper pool.
     public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
-                                     IProgress<SearchProgress>? progress = null)
+                                     IProgress<SearchProgress>? progress = null,
+                                     MoveList? excludedRootMoves = null)
         => _threads <= 1
-            ? _search.FindBestMove(board, limits, cancellation, progress)
+            ? _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves)
             : FindBestMoveParallel(board, limits, cancellation, progress);
 
     // Hands a running "go ponder" search its real clock instead of stopping it
