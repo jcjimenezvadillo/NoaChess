@@ -1,5 +1,82 @@
 # CHANGELOG
 
+## 2026-09-18 (v5.9.11) - five audit findings verified in the code, root diversity for the datagen, a per-source weight for the trainer
+
+**The improving flag was corrupt at every ply-2 node.** `improving` compares the static eval at the
+current ply with the one two plies up, and the search's own rule - validated when the flag shipped -
+is that a node with no usable history counts as NOT improving. With `RootStaticEval` off, which is
+the shipping default, `_stackEval[0]` was never written, so it held C#'s zero forever instead of the
+`NoEval` sentinel. Every node one move into the tree from either side therefore compared its eval
+against 0 rather than against nothing: a positive eval read as improving, a negative one as not.
+Reverse futility, late move pruning, LMR, null move and ProbCut all read the flag, and ply 2 is the
+widest layer of the tree where it applies. Fixed with an explicit `NoEval` on the off path. This is
+not the same thing as turning `RootStaticEval` on, which stays a separate, unmeasured option. Node
+counts change, so every fixed-node measurement taken before this build was taken with the flag half
+wrong - which is why the off-by-default search options are being re-measured against this build
+(see ROADMAP).
+
+**The sustainability guard only covered sudden death.** The v5.9.5 guard that keeps `ClockLead`
+from spending a lead it cannot sustain existed in the `wtime`/`btime` branch only; the "x moves in
+y seconds" branch had no brake at all, and the 6x cap of v5.9.9 leaves it more exposed, not less.
+The same guard now exists there in that branch's own units (two to four mean shares of the moves to
+go). The sudden-death branch is untouched.
+
+**The opponent's clock was stale after a ponderhit.** `ClockLead` and `ClockDeficitBrake` read the
+opponent's remaining time from the `go` line, and after a ponderhit that line still carried the time
+the opponent had when the ponder started, not what they have now. `ParseLimits` takes the pondered
+milliseconds and subtracts them at both call sites.
+
+**Two smaller ones.** The `ClockDeficitBrake` comment still called it an off-by-default SPRT
+candidate; it has shipped on since v5.9.3. And in the trainer, `clip_weights()` clamped the feature
+transformer but not `threat_ft` or `coarse_ft`, which share the same int16 accumulator; the coarse
+lane is live in the shipping recipe, so an overflow there would have been silent. Same clamp on all
+three.
+
+**Datagen: root diversity for self-play.** `FindBestMove` takes an optional set of excluded root
+moves (single-threaded path only; the datagen runs one thread per instance), and
+`NoaChess.DataGen --diversify-prob/-topk/-margin/-maxply` samples the PLAYED move among the top
+candidates within a margin of the best, up to a ply, while the RECORDED label stays the best move's
+score. Without it, every game that shares an opening converges on the one line the current net
+prefers. Verified on a paired same-seed run: 3,060 against 2,899 records, the games genuinely
+diverge. Off by default; the shard manifest records the setting. Three tests for the exclusion
+(`RootExclusionTests`).
+
+**Trainer: `--reweight substr=weight,...`** resamples each source file's chunk list by a per-source
+weight (with replacement above 1, without below), so a smaller external source can be given more or
+less of an epoch without duplicating files on disk.
+
+**What was measured.** v5.9.11 against v5.9.10 at 60+1 with ponder: 2-0-16 after 18 games, 0.556,
+stopped by decision to give the machine to the next corpus. That is not a verdict. The three clock
+fixes barely run in a bullet self-play match and would need a movestogo format with real pondering
+to be exercised at all. 459 tests.
+
+## 2026-09-17 (v5.9.10) - fqco592 is the embedded net
+
+The next turn of the corpus wheel. `fqco592` is fqcohuman3's exact recipe - every hyperparameter
+pulled from the champion checkpoint with `dump_args.py`, not improvised: 7 epochs, batch 16384,
+lr 4.287769e-05, lambda 0.735 to 0.7, the reference loss with exponent 2.5 and the 240/145
+constants, factorized, coarse lane, QAT at QA 255, 120M records per epoch - warm-started from
+fqcohuman3's own `.partial` the way fqcohuman3 warm-started from fqcohuman2's. Only the data axis
+moved: datascale2 (924M, human-seeded, fixed) plus the new datascale4 (298,082,565 positions at
+6,000 nodes, teacher v5.9.2 with fqcohuman3, audited before training: every arm's evaluator
+consistent, composition 43.3/35.2/20.1/1.4 bulk/mid/open/hard, W/D/L 28.5/42.7/28.8) plus
+selfplay-gen8 (6.8M elite positions carrying real human outcomes). Measured against fqcohuman3 in
+the same v5.9.8 binary through `EvalFile` at 60+1 with ponder: 13-13-81, 0.500 over 107 games,
+stopped by decision. Not a verdict. The net ships because the wheel's rule is that each corpus is
+labelled by the best net available when it starts, and the next corpus (datascale5, running as this
+is written) is labelled by this one. The embedded resource hash matches `models/nnue/fqco592.noannue`
+(c633...48a7). 456 tests.
+
+## 2026-09-17 (v5.9.9) - the clock-lead cap was 2x, and a real game had 9x to 15x
+
+A rated game (lichess FJW7GJCP) showed the engine with nine to fifteen times its opponent's clock
+still moving at the pace of an even game. `ClockLead` scales the optimum by the clock ratio, and the
+ratio was capped at 2.0, so any lead beyond double was thrown away. The cap is now 6.0. Measured at
+the time control where a lead actually exists - 600+5 with ponder, v5.9.9 against v5.9.8: 4-4-39,
+0.500 over 47 games, cut by decision; at 60+1, 0-4-11 in 15 games, too few to read. Shipped on the
+strength of the game record and the code, not a concluded SPRT - the v5.9.5 entry below did the
+same and says so. 456 tests.
+
 ## 2026-09-16 (v5.9.8) - the shipping architecture's output layer was still scalar, and two corrections
 
 **The output layer.** `FinishOutput` runs the last stage of every arch-1/2/3 evaluation and was a

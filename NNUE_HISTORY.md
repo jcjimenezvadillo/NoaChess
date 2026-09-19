@@ -3,14 +3,41 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.4, 2026-09-14).** The embedded net is `fqcohuman3`, the complete 60-epoch
-fqcohuman recipe shipped in v5.9.2 (entry below). Architecture is HalfKAv2_hm with factorized
-features, 128-wide feature transformer, quantization-aware training - unchanged since fq60/v4.7.0
-(see the 2026-08-11 status entry further down). Last measured CCRL: **3321 +/- 45** (v5.9.2
-gauntlet, measured field labels, 52.1% over 240 games). v5.9.3 and v5.9.4 shipped no new net and
-no new gauntlet - both are search and time-management releases (a Lazy SMP helper watchdog and a
-bounded Syzygy decompressor in v5.9.3; a crash fix for that same watchdog plus a repetition-rule
-option in v5.9.4) - so 3321 is the number that stands until the net is regauntleted. 443 tests.
+**Current state (v5.9.11, 2026-09-18).** The embedded net is `fqco592` (v5.9.10, entry below):
+fqcohuman3's exact recipe, warm-started from fqcohuman3's `.partial`, trained on datascale2 +
+datascale4 + selfplay-gen8. Architecture is HalfKAv2_hm with factorized features, 128-wide feature
+transformer, coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the
+2026-08-11 status entry further down). Last measured CCRL: **3321 +/- 45** (v5.9.2 gauntlet,
+measured field labels, 52.1% over 240 games); nothing from v5.9.3 onward has been regauntleted, and
+fqco592's own SPRT against fqcohuman3 was cut at 107 games on 0.500, so 3321 is still the number
+that stands. The next corpus, datascale5 (300M at 6,000 nodes, root diversity on, teacher fqco592),
+is generating as this is written. 459 tests.
+
+---
+
+## fqco592 ships as v5.9.10 (2026-09-17): the same recipe on the datascale4 corpus
+
+One axis moved: the data. Everything else is fqcohuman3's, pulled from the champion checkpoint with
+`dump_args.py` on 2026-09-16 rather than typed from memory - 7 epochs, batch 16384, lr 4.287769e-05,
+lambda 0.735 at the start and 0.7 at the end, the reference loss with exponent 2.5 and the 240/145
+input and output constants, weight decay 1e-05 (none on the transformer), 128/32/32 widths, one
+output bucket, factorized, coarse lane, no fine threats, QAT at QA 255, 120M records per epoch,
+chunk 8192, 64 buffered chunks, 4 prefetch workers, seed 1, 5% validation. Warm-started from
+`fqcohuman3.pt.partial` the way fqcohuman3 started from fqcohuman2's.
+
+Data: datascale2 (924M, human-seeded, the fixed base) + datascale4 + selfplay-gen8. datascale4 is
+the corpus the previous champion generated: 298,082,565 positions at 6,000 nodes, teacher v5.9.2
+with fqcohuman3, four arms (bulk 43.3% from random openings, mid 35.2% from a human middlegame book,
+open 20.1% from a human opening book, hard 1.4% from the bot's own judged losses - the hard arm's
+book was small and came up short of its 2% target), 62 shards, audited before training with the same
+check that caught datascale3 labelled by the classical evaluator: every arm's manifest names
+fqcohuman3 as the evaluator. W/D/L 28.5/42.7/28.8.
+
+Measured against fqcohuman3 in the same v5.9.8 binary through `EvalFile`, 60+1 with ponder:
+13-13-81, 0.500 over 107 games, stopped by decision. Not a verdict either way. The net ships because
+the wheel's rule is that a corpus is labelled by the best net available when it starts, and
+datascale5 started on this one. The v5.9.10 binary embeds it (resource hash c633...48a7 matches the
+exported file).
 
 > **Note on the CCRL numbers below.** On 2026-09-09 the project measured, rather than assumed, the
 > rating of its own CCRL reference field (a 1,680-game round-robin) and found it had been
@@ -720,14 +747,14 @@ the measuring instrument.
 (`--nodes`), not the generational loop itself. gen2-gen4 all used 14000-node
 labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
 jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
-positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
+positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 +/-16.6, LOS 100%**. The
 network was starved of DATA and label depth was never the binding constraint.
 
 Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
 absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engine
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
-NNUE off) ≈ 3020-3035 CCRL.
+NNUE off) ~ 3020-3035 CCRL.
 
 **NEWEST AT THE TOP.** The table used to run in ascending order, and what gets
 consulted is always the latest net, never the first.
@@ -775,9 +802,9 @@ mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
 (2862-3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
-overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
-gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
-and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
+overall; ML performance rating ~ 3050 CCRL** against a field averaging 3043.
+gen5 beats every opponent <=3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
+and loses to >=3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
 This is the first CCRL number for the NNUE line. Note it lands only ~+15 over the
 classical estimate (~3035), NOT the +42 the internal SPRT chain suggested - the
 expected shrink of self-play gains against a diverse external field. It is the
@@ -792,7 +819,7 @@ The gen6 dataset is included in the gen7 combined training set.
 **gen7 (2026-07-29, v3.2.0):** 28000 nodes, embedded and promoted as a
 **marginal** generation - the vs-gen5 SPRT is parity (76.2% LOS), not a formal
 H1. Its own gauntlet (240 games, 60+0.6, single-thread, field 2862-3281)
-placed it at **57.9%, ~3080 ±40 CCRL**, up from gen5's 51.0%/~3050 but inside
+placed it at **57.9%, ~3080 +/-40 CCRL**, up from gen5's 51.0%/~3050 but inside
 combined gauntlet noise. The honest read at the time: the human-opening
 seeding this generation shipped with did not itself buy strength over gen5 -
 the value was the data pipeline and pinning the NNUE-over-classical delta at
@@ -807,7 +834,7 @@ openings after all. See [README](README.md) for the full correction.
 Notes:
 - gen2's SPRT log was later removed in a cleanup; its +1.9 (H1) is on record from
   the run, not a file.
-- gen5's +34 is the deeper-labels payoff (14000→20000 nodes). Its absolute CCRL
+- gen5's +34 is the deeper-labels payoff (14000->20000 nodes). Its absolute CCRL
   placement (~3050) comes from the field gauntlet; the internal-vs-classical step
   is skipped for gen5 because the gauntlet is the more direct placement.
 
@@ -819,14 +846,14 @@ measurements all said no:
 1. **SPRT vs gen7** at 60+1, `Threads=1`, ponder off: stopped at **H0** after 198
    games (59W 95D 41L, 53.8%). No evidence of the +50 Elo the bounds asked for.
 2. **Real games on the bot**, same binary, only the net swapped: the avoidable
-   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p≈0.017), and the
+   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p~0.017), and the
    score fell from 80.5% to 75.8% against opposition only 58 Elo stronger. See
    [[bot-version-timeline-aug2026]] in the session memory for the exact cutoffs.
 3. **Gauntlet** vs the 12-engine field: started, then abandoned once the first
    two measurements agreed. No number recorded.
 
 **The cause is the training schedule, not the data.** The loss curve never
-flattened - validation loss fell 0.008005 → 0.005993 across the six epochs and
+flattened - validation loss fell 0.008005 -> 0.005993 across the six epochs and
 **the largest single drop was the last one** (-0.00065, against -0.00005 for the
 first), with every epoch marked as a new best. `CosineAnnealingLR` is built with
 `T_max=args.epochs`, so the learning rate hit its 7.63e-05 floor exactly when the
@@ -883,8 +910,8 @@ further - see [README](README.md) and [CHANGELOG](CHANGELOG.md).
 **Status as of v4.3.1 (2026-08-05): still gen7, and now measured with the
 current engine.** A field gauntlet of **v4.3.1 + gen7** scored **59.7% over 165
 games** against the same 12 CCRL engines (average 3043), for a performance of
-**~3110 ±45**. Applying one formula to all three runs for once: gen5 3050, gen7
-3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside ±45,
+**~3110 +/-45**. Applying one formula to all three runs for once: gen5 3050, gen7
+3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside +/-45,
 so the correction histories and the 4.3.x fixes are **not measurably visible
 here** - what the run establishes is a band, roughly **3070-3155**, with the
 crossover against the field around 3150 (50.0% against Rubichess 3150, 60.7%
@@ -909,7 +936,7 @@ ponder off, no tablebases for anyone. Per-opponent performances land between
 3052 and 3215, so no single pairing is dragging the figure.
 
 **This does NOT measure gen9's +18.** The previous full reading was ~3110 for
-v4.3.1+gen7, and a 600-game gauntlet resolves roughly ±20. gen9 (+18 by SPRT)
+v4.3.1+gen7, and a 600-game gauntlet resolves roughly +/-20. gen9 (+18 by SPRT)
 plus the v4.4.0 search work (~+7 by node and nps measurement) should land near
 3135; 3114 is inside the band either way. The honest statement is that the
 engine sits around **3100-3150** and that nothing regressed - the gauntlet
@@ -929,7 +956,7 @@ hyperparameters, differing in one flag each, and both **lost**:
 | variant | difference | result |
 |---|---|---|
 | `ds1w512` | `--ft-out 512` instead of 128 | **-76** at 10+0.1, **-93** at 60+0.6 |
-| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 ±25.3, H0** at 435 games |
+| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 +/-25.3, H0** at 435 games |
 
 The b8 result is clean - checkpoint metadata confirms 60 epochs, batch 16384,
 lambda 0.85, ft_out 128, l1_out 32 and the same 70 shards for both, with
