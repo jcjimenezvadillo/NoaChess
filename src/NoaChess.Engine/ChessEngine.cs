@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.15";
+    public const string Version = "5.9.16";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -382,7 +382,6 @@ public sealed class ChessEngine
             h.UseFailHighDamping = _search.UseFailHighDamping;
             h.UseFailHighDampingQs = _search.UseFailHighDampingQs;
             h.UseCutoffCountLmrAllNode = _search.UseCutoffCountLmrAllNode;
-            h.UseRazoring = _search.UseRazoring;
             h.UsePvWindowEarly = _search.UsePvWindowEarly;
             h.UseTtRule50Guard = _search.UseTtRule50Guard;
             h.NmpGateMargin = _search.NmpGateMargin;
@@ -1014,12 +1013,6 @@ public sealed class ChessEngine
     {
         get => _search.UseCutoffCountLmrAllNode;
         set => _search.UseCutoffCountLmrAllNode = value;
-    }
-
-    public bool UseRazoring
-    {
-        get => _search.UseRazoring;
-        set => _search.UseRazoring = value;
     }
 
     public bool UsePvWindowEarly

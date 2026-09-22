@@ -1095,8 +1095,6 @@ public sealed class UciLoop
             _engine.UseFailHighDampingQs = _options.FailHighDampingQs;
         if (changed == "CutoffCountLmrAllNode")
             _engine.UseCutoffCountLmrAllNode = _options.CutoffCountLmrAllNode;
-        if (changed == "Razoring")
-            _engine.UseRazoring = _options.Razoring;
         if (changed == "PvWindowEarly")
             _engine.UsePvWindowEarly = _options.PvWindowEarly;
         if (changed == "TtRule50Guard")

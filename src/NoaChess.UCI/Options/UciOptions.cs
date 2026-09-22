@@ -89,11 +89,10 @@ public sealed class UciOptions
     public bool ReducedFutility { get; private set; }
     public bool NmpEvalR { get; private set; } = true;
     public bool NmpBelowBetaGate { get; private set; }
-    public bool TtCutoffHistory { get; private set; }
+    public bool TtCutoffHistory { get; private set; } = true;
     public bool FailHighDamping { get; private set; }
     public bool FailHighDampingQs { get; private set; }
     public bool CutoffCountLmrAllNode { get; private set; }
-    public bool Razoring { get; private set; }
     public bool PvWindowEarly { get; private set; }
     public bool TtRule50Guard { get; private set; }
     public int NmpGateMargin { get; private set; } = 0;
@@ -274,11 +273,10 @@ public sealed class UciOptions
         output.WriteLine("option name ReducedFutility type check default false");
         output.WriteLine("option name NmpEvalR type check default true");
         output.WriteLine("option name NmpBelowBetaGate type check default false");
-        output.WriteLine("option name TtCutoffHistory type check default false");
+        output.WriteLine("option name TtCutoffHistory type check default true");
         output.WriteLine("option name FailHighDamping type check default false");
         output.WriteLine("option name FailHighDampingQs type check default false");
         output.WriteLine("option name CutoffCountLmrAllNode type check default false");
-        output.WriteLine("option name Razoring type check default false");
         output.WriteLine("option name PvWindowEarly type check default false");
         output.WriteLine("option name TtRule50Guard type check default false");
         output.WriteLine("option name NmpGateMargin type spin default 0 min 0 max 1000");
@@ -508,9 +506,6 @@ public sealed class UciOptions
             case "cutoffcountlmrallnode" when bool.TryParse(value, out bool ri8):
                 CutoffCountLmrAllNode = ri8;
                 return "CutoffCountLmrAllNode";
-            case "razoring" when bool.TryParse(value, out bool ri9):
-                Razoring = ri9;
-                return "Razoring";
             case "pvwindowearly" when bool.TryParse(value, out bool ri10):
                 PvWindowEarly = ri10;
                 return "PvWindowEarly";

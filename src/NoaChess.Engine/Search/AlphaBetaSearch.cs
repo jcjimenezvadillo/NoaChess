@@ -1700,8 +1700,12 @@ public sealed class AlphaBetaSearch
     // TtCutoffHistory, re-measured scaled: a quiet ttMove that fails high on
     // a non-PV TT cutoff earns about 0.56x of a searched cutoff's depth-squared
     // bonus, capped at depth 6 as the reference caps min(112 * depth, 695).
-    // The first form gave the full bonus with no cap and at PV windows too.
-    public bool UseTtCutoffHistory = false;
+    // The first form gave the full bonus with no cap and at PV windows too
+    // (+3.4 over 1,215, flat); the second added the reference's malus to the
+    // previous quiet move (-18.4 over 642, H0).
+    // ON since v5.9.16: fixed-node SPRT at 100,000 nodes against v5.9.14,
+    // +16.6 +/- 12.2, LLR +3.00, H1 over 1,300 games (2026-09-22).
+    public bool UseTtCutoffHistory = true;
     // FailHighDamping: a fail-high score is pulled toward beta before it is
     // stored and returned, (score * depth + beta) / (depth + 1), as the
     // reference damps its fail-soft maxima; every lower bound in our table
@@ -1717,11 +1721,6 @@ public sealed class AlphaBetaSearch
     // labels, and never reset the slot the root's children read.
     public bool UseCutoffCountLmrAllNode = false;
     private readonly int[] _stackCutoff = new int[MaxPly + 3];
-    // Razoring, corrected: on the TT-refined eval (as reverse futility and
-    // the reference use), with the depth-0 quiescence the search already uses
-    // (quiet checks included), and the reference's direct return of the full
-    // window's quiescence value. Margins 483/318 x0.48.
-    public bool UseRazoring = false;
     // PvWindowEarly: the PV/non-PV decision is taken from the window as the
     // node received it, before the upcoming-repetition raise or the
     // mate-distance clamp can narrow it (the reference's node type is a
@@ -3905,18 +3904,13 @@ public sealed class AlphaBetaSearch
         // the parent futility already cover what razoring would, and the
         // quiescence probe costs more than it saves here. Removed 2026-09-20.
         //
-        // Restored as a corrected option on 2026-09-21 (re-investigation):
-        // every shape measured compared the plain corrected eval where reverse
-        // futility and the reference use the TT-refined one, and called a
-        // quiescence without the first-ply quiet checks every other depth-0
-        // node gets; the verified shape was the OLD reference's, the current
-        // one returns the full window's quiescence value directly. Margins
-        // 483 + 318 * depth^2 x0.48, the scale of the only shape that read
-        // positive (+3.8 over 6,000).
-        if (UseRazoring && nonPv && !inCheck && excluded == Move.None
-            && Math.Abs(alpha) < TbScoreBound
-            && pruningEval < alpha - 232 - 153 * depth * depth)
-            return Quiescence(board, alpha, beta, ply, genChecks: UseNmpPackage || UseQsChecks);
+        // A fifth shape, restored on 2026-09-21 by the re-investigation,
+        // corrected every gap the four had: the TT-refined eval reverse
+        // futility and the reference use, the depth-0 quiescence with its
+        // first-ply quiet checks, and the current reference's direct return
+        // of the full window's quiescence value, margins 483 + 318 * depth^2
+        // x0.48. Measured -13.0 +/- 21.3 over 406 games (LLR -1.52) against
+        // v5.9.15 and removed again on 2026-09-22: the razoring line is closed.
 
         // ---- Reverse futility pruning (a.k.a. static null move) ----
         // If our static eval is so far above beta that even conceding a healthy
