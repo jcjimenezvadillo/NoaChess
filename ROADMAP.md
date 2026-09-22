@@ -62,14 +62,148 @@ taken with the `improving` flag half wrong (v5.9.11 entry in CHANGELOG). First v
 (the one item the deep analysis ties to "needs an accurate eval"): **H0, -27.6 +/- 20.6, LLR -2.96
 over 505 games, LOS 0.4%** - the gate alone forbids the below-beta null probes this search profits
 from, exactly what its +32.7% fixed-depth node count said. The rule for this campaign is that an H0
-is not the end of an item but the start of its second shape, so the next SPRT is the same gate used
-the way the reference uses it: to license the deep reduction (R = 7 + depth/3) at cut nodes that
-clear it, with the validated probe-everywhere entry kept for every other node. Then `RootStaticEval`
-(it changes what `improving` means at ply 2), `TtNoPvCutoff`, `CorrectionBlend`, then the options
-whose bats were prepared and never run. Verdicts land in the table below as they close. Larger open items that a
+is not the end of an item but the start of its second shape, so the second SPRT was the same gate
+used the way the reference uses it: to license the deep reduction (R = 7 + depth/3) at cut nodes
+that clear it, with the validated probe-everywhere entry kept for every other node (`NmpGateDeepR`).
+**A flat tie: 201-209-554, 0.496 over 964 games, LLR -1.27, cut by decision** - the licensed deep
+probe neither gains nor loses at 100,000 nodes. One shape of the family remains to be measured (the
+licence without the cut-node requirement); if that is flat too, the family is closed and the options
+come out. Reading the code of the other 2026-09-08 H0 items against the reference produced two
+fidelity gaps that are now options of their own: `CutoffCountLmrRef` (the counter two plies down as
+the reference keeps it, one per fail-high, a graded reduction of 264/1095/1138 in 1024ths instead of
+a whole ply at four - the coarse shape read -21.3) and `RazoringVerified` (the quiescence probe on a
+null window, its value returned only when it confirms the fail-low - the unverified shape read
++3.8 +/- 6.1 without closing). `RootStaticEval` (it changes what `improving` means at ply 2) came
+back **flat: -0.4 +/- 11.0, 0.498 over 1,670 games, LLR -1.71, cut by decision** - with the flag
+fixed, the root's own static eval on the stack changes nothing measurable. Two more fidelity gaps
+were closed before their first measurement rather than after: `CaptureFutility` pruned checking
+captures on the evaluation alone (the mate-hiding failure this project's notes record) and carried
+x0.48 margins where futility margins stay raw, and `FutilityFailSoft` raised a node's bound across a
+decisive score. `RazoringVerified` closed the razoring line: **H0, -8.2 +/- 13.0, LLR -2.97 over
+1,149 games (LOS 11%)**. Four shapes now - raw margins -27.3, scaled -19.1, scaled unverified
++3.8 without closing, verified -8.2 H0 - and none beats no razoring at all: reverse futility and
+the parent futility already cover what razoring would, and the quiescence probe costs more than it
+saves. Razoring leaves the campaign - and the engine: the rule for this campaign is that what
+measures worse after its shapes are exhausted is deleted from the code, not parked as an off option,
+so on 2026-09-20 the null-move eval gate (both shapes), the cutoff-count reduction (both shapes),
+`RootStaticEval` and razoring (both shapes) were removed, each leaving a short tombstone comment at
+its site. `CutoffCountLmrRef`, the reference's own shape
+of the cutoff-count reduction (counter two plies down, one per fail-high, graded 264/1095/1138 in
+1024ths): **H0, -33.4 +/- 22.5, LLR -2.95 over 397 games (LOS 0.2%)** - worse than the coarse shape
+that read -21.3, so the faithful port loses more, not less. The idea leaves the campaign with both
+options off: on this engine's softer reduction curve, a node's siblings cutting off is not a reason
+to reduce its remaining moves. `TtNoPvCutoff` (the reference never cuts at PV nodes; +0.16% nodes)
+ran twice on the same binary and did not close either way: pooled **+6.4 +/- 8.2 over 2,920 games,
+0.509, LLR +0.83 (28% of the way to H1), LOS 94%**, the second run alone 0.507 and flat against the
+midpoint. A slow positive, not a verdict: it stays off on its own and goes into the end-of-campaign
+package measurement with whatever else measures positive. The second read of the transposition
+cutoff against the reference found three gaps and, on the way, one port written backwards:
+`TtCutoffDepthRelax` let a fail-low entry cut one ply shallower, while the reference's test
+(ttData.depth > depth - (value <= beta)) against a base that already cuts at the current depth
+TIGHTENS the fail-high side to depth + 1; renamed `TtCutoffFailHighDeeper` and corrected before it
+ran. The same read fixed two queued options before their first measurement: `CorrectionBlend` read
+the reference's correction weights, which are read weights over gravity accumulators, onto tables
+that store residual means, so five tables agreeing on one residual would have returned it 4.5 times
+over (the validated set returns 2.25); the secondaries now share the set's own 5/4 budget in the
+reference's proportions. `HistoryPrune` compared 2 x butterfly + continuation with -500 per ply,
+a butterfly test in all but name; the reference's test reads the continuation tables only, and its
+bar was MEASURED here (a new histstats arm samples the value per ply at the pruning site: over 4.2M
+late quiets at depth 11, 19% negative, p5 -21, p2 -49) rather than scaled: 20 per ply prunes the
+worst 5%. The pruning ladder, twice H0 with the reference's constants in the reference's units on
+this engine's values (SEE margins twice ours, a continuation bar no entry here reaches, a divisor
+that moved the reduced depth by nothing), gets a third form with every unit converted.
+`TtCutoffHistory`, first form (the bonus half: a quiet transposition move that fails high on the
+cutoff earns the butterfly and continuation bonus a searched cutoff earns): **flat, +3.4 +/- 12.2,
+0.505 over 1,215 games, LLR -0.40, cut by decision at the 1,200-game screen**. The second form adds
+the reference's other half, a continuation malus to the previous ply's quiet move when it was among
+its parent's first four (the stack now records the move count). `TtCutoffNodeType` (at depth 4 and
+below the cutoff is taken only when the node type agrees with the bound's direction): **flat with the
+sign against it, -1.7 +/- 12.7, 0.498 over 1,202 games, LLR -1.58, cut by decision at the screen**;
+a one-condition port with no second logic to try, so it leaves the engine when the family closes.
+`TtCutoffFailHighDeeper` (a fail-high entry must be one ply deeper than the node to cut it): **flat,
++0.3 +/- 12.7, 0.500 over 1,214 games, LLR -1.12, cut by decision at the screen**; the same verdict
+and the same fate. `TtCutoffHistory` second form (the bonus plus the reference's continuation malus
+to the previous ply's quiet move when it was among its parent's first four): **H0, -18.4 +/- 17.5,
+LLR -2.95 over 642 games (LOS 2%)** - the malus half hurts outright. The transposition-cutoff family
+is closed: of the four refinements only `TtNoPvCutoff` carries a positive sign, and on 2026-09-21
+the other three (`TtCutoffFailHighDeeper`, `TtCutoffNodeType`, `TtCutoffHistory` with its malus
+half) were removed from the engine with a tombstone at the cutoff site; the cutoff itself was never
+the problem. `CaptureFutility` in its reformed shape (raw margins 234 + 247 per ply plus the
+victim and the capture history, checking captures exempt, full depth in the margin): **flat with the
+sign against it, -1.7 +/- 12.3, 0.497 over 1,202 games, LLR -1.73, cut at the screen**. Second
+form queued: the reference's REDUCED depth in the margin and its lmrDepth < 8 gate (the full depth
+only widens the margin, so the first form pruned less than the reference does). `CheckExemptFutility`
+(a quiet that gives direct check is not futility-pruned; +16.9% nodes): **-5.7 +/- 12.2, 0.492 over
+1,220 games, LLR -2.77, 94% of the way to H0, cut at the screen** - the tactics it keeps do not pay
+for the nodes it spends. Second form queued: the reference's own treatment, where a checking quiet
+skips futility but must still pass SEE against the capture margin, so a check that hangs material
+is pruned after all. `CorrectionBlend` (the reference's key set and relative weights on the set's
+own budget) read +4.9 at 1,214 games and settled **flat: +1.6 +/- 9.6, 0.502 over 2,014 games, LLR
+-1.46, cut by decision**. Its other conceivable form, the reference's write-side rates, is the same
+change in disguise on tables that store residual means (scaling what a table learns is scaling what
+it returns), so the line is closed: the validated set's weighting is not improved by the reference's,
+and the option, its two context tables and the per-node context keys left the engine on 2026-09-21.
+`HistoryPrune` rewritten (continuation table only, bar measured at the site: 20 per ply, the
+worst 5% of late quiets): **flat, -1.8 +/- 12.5, 0.497 over 1,184 games, LLR -1.66, cut at the
+screen**. `FutilityFailSoft` alone: **+7.8 +/- 9.2, 0.511 over 2,286 games, LLR +1.26, positive
+and unconcluded**; its lane was released because the option rides in the package below.
+
+**A second sweep of the whole search against the reference (2026-09-21)**, five readers by region
+and a verifier that re-opened every claim, found eight real defects. Four touch the shipping path:
+the reduction that reached a node was never cleared, so the full-depth re-search after a reduced
+probe, the PV re-search and the null-move verification all re-applied the hindsight depth
+adjustment (`HindsightReset`); the shallow pruning had neither of the reference's guards, so once
+the first move came back mated the rest could be pruned on the eval and the node reported a mate
+its pruned moves might have escaped (`PruneLossGuard`, `PruneNpmGuard`); moving the quiet block in
+front of the losing captures swapped two ranges of different length and reversed the captures
+(`LosingCaptureOrder`, now covered by a test); the small ProbCut refused Exact entries
+(`SmallProbCutExact`). Four did not touch it and were fixed in place, node-identical at the default
+settings: the upcoming-repetition guard compared alpha with zero instead of the contempt draw value;
+reverse futility and the transposition-score refine let tablebase-band scores through; the cutNode
+labels of the first child and of the unreduced scout differed from the reference (nothing reads
+them by default, but every cutNode experiment ran on them); and the pruning ladder's
+127-if-no-best-move term could never fire, because this engine's best move records the best TRIED
+move - the ladder's running SPRT was stopped and kept. A second, adversarial review of those
+implementations before measurement found three more slips, all fixed. With every option off the
+tree searches exactly the nodes of v5.9.11 (60 positions, depth 11, 4,731,908 nodes, same moves).
+`HindsightReset`: **flat, -2.3 +/- 12.6, 0.497 over 1,068 games, LLR -1.75, cut at the screen** -
+re-applying the adjustment on re-searches was harmless; the second form pairs the reset with the
+reference's own thresholds, which this engine's hindsight shape never used.
+The package (`TtNoPvCutoff` + `FutilityFailSoft`) read +12.4 at 1,202 games and settled at **+5.3
++/- 9.3 over 2,249 (LLR +0.12)**: the two do not add, and it was cut as a slow positive.
+`ImprovingAboveBeta` (improving |= eval >= beta after the null move): **+5.5 +/- 12.5 over 1,205,
+LLR +0.12**, the same kind of slow positive. Both go into the end-of-campaign package.
+`CorrectionGravity` (the correction tables integrate with the reference's gravity rule instead of
+tracking the post-correction residual, so a shared bias is corrected almost fully): **H0, -9.6 +/-
+13.8, LLR -2.95 over 1,082 games** - correcting more fully costs Elo here. The third form goes the
+other way: the residual tracker kept, its per-update weight capped at 64/256 so one deep result can
+no longer swing a structure by up to 288 cp (`CorrectionWeightCap`, -4.3% bench nodes). The
+fidelity bundle (`PruneLossGuard`, `PruneNpmGuard`, `LosingCaptureOrder`, `SmallProbCutExact`
+together): **H0, -3.8 +/- 10.1, LLR -3.31 over 1,729** - four real defects fixed at once cost a
+little; the prime suspect is the pawn-endgame guard, which switches all shallow pruning off in king
+and pawn positions, so the bundle is re-run without it.
+**`GoodCaptureSlack` closed H1: +10.2 +/- 8.2, LLR +2.96 over 3,043 games, and ships ON in
+v5.9.12** - the campaign's first H1, and it came from the move ordering, not from pruning.
+Running: `NmpEvalR` and `LmpCountsPruned`; queued `CorrectionWeightCap`, the fidelity bundle without
+the pawn-endgame guard, and the rest of the re-investigation's retries. Queued behind them: the second hindsight
+form, the four fidelity fixes as one bundle, the ladder with its term restored, the quiescence
+evasion pruning (in its second shape, which exempts the answers to this engine's own first-ply
+quiet checks: the reference's quiescence generates none, and pruning them raised the bench's
+nodes by 11.2% against 0.3%), `CutNodeLmr` on the corrected labels, the second forms of
+`CaptureFutility` and `CheckExemptFutility`, and the two quiescence correction keys. Verdicts land
+in the table below as they close. Larger open items that a
 fixed-node SPRT cannot judge: the PSQT-head retry on the fqco592 recipe (a GPU run, explicitly open
-in the deep analysis), Syzygy WDL relabelling in the datagen (never wired), `TimeScale` and the
-ponder options (need a clock match on a quiet box).
+in the deep analysis - and, read in the code on 2026-09-20, not a launch away: the trainer and the
+exporter both refuse a psqt head together with the coarse threat lane every champion since fqcoarse
+carries, so the retry first needs psqt+coarse support end to end, trainer to engine; an abandoned
+from-scratch attempt without the lane, `fqpsqt2`, sits at 15 of 60 epochs from 2026-09-05),
+`TimeScale` and the ponder options (need a clock match on a quiet box). Syzygy
+WDL relabelling in the datagen, "still not wired" on the deep analysis page since v3.0.0, is wired
+as of 2026-09-19: `NoaChess.DataGen --tb-path <dirs>` labels every recorded position inside the
+tablebase range with the exact outcome under best play instead of the game's eventual result (the
+search probes the same tables, so the score label in that range is the deployed engine's), off
+unless the path is given, count and setting in every shard manifest. datascale5 was already running
+on the previous build, so the first corpus to carry it is the next one.
 
 **Retired on 2026-07-31:** further self-play generations at 13 M positions, lambda sweeps, NNUE
 eval-scale recalibration (measured -61.7), and the competition opening book (deferred to v4.9.0).
@@ -80,6 +214,7 @@ eval-scale recalibration (measured -61.7), and the competition opening book (def
 
 | Version | CCRL Elo | Status |
 |---------|----------|--------|
+| **5.9.12** | **SHIPPED 2026-09-22: good captures served as good captures.** The staged move picker split captures by the sign of their static exchange and served every negative one after all the quiet moves, killers included; a pawn-defended BxN is SEE -10 here (knight 320, bishop 330), so one of the most common refutations waited for the whole quiet list. The reference splits at SEE >= -captureScore / 18 (seven times the victim plus the capture history); our capture score and SEE are both about 0.4x the reference's, so the ratio carries over. `GoodCaptureSlack` ON, staged main loop only: **fixed-node SPRT at 100,000 nodes against v5.9.11, +10.2 +/- 8.2, LLR +2.96, H1 over 3,043 games (LOS 99.3%)**, bench -0.9% nodes at depth 11. Everything else is node-identical to v5.9.11 at the shipping settings (60 positions at depth 11, 4,731,908 nodes, the same move in every one; tablebase tests green): the record of two sweeps of the search against the reference and of a re-investigation of every option discarded on 2026-09-20/21 - eight real defects found, four on the shipping path, all behind switches for measurement or fixed where nothing reads them by default; the families whose shapes were exhausted deleted with tombstones; the null move priced by eval band (below beta it cuts 0.4-1% for 1-3 nodes, above it 28-55%). Datagen `--tb-path` relabels covered positions with the proven WDL and the label-book ETA counts the lines consumed. CI node-count reference regenerated (stale since v5.3.0). 461 tests. | shipped |
 | **5.9.11** | **SHIPPED 2026-09-18: five audit findings verified in the code, root diversity for the datagen, a per-source weight for the trainer.** The `improving` flag was corrupt at every ply-2 node: with `RootStaticEval` off (the shipping default) `_stackEval[0]` was never written, so it held 0 instead of the `NoEval` sentinel and every node one move into the tree compared its eval against zero - a positive eval read as improving, a negative one as not - in RFP, LMP, LMR, null move and ProbCut. Fixed with an explicit `NoEval`. The v5.9.5 sustainability guard now also covers the movestogo branch (two to four mean shares of the moves to go); the opponent's clock is corrected for the pondered time after a ponderhit at both `ParseLimits` call sites; a stale `ClockDeficitBrake` comment; `clip_weights()` now clamps `threat_ft`/`coarse_ft` too (same int16 accumulator, the coarse lane is live). `FindBestMove` accepts excluded root moves and the datagen samples the PLAYED move among the top candidates within a margin (`--diversify-prob/-topk/-margin/-maxply`, off by default, label unchanged) - verified to diverge on a paired same-seed run. `train_nnue.py --reweight`. **SPRT vs v5.9.10 at 60+1 with ponder: 2-0-16 in 18 games, 0.556, cut by decision - not a verdict.** Every fixed-node measurement before this build was taken with the flag half wrong; the off-by-default options are being re-measured against it (see above). 459 tests. | shipped |
 | **5.9.10** | **SHIPPED 2026-09-17: fqco592 is the embedded net.** fqcohuman3's exact recipe (every hyperparameter from `dump_args.py` on the champion checkpoint: 7 epochs, batch 16384, lr 4.287769e-05, lambda 0.735 to 0.7, reference loss, factorized, coarse, QAT at QA 255, 120M records per epoch), warm-started from fqcohuman3's `.partial`. Only the data moved: datascale2 (924M) + datascale4 (298,082,565 positions at 6,000 nodes, teacher v5.9.2 with fqcohuman3, audited: evaluator consistent per arm, 43.3/35.2/20.1/1.4 bulk/mid/open/hard, W/D/L 28.5/42.7/28.8) + selfplay-gen8. **Against fqcohuman3 in the same binary via `EvalFile` at 60+1 with ponder: 13-13-81, 0.500 over 107 games, cut by decision - not a verdict.** Ships because the wheel labels each corpus with the best net available when it starts, and datascale5 is labelled by this one. 456 tests. | shipped |
 | **5.9.9** | **SHIPPED 2026-09-17: the clock-lead cap was 2x, and a real game had 9x to 15x.** Lichess FJW7GJCP: nine to fifteen times the opponent's clock and still moving at the pace of an even game, because `ClockLead` capped the clock ratio at 2.0. Cap raised to 6.0. **At 600+5 with ponder, the regime where a lead exists: 4-4-39, 0.500 over 47 games, cut by decision; at 60+1: 0-4-11 in 15 games, too few to read.** Shipped on the game record and the code, as v5.9.5 was. 456 tests. | shipped |

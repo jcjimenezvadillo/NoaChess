@@ -1,5 +1,51 @@
 # CHANGELOG
 
+## 2026-09-22 (v5.9.12) - good captures served as good captures, and two sweeps of the whole search against the reference
+
+**A defended bishop-takes-knight was served after every quiet move.** The move picker split the
+captures by the sign of their static exchange: SEE >= 0 up front, everything else behind every quiet
+move, killers included. A pawn-defended BxN is SEE -10 here (knight 320, bishop 330), so one of the
+most common refutations in chess waited until the whole quiet list had been tried. The reference
+splits at SEE >= -captureScore / 18, where the capture score is seven times the victim plus the
+capture history; this engine's capture score and SEE are both about 0.4x the reference's, so the
+ratio carries over unchanged. `GoodCaptureSlack` ON: fixed-node SPRT at 100,000 nodes against
+v5.9.11, **+10.2 +/- 8.2 Elo, LLR +2.96, H1 over 3,043 games (LOS 99.3%)**. Staged main loop only; the root ordering and the quiescence evasions keep
+the plain split. Bench -0.9% nodes at depth 11.
+
+**Everything else in this release is node-identical to v5.9.11 at the shipping settings**, verified
+on 60 positions at depth 11 (4,731,908 nodes, the same move in every one) and by the tablebase tests.
+It is the record of two sweeps of the search against the reference and of a re-investigation of
+every option measured and discarded on 2026-09-20/21, each reading re-verified against the code that
+was actually measured:
+
+- **Eight real defects found**, four of them on the shipping path, all now behind switches for
+  measurement: the reduction that reached a node was never cleared, so re-searches re-applied the
+  hindsight depth adjustment (`HindsightReset`, measured flat); the shallow pruning had neither of the
+  reference's guards against pruning after the first move came back mated or in pawn-only positions
+  (`PruneLossGuard`, `PruneNpmGuard`); moving the quiet block in front of the losing captures reversed
+  them (`LosingCaptureOrder`, now pinned by a test); the small ProbCut refused Exact entries
+  (`SmallProbCutExact`). Fixed in place: the upcoming-repetition guard compared alpha with zero rather
+  than the contempt draw value (identical at contempt 0), and the cutNode labels of the first child,
+  the unreduced scout and the null-move verification differed from the reference (nothing reads them
+  at the shipping settings; every cutNode experiment had run on them).
+- **Deleted after their shapes were exhausted**, each with a tombstone at its site: the null-move
+  eval gate in both shapes, the cutoff-count reduction in both shapes, the root static eval, razoring
+  in its verified shape, three transposition-cutoff refinements, and the reference's correction blend.
+- **The re-investigation's verdicts** and the options it produced (LmpCountsPruned, ReducedFutility,
+  NmpEvalR, NmpBelowBetaGate, CorrectionGravity, FailHighDamping, and the corrected forms of
+  CaptureFutility, CheckExemptFutility, TtCutoffNodeType, TtCutoffHistory, CutoffCountLmrAllNode and
+  razoring) are in the ROADMAP, with the null-move payoff measured for the first time by eval band:
+  below beta the probe cuts 0.4-1% of the time for 1-3 nodes, above beta it cuts 28-55%, which is
+  why the null-move eval gate lost 27.6.
+
+**Datagen.** `--tb-path` relabels the game result of every position the Syzygy tables cover with
+the proven WDL, and the label-book ETA now counts the book lines consumed: it used to subtract only
+the labelled ones, so the elite pass finished its whole book (16,694,548 labelled plus 5,785,663
+filtered) while still reporting 1,452 minutes to go.
+
+**CI.** The node-count reference had not been regenerated since v5.3.0 (258,577 against the 133,561
+every build since has produced); regenerated on this release's binary, classical path.
+
 ## 2026-09-18 (v5.9.11) - five audit findings verified in the code, root diversity for the datagen, a per-source weight for the trainer
 
 **The improving flag was corrupt at every ply-2 node.** `improving` compares the static eval at the
