@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.14";
+    public const string Version = "5.9.15";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -367,7 +367,6 @@ public sealed class ChessEngine
             h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
             h.UseHistoryPrune = _search.UseHistoryPrune;
             h.HistoryPruneScale = _search.HistoryPruneScale;
-            h.UseHindsightReset = _search.UseHindsightReset;
             h.UsePruneLossGuard = _search.UsePruneLossGuard;
             h.UseLosingCaptureOrder = _search.UseLosingCaptureOrder;
             h.UseSmallProbCutExact = _search.UseSmallProbCutExact;
@@ -377,10 +376,8 @@ public sealed class ChessEngine
             h.UseQsEvasionPruneExemptQsChecks = _search.UseQsEvasionPruneExemptQsChecks;
             h.UseHistoryPruneCounts = _search.UseHistoryPruneCounts;
             h.UseReducedFutility = _search.UseReducedFutility;
-            h.UseReducedFutilityUnclamped = _search.UseReducedFutilityUnclamped;
             h.UseNmpEvalR = _search.UseNmpEvalR;
             h.UseNmpBelowBetaGate = _search.UseNmpBelowBetaGate;
-            h.UseTtCutoffNodeType = _search.UseTtCutoffNodeType;
             h.UseTtCutoffHistory = _search.UseTtCutoffHistory;
             h.UseFailHighDamping = _search.UseFailHighDamping;
             h.UseFailHighDampingQs = _search.UseFailHighDampingQs;
@@ -395,7 +392,6 @@ public sealed class ChessEngine
             h.UseLmpAllDepths = _search.UseLmpAllDepths;
             h.UseQuietSeePrune = _search.UseQuietSeePrune;
             h.UsePriorFailLowBonus = _search.UsePriorFailLowBonus;
-            h.UseLmrDeeperResearch = _search.UseLmrDeeperResearch;
             h.UseRfpTtMoveGuard = _search.UseRfpTtMoveGuard;
             h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
             h.UseDrawRandom = _search.UseDrawRandom;
@@ -928,12 +924,6 @@ public sealed class ChessEngine
         set => _search.HistoryPruneScale = value;
     }
 
-    public bool UseHindsightReset
-    {
-        get => _search.UseHindsightReset;
-        set => _search.UseHindsightReset = value;
-    }
-
 
     public bool UsePruneLossGuard
     {
@@ -990,12 +980,6 @@ public sealed class ChessEngine
         set => _search.UseReducedFutility = value;
     }
 
-    public bool UseReducedFutilityUnclamped
-    {
-        get => _search.UseReducedFutilityUnclamped;
-        set => _search.UseReducedFutilityUnclamped = value;
-    }
-
     public bool UseNmpEvalR
     {
         get => _search.UseNmpEvalR;
@@ -1006,12 +990,6 @@ public sealed class ChessEngine
     {
         get => _search.UseNmpBelowBetaGate;
         set => _search.UseNmpBelowBetaGate = value;
-    }
-
-    public bool UseTtCutoffNodeType
-    {
-        get => _search.UseTtCutoffNodeType;
-        set => _search.UseTtCutoffNodeType = value;
     }
 
     public bool UseTtCutoffHistory
@@ -1097,11 +1075,6 @@ public sealed class ChessEngine
     {
         get => _search.UsePriorFailLowBonus;
         set => _search.UsePriorFailLowBonus = value;
-    }
-    public bool UseLmrDeeperResearch
-    {
-        get => _search.UseLmrDeeperResearch;
-        set => _search.UseLmrDeeperResearch = value;
     }
     public bool UseRfpTtMoveGuard
     {

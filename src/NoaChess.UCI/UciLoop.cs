@@ -1065,8 +1065,6 @@ public sealed class UciLoop
             _engine.UseHistoryPrune = _options.HistoryPrune;
         if (changed == "HistoryPruneScale")
             _engine.HistoryPruneScale = _options.HistoryPruneScale;
-        if (changed == "HindsightReset")
-            _engine.UseHindsightReset = _options.HindsightReset;
         if (changed == "PruneLossGuard")
             _engine.UsePruneLossGuard = _options.PruneLossGuard;
         if (changed == "LosingCaptureOrder")
@@ -1085,14 +1083,10 @@ public sealed class UciLoop
             _engine.UseHistoryPruneCounts = _options.HistoryPruneCounts;
         if (changed == "ReducedFutility")
             _engine.UseReducedFutility = _options.ReducedFutility;
-        if (changed == "ReducedFutilityUnclamped")
-            _engine.UseReducedFutilityUnclamped = _options.ReducedFutilityUnclamped;
         if (changed == "NmpEvalR")
             _engine.UseNmpEvalR = _options.NmpEvalR;
         if (changed == "NmpBelowBetaGate")
             _engine.UseNmpBelowBetaGate = _options.NmpBelowBetaGate;
-        if (changed == "TtCutoffNodeType")
-            _engine.UseTtCutoffNodeType = _options.TtCutoffNodeType;
         if (changed == "TtCutoffHistory")
             _engine.UseTtCutoffHistory = _options.TtCutoffHistory;
         if (changed == "FailHighDamping")
@@ -1120,8 +1114,6 @@ public sealed class UciLoop
             _engine.UseLmpAllDepths = _options.LmpAllDepths;
         if (changed == "PriorFailLowBonus")
             _engine.UsePriorFailLowBonus = _options.PriorFailLowBonus;
-        if (changed == "LmrDeeperResearch")
-            _engine.UseLmrDeeperResearch = _options.LmrDeeperResearch;
         if (changed == "RfpTtMoveGuard")
             _engine.UseRfpTtMoveGuard = _options.RfpTtMoveGuard;
         if (changed == "LmpCountAllMoves")

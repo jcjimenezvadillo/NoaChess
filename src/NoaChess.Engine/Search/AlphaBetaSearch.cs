@@ -562,8 +562,6 @@ public sealed class AlphaBetaSearch
     private long _stMain, _stQs, _stTtHit, _stTtCut, _stTtServed, _stNullTry, _stNullCut,
                  _stCut, _stCutFirst, _stCutTt, _stFutility, _stLmp, _stSeePrune, _stLmr, _stLmrResearch,
                  _stLoop, _stLmrReduced, _stIir;
-    // TtCutoffNodeType refusals: [cutNode ? 2 : 0] + [fail-high ? 1 : 0].
-    private readonly long[] _stTtNodeTypeRefused = new long[4];
 
     // Share of the last completed root iteration spent on the move it chose.
     // Near 1.0 when every alternative was refuted at once, which is what a
@@ -1338,8 +1336,10 @@ public sealed class AlphaBetaSearch
     // seen and stay prunable, as before. Off until measured at fixed nodes.
     // First form (every direct check exempt at depth <= 4) measured
     // 2026-09-21: -5.7 +/- 12.2 over 1,220 games, LLR -2.77, +16.9% nodes.
-    // Now the bounded form: depth <= 2 and SEE >= 0 (see the site).
-    public bool UseCheckExemptFutility = false;
+    // ON since v5.9.15 in the bounded form, depth <= 2 and SEE >= 0 (see the
+    // site): fixed-node SPRT at 100,000 nodes against v5.9.13, +13.0 +/- 10.2,
+    // LLR +2.97, H1 over 1,839 games (2026-09-22).
+    public bool UseCheckExemptFutility = true;
 
     // Clamp the window to the mate scores this ply can still produce (audit
     // find, 2026-09-06). This engine had never had the reference's step 3: a
@@ -1474,11 +1474,7 @@ public sealed class AlphaBetaSearch
     // how far below the static eval the node landed; the move-count and the
     // grandparent terms are dropped (no cheap source here).
     public bool UsePriorFailLowBonus = false;
-    // LmrDeeperResearch: after a reduced probe beats alpha, the full-depth
-    // re-search goes one ply deeper when the probe beat the best score by a
-    // margin and one ply shallower when it barely did (reference step 17,
-    // doDeeperSearch / doShallowerSearch, 53 and 8 in its units, x0.48).
-    public bool UseLmrDeeperResearch = false;
+    // LmrDeeperResearch: removed, see the HindsightReset tombstone below.
     // RfpTtMoveGuard: reverse futility only when the table holds no move or a
     // capturing one (reference step 8: !ttData.move || ttCapture).
     public bool UseRfpTtMoveGuard = false;
@@ -1595,19 +1591,19 @@ public sealed class AlphaBetaSearch
     //      against the reference on disk). Each finding is behind its own
     //      switch, off, because every one of them changes node counts. ----
     //
-    // HindsightReset: the reduction that reached a node is read by the
-    // hindsight depth adjustment and was never cleared, so the full-depth
-    // re-search after a reduced probe, the PV re-search and the null-move
-    // verification (same ply) all read the probe's reduction again and moved
-    // their depth by the same ply once more. The reference zeroes the slot on
-    // child entry and right after the reduced search.
-    // Measured alone 2026-09-21: flat, -2.3 +/- 12.6 over 1,068 games. Its
-    // second form is the reference's CONFIGURATION: the reset together with
-    // the deeper/shallower re-search (LmrDeeperResearch), which was only ever
-    // measured on the stale slot and the broken ply-2 improving flag. The
-    // reference's own hindsight thresholds were rejected in review before
-    // measurement: they drop the -1 branch the +17.0 H1 relies on.
-    public bool UseHindsightReset = false;
+    // No HindsightReset and no LmrDeeperResearch. The reduction that reached
+    // a node is read by the hindsight depth adjustment and is never cleared,
+    // so the full-depth re-search after a reduced probe, the PV re-search and
+    // the null-move verification read the probe's reduction again; the
+    // reference zeroes the slot on child entry and right after the reduced
+    // search. The deeper/shallower re-search (reference step 17, 53 and 8 in
+    // its units, x0.48) is the other half of that configuration. Measured at
+    // 100,000 fixed nodes and removed 2026-09-22: the deeper re-search alone
+    // H0, -4.4 +/- 10.9 over 1,744 games; the reset alone -3.0 +/- 13.3 over
+    // 1,073 (LLR -1.73); the two together, on the corrected improving flag,
+    // -4.7 +/- 13.3 over 1,108 (LLR -2.12). This engine's +17.0 hindsight
+    // rule was tuned on the stale slot, and reading the reduction again is
+    // part of what it measures.
     // PruneLossGuard: the reference enters its shallow pruning only while the
     // node's best score is not already a loss (!is_loss(bestValue)). Without
     // it, once the first move comes back mated the remaining moves could be
@@ -1672,7 +1668,10 @@ public sealed class AlphaBetaSearch
     // searched at, with its history, the reference's raw constants; the one
     // valuable rung of the pruning ladder, measured alone (see the site).
     public bool UseReducedFutility = false;
-    public bool UseReducedFutilityUnclamped = false;
+    // Its second arm, the reference's own form with no depth gate and no
+    // floor on the reduced depth (ReducedFutilityUnclamped), measured -1.7
+    // +/- 12.6 over 1,203 games (LLR -1.62) against the first arm's +4.8 over
+    // 1,180, and was removed 2026-09-22.
     // NmpEvalR: the null reduction grows with how far the refined eval sits
     // above beta, min((eval - beta) / 81, 3) extra plies (168 x0.48 per ply,
     // capped because verification only exists from depth 14). The measured
@@ -1691,11 +1690,13 @@ public sealed class AlphaBetaSearch
     // BELOW beta, the one the tombstone claims pays, so the claim is tested.
     public bool UseNmpBelowBetaGate = false;
     public int NmpGateMargin = 0;
-    // TtCutoffNodeType, re-measured: at depth <= 4, non-PV only (the reference
-    // keeps it under !PvNode), cut only when the node type agrees with the
-    // bound's direction. The first measurement ran on the wrong cutNode
-    // labels and also refused every shallow fail-high cut at PV windows.
-    public bool UseTtCutoffNodeType = false;
+    // No TtCutoffNodeType (a shallow TT cutoff taken only when the node type
+    // agrees with the bound's direction, the reference's cutNode test).
+    // Measured twice at 100,000 fixed nodes and removed 2026-09-22: on the
+    // old cutNode labels and at PV windows too, -2.0 +/- 13.4 over 1,206
+    // games; on the corrected labels, depth <= 4 and non-PV only as the
+    // reference keeps it, -6.6 +/- 14.7 over 923 (LLR -2.05). The cuts it
+    // refuses are worth more here than the re-searches they would save.
     // TtCutoffHistory, re-measured scaled: a quiet ttMove that fails high on
     // a non-PV TT cutoff earns about 0.56x of a searched cutoff's depth-squared
     // bonus, capped at depth 6 as the reference caps min(112 * depth, 695).
@@ -1946,8 +1947,6 @@ public sealed class AlphaBetaSearch
             _stMain = _stQs = _stTtHit = _stTtCut = _stTtServed = _stNullTry = _stNullCut
                 = _stCut = _stCutFirst = _stCutTt = _stFutility = _stLmp = _stSeePrune = _stLmr = _stLmrResearch
                 = _stLoop = _stLmrReduced = _stIir = 0;
-        if (SearchStats)
-            Array.Clear(_stTtNodeTypeRefused);
         _rootInTb = false;
         _rootLostInTb = false;
         _rootTbResolved = false;
@@ -2408,8 +2407,7 @@ public sealed class AlphaBetaSearch
                   + $" cuts={_stCut} firstMoveCut={(double)_stCutFirst / Math.Max(1, _stCut):F3}"
                   + $" ttMoveCut={(double)_stCutTt / Math.Max(1, _stCut):F3}"
                   + $" lmr={_stLmr} lmrReduced={_stLmrReduced} lmrResearch={(double)_stLmrResearch / Math.Max(1, _stLmrReduced):F3}"
-                  + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}"
-                  + $" ttNodeTypeRefused(all:fl,fh cut:fl,fh)={_stTtNodeTypeRefused[0]},{_stTtNodeTypeRefused[1]},{_stTtNodeTypeRefused[2]},{_stTtNodeTypeRefused[3]}");
+                  + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}");
             lastReportedMove = bestMove;
             lastReportedDepth = depth;
 
@@ -3544,16 +3542,8 @@ public sealed class AlphaBetaSearch
             return _evaluator.Evaluate(board) + OptimismTerm(board);
 
         // The reduction that reached this node, read once for the hindsight
-        // depth adjustment. With HindsightReset it is also cleared, as the
-        // reference clears (ss-1)->reduction on entry, so a re-search or a
-        // null-move verification of this same move does not apply it again.
-        int priorReduction = 0;
-        if (ply > 0)
-        {
-            priorReduction = _stackReduction[ply - 1];
-            if (UseHindsightReset)
-                _stackReduction[ply - 1] = 0;
-        }
+        // depth adjustment (never cleared: see the HindsightReset tombstone).
+        int priorReduction = ply > 0 ? _stackReduction[ply - 1] : 0;
 
         // The window as this node received it (PvWindowEarly), before the
         // draw-rule and mate-distance adjustments below can narrow it.
@@ -3680,12 +3670,6 @@ public sealed class AlphaBetaSearch
                 bool cut = entry.Bound == BoundType.Exact
                         || (entry.Bound == BoundType.LowerBound && score >= beta)
                         || (entry.Bound == BoundType.UpperBound && score <= alpha);
-                if (cut && UseTtCutoffNodeType && !pvWindow && depth <= 4
-                    && cutNode != (score >= beta))
-                {
-                    cut = false;
-                    if (SearchStats) _stTtNodeTypeRefused[(cutNode ? 2 : 0) + (score >= beta ? 1 : 0)]++;
-                }
                 if (cut)
                 {
                     if (SearchStats) _stTtCut++;
@@ -4657,15 +4641,9 @@ public sealed class AlphaBetaSearch
                     int fR = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)]
                              + LmrScale + (improving ? 0 : LmrScale) + (ttCapture ? 1079 : 0);
                     int fLmrDepth = depth - 1 - fR / LmrScale + fHist / 1024;
-                    futilityValue = staticEval + 166
-                                    + 119 * (UseReducedFutilityUnclamped ? fLmrDepth : Math.Max(fLmrDepth, -1))
+                    futilityValue = staticEval + 166 + 119 * Math.Max(fLmrDepth, -1)
                                     + 90 * (staticEval > alpha ? 1 : 0);
-                    // Second arm (ReducedFutilityUnclamped, 2026-09-22, after the
-                    // first read +3.8 over 1,180): the reference's own form, no
-                    // depth gate and no floor on the reduced depth - lmrDepth < 12
-                    // is its only bound, and a badly reputed move prunes harder.
-                    futile = (UseReducedFutilityUnclamped || depth <= 8)
-                             && fLmrDepth < 12 && futilityValue <= alpha;
+                    futile = depth <= 8 && fLmrDepth < 12 && futilityValue <= alpha;
                 }
                 else
                 {
@@ -5003,37 +4981,19 @@ public sealed class AlphaBetaSearch
                                  ply + 1, allowNull: true,
                                  cutNode: reduction > 0 || depth >= 2 || !cutNode);
 
-                // HindsightReset: the probe's reduction must not be read again
-                // by the re-searches below (reference: ss->reduction = 0 right
-                // after the reduced search).
-                if (UseHindsightReset)
-                    _stackReduction[ply] = 0;
-
                 // The reduced probe beat alpha: verify at full depth first
                 // (reference re-search flips the parent's node type).
-                int researchDepth = newDepth;
                 if (score > alpha && reduction > 0 && !_stopped)
                 {
                     if (SearchStats) _stLmrResearch++;
-                    // LmrDeeperResearch: a probe that beat the best score by
-                    // a margin earns one ply more at full depth, one that
-                    // barely beat it one ply less (and no re-search at all
-                    // when that lands on the reduced depth). Margins are the
-                    // reference's 53 and 8 at x0.48.
-                    if (UseLmrDeeperResearch)
-                    {
-                        if (score > bestScore + 25) researchDepth++;
-                        else if (score < bestScore + 4) researchDepth--;
-                    }
-                    if (researchDepth > newDepth - reduction)
-                        score = -Negamax(board, researchDepth, -alpha - 1, -alpha,
-                                         ply + 1, allowNull: true, cutNode: !cutNode);
+                    score = -Negamax(board, newDepth, -alpha - 1, -alpha,
+                                     ply + 1, allowNull: true, cutNode: !cutNode);
                 }
 
                 // Still inside the window: it is a genuine PV candidate,
                 // re-search with the real window as a PV (non-cut) child.
                 if (score > alpha && score < beta && !_stopped)
-                    score = -Negamax(board, researchDepth, -beta, -alpha,
+                    score = -Negamax(board, newDepth, -beta, -alpha,
                                      ply + 1, allowNull: true, cutNode: false);
             }
 

@@ -37,7 +37,7 @@ public sealed class UciOptions
     // Quiescence moves recorded on the search stack (see AlphaBetaSearch.UseQsStackMove).
     public bool QsStackMove { get; private set; } = true;
     // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
-    public bool CheckExemptFutility { get; private set; }
+    public bool CheckExemptFutility { get; private set; } = true;
     // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
     public bool MateDistancePruning { get; private set; } = true;
     // Transposition cutoff refused at PV nodes (see AlphaBetaSearch.UseTtNoPvCutoff).
@@ -59,7 +59,6 @@ public sealed class UciOptions
     public bool LmpAllDepths { get; private set; } = true;
     public bool QuietSeePrune { get; private set; } = true;
     public bool PriorFailLowBonus { get; private set; }
-    public bool LmrDeeperResearch { get; private set; }
     public bool RfpTtMoveGuard { get; private set; }
     public bool LmpCountAllMoves { get; private set; }
     public bool DrawRandom { get; private set; }
@@ -78,7 +77,6 @@ public sealed class UciOptions
     public bool HistoryPrune { get; private set; }
     public int HistoryPruneScale { get; private set; } = 20;
     // Search sweep of 2026-09-21 (see AlphaBetaSearch for each one).
-    public bool HindsightReset { get; private set; }
     public bool PruneLossGuard { get; private set; }
     public bool LosingCaptureOrder { get; private set; }
     public bool SmallProbCutExact { get; private set; }
@@ -89,10 +87,8 @@ public sealed class UciOptions
     // Re-investigation of 2026-09-21 (see AlphaBetaSearch for each one).
     public bool HistoryPruneCounts { get; private set; }
     public bool ReducedFutility { get; private set; }
-    public bool ReducedFutilityUnclamped { get; private set; }
     public bool NmpEvalR { get; private set; } = true;
     public bool NmpBelowBetaGate { get; private set; }
-    public bool TtCutoffNodeType { get; private set; }
     public bool TtCutoffHistory { get; private set; }
     public bool FailHighDamping { get; private set; }
     public bool FailHighDampingQs { get; private set; }
@@ -237,7 +233,7 @@ public sealed class UciOptions
         output.WriteLine("option name EasyMoveWinOnly type check default true");
         output.WriteLine("option name SlowTcEasyMoveDamp type check default true");
         output.WriteLine("option name QsStackMove type check default true");
-        output.WriteLine("option name CheckExemptFutility type check default false");
+        output.WriteLine("option name CheckExemptFutility type check default true");
         output.WriteLine("option name MateDistancePruning type check default true");
         output.WriteLine("option name TtNoPvCutoff type check default true");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
@@ -253,7 +249,6 @@ public sealed class UciOptions
         output.WriteLine("option name LmpAllDepths type check default true");
         output.WriteLine("option name QuietSeePrune type check default true");
         output.WriteLine("option name PriorFailLowBonus type check default false");
-        output.WriteLine("option name LmrDeeperResearch type check default false");
         output.WriteLine("option name RfpTtMoveGuard type check default false");
         output.WriteLine("option name LmpCountAllMoves type check default false");
         output.WriteLine("option name DrawRandom type check default false");
@@ -268,7 +263,6 @@ public sealed class UciOptions
         output.WriteLine("option name FutilityFailSoft type check default true");
         output.WriteLine("option name HistoryPrune type check default false");
         output.WriteLine("option name HistoryPruneScale type spin default 20 min 1 max 8192");
-        output.WriteLine("option name HindsightReset type check default false");
         output.WriteLine("option name PruneLossGuard type check default false");
         output.WriteLine("option name LosingCaptureOrder type check default false");
         output.WriteLine("option name SmallProbCutExact type check default false");
@@ -278,10 +272,8 @@ public sealed class UciOptions
         output.WriteLine("option name QsEvasionPruneExemptQsChecks type check default false");
         output.WriteLine("option name HistoryPruneCounts type check default false");
         output.WriteLine("option name ReducedFutility type check default false");
-        output.WriteLine("option name ReducedFutilityUnclamped type check default false");
         output.WriteLine("option name NmpEvalR type check default true");
         output.WriteLine("option name NmpBelowBetaGate type check default false");
-        output.WriteLine("option name TtCutoffNodeType type check default false");
         output.WriteLine("option name TtCutoffHistory type check default false");
         output.WriteLine("option name FailHighDamping type check default false");
         output.WriteLine("option name FailHighDampingQs type check default false");
@@ -471,9 +463,6 @@ public sealed class UciOptions
             case "historyprunescale" when int.TryParse(value, out int hps):
                 HistoryPruneScale = Math.Clamp(hps, 1, 8192);
                 return "HistoryPruneScale";
-            case "hindsightreset" when bool.TryParse(value, out bool hsr):
-                HindsightReset = hsr;
-                return "HindsightReset";
             case "prunelossguard" when bool.TryParse(value, out bool plg):
                 PruneLossGuard = plg;
                 return "PruneLossGuard";
@@ -501,18 +490,12 @@ public sealed class UciOptions
             case "reducedfutility" when bool.TryParse(value, out bool ri1):
                 ReducedFutility = ri1;
                 return "ReducedFutility";
-            case "reducedfutilityunclamped" when bool.TryParse(value, out bool rfu):
-                ReducedFutilityUnclamped = rfu;
-                return "ReducedFutilityUnclamped";
             case "nmpevalr" when bool.TryParse(value, out bool ri2):
                 NmpEvalR = ri2;
                 return "NmpEvalR";
             case "nmpbelowbetagate" when bool.TryParse(value, out bool ri3):
                 NmpBelowBetaGate = ri3;
                 return "NmpBelowBetaGate";
-            case "ttcutoffnodetype" when bool.TryParse(value, out bool ri4):
-                TtCutoffNodeType = ri4;
-                return "TtCutoffNodeType";
             case "ttcutoffhistory" when bool.TryParse(value, out bool ri5):
                 TtCutoffHistory = ri5;
                 return "TtCutoffHistory";
@@ -558,9 +541,6 @@ public sealed class UciOptions
             case "priorfaillowbonus" when bool.TryParse(value, out bool a0):
                 PriorFailLowBonus = a0;
                 return "PriorFailLowBonus";
-            case "lmrdeeperresearch" when bool.TryParse(value, out bool a1):
-                LmrDeeperResearch = a1;
-                return "LmrDeeperResearch";
             case "rfpttmoveguard" when bool.TryParse(value, out bool a2):
                 RfpTtMoveGuard = a2;
                 return "RfpTtMoveGuard";
