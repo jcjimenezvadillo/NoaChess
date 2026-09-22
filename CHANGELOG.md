@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 2026-09-22 (v5.9.16) - a transposition cutoff teaches the move that caused it
+
+**`TtCutoffHistory` ON, in its third form.** A node cut by the transposition table returned at once
+and the quiet move stored there, the move that had failed high, learned nothing from the cutoff it
+had just produced again; only a searched cutoff fed the history tables. Now a quiet transposition
+move that fails high at a non-PV node earns about 0.56x of the depth-squared bonus a searched cutoff
+earns, in the butterfly table and the first continuation table, capped at depth 6 where the
+reference caps its own `min(112 * depth, 695)`. The first form gave the full bonus, uncapped and at
+PV windows too, and read flat (+3.4 over 1,215); the second added the reference's malus to the
+previous quiet move and was H0 (-18.4 over 642). **Measured at 100,000 fixed nodes against v5.9.14:
++16.6 +/- 12.2, LLR +3.00, H1 over 1,300 games (LOS 99.6%).**
+
+**Razoring removed again, the line closed.** A fifth shape, restored on 2026-09-21 with every gap
+of the four earlier ones corrected (the TT-refined eval, the quiescence with its first-ply quiet
+checks, the current reference's direct return), measured -13.0 +/- 21.3 over 406 games (LLR -1.52).
+Node-identical at the shipping settings (60 positions at depth 11, 4,902,968 nodes against v5.9.15
+with the option on). CI node count regenerated. 461 tests.
+
 ## 2026-09-22 (v5.9.15) - a checking quiet is no longer pruned blind at the leaves
 
 **`CheckExemptFutility` ON, in its bounded form.** Futility pruning dropped quiet moves on the static
