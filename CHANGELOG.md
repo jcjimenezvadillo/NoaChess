@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-09-22 (v5.9.15) - a checking quiet is no longer pruned blind at the leaves
+
+**`CheckExemptFutility` ON, in its bounded form.** Futility pruning dropped quiet moves on the static
+eval alone, and this engine has no gives-check test before the make, so a quiet move that checks the
+enemy king was pruned like any other whenever the eval sat under alpha - the node where the check is
+often the only move that matters. The reference prunes only quiets that do not give check. The first
+form exempted every direct check at depth <= 4 and measured -5.7 over 1,220 games (+16.9% nodes: the
+exemption fired far more than it paid). The second form keeps the exemption to depth <= 2 and to
+checks that do not lose material on the static exchange. **Measured at 100,000 fixed nodes against
+v5.9.13: +13.0 +/- 10.2, LLR +2.97, H1 over 1,839 games (LOS 99.4%).** Discovered checks are still
+not seen and stay prunable.
+
+**Four options measured out and removed, node-identical at the shipping settings** (60 positions at
+depth 11, 4,622,672 nodes, the same move in every one against v5.9.14 with the option on):
+`LmrDeeperResearch` (the re-search after a reduced probe one ply deeper or shallower by the probe's
+margin; H0, -4.4 over 1,744), `HindsightReset` (the reduction that reached a node cleared once read;
+-3.0 over 1,073 alone, -4.7 over 1,108 with the deeper re-search, the reference's configuration of
+the two), `ReducedFutilityUnclamped` (the reduced-depth futility without its depth gate and floor;
+-1.7 over 1,203 against +3.8 for the clamped form) and `TtCutoffNodeType` (a shallow TT cutoff
+taken only when the node type agrees with the bound; -2.0 over 1,206 on the old labels, -6.6 over
+923 on the corrected ones). Each leaves a tombstone with its numbers at the site. CI node count
+regenerated. 461 tests.
+
 ## 2026-09-22 (v5.9.14) - three slow positives that close together
 
 **`TtNoPvCutoff`, `FutilityFailSoft` and `ImprovingAboveBeta` ON, as one change.** Each had read
