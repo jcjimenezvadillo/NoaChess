@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-09-22 (v5.9.13) - the null move reduces more the further the eval sits above beta
+
+**`NmpEvalR` ON.** The null-move reduction was `3 + depth / 4` whatever the position; the reference
+adds the eval's margin over beta, `(eval - beta) / 168` plies in its units. Ported as
+`min((eval - beta) / 81, 3)` extra plies on this engine's own base (168 x0.48 = 81, capped at three
+because verification only starts at depth 14), on the TT-refined eval, reading no cutNode.
+**Fixed-node SPRT at 100,000 nodes against v5.9.12: +14.4 +/- 11.1, LLR +2.96, H1 over 1,492 games
+(LOS 99.5%)**; bench -1.0% nodes at depth 11. It came out of the re-investigation of the null-move
+options discarded on 2026-09-20: the measured `NmpGateDeepR` licensed `R = 7 + depth / 3` only at
+nodes 2.6-3.3 pawns above beta that reverse futility had already cut, so its flat result said
+nothing about a deeper reduction as such. The same re-investigation priced the null move by eval
+band for the first time (below beta it cuts 0.4-1% of the time for 1-3 nodes, above it 28-55%).
+
+**Also in this build, node-identical at the shipping settings:** `LmpCountsPruned` measured H0
+(-17.4 over 680) and was removed, its useful half kept as `HistoryPruneCounts` (only the quiets the
+history prune removes count toward the LMP budget, turning that prune into a saving: -4.0% bench
+nodes); the correction family closed after three shapes (`CorrectionGravity` H0 -9.6,
+`CorrectionWeightCap` flat -1.4, both removed). The publish script now sends `isready` before it
+checks for the embedded network, which is announced there and not on `uci`. CI node count
+regenerated on this release's binary. 461 tests.
+
 ## 2026-09-22 (v5.9.12) - good captures served as good captures, and two sweeps of the whole search against the reference
 
 **A defended bishop-takes-knight was served after every quiet move.** The move picker split the
