@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-09-22 (v5.9.14) - three slow positives that close together
+
+**`TtNoPvCutoff`, `FutilityFailSoft` and `ImprovingAboveBeta` ON, as one change.** Each had read
+positive on its own and none closed at elo1 = 10: no transposition cutoff at PV nodes (+6.4 over
+2,920 games against v5.9.11), the futility-pruned quiets' value raising a fail-low node's bound as
+the reference's step 14 does (+7.8 over 2,286), and a node whose corrected eval already clears beta
+counting as improving after the null move (+5.5 over 1,205). **Measured together at 100,000 fixed
+nodes against v5.9.12: +11.8 +/- 9.4, LLR +3.00, H1 over 2,259 games (LOS 99.3%).** Measured on the
+v5.9.12 base, before `NmpEvalR` shipped; the two touch different parts of the node.
+
+**A test that asserted the wrong move.** `ABareKingTakesTheLongestRoadToMate` forbade Ka8 as the
+fastest loss in a king-and-queen ending. An independent brute-force mate solver (python-chess, no
+engine involved) says Kc8, Ka8 and Ka7 are all mated in 4 and only Kc7 in 3; the build with the
+three options chose Ka8, one of the longest defences, and tripped the assertion. The test now
+forbids Kc7, with the distances in its comment.
+
+**Also in this build, node-identical at the shipping settings:** `CaptureFutility` removed after two
+measured forms (raw margins flat -1.7, material-unit margins flat -2.9); `PruneNpmGuard` removed
+(inside a bundle it cost about five Elo: -3.8 with it, +1.7 without); `ReducedFutilityUnclamped`
+added for measurement. `HindsightReset` with `LmrDeeperResearch`, the reference's configuration,
+read -7.1 over 1,025 (LLR -2.55) and leaves the engine in the next build. CI node count
+regenerated. 461 tests.
+
 ## 2026-09-22 (v5.9.13) - the null move reduces more the further the eval sits above beta
 
 **`NmpEvalR` ON.** The null-move reduction was `3 + depth / 4` whatever the position; the reference
