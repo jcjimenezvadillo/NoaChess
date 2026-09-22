@@ -1061,8 +1061,6 @@ public sealed class UciLoop
             _engine.UseProbCutAllowNull = _options.ProbCutAllowNull;
         if (changed == "FutilityFailSoft")
             _engine.UseFutilityFailSoft = _options.FutilityFailSoft;
-        if (changed == "CaptureFutility")
-            _engine.UseCaptureFutility = _options.CaptureFutility;
         if (changed == "HistoryPrune")
             _engine.UseHistoryPrune = _options.HistoryPrune;
         if (changed == "HistoryPruneScale")
@@ -1071,8 +1069,6 @@ public sealed class UciLoop
             _engine.UseHindsightReset = _options.HindsightReset;
         if (changed == "PruneLossGuard")
             _engine.UsePruneLossGuard = _options.PruneLossGuard;
-        if (changed == "PruneNpmGuard")
-            _engine.UsePruneNpmGuard = _options.PruneNpmGuard;
         if (changed == "LosingCaptureOrder")
             _engine.UseLosingCaptureOrder = _options.LosingCaptureOrder;
         if (changed == "SmallProbCutExact")
@@ -1089,6 +1085,8 @@ public sealed class UciLoop
             _engine.UseHistoryPruneCounts = _options.HistoryPruneCounts;
         if (changed == "ReducedFutility")
             _engine.UseReducedFutility = _options.ReducedFutility;
+        if (changed == "ReducedFutilityUnclamped")
+            _engine.UseReducedFutilityUnclamped = _options.ReducedFutilityUnclamped;
         if (changed == "NmpEvalR")
             _engine.UseNmpEvalR = _options.NmpEvalR;
         if (changed == "NmpBelowBetaGate")

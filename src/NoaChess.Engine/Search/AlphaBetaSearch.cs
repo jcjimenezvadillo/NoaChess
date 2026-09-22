@@ -561,7 +561,7 @@ public sealed class AlphaBetaSearch
         Environment.GetEnvironmentVariable("NOA_SEARCH_STATS") == "1";
     private long _stMain, _stQs, _stTtHit, _stTtCut, _stTtServed, _stNullTry, _stNullCut,
                  _stCut, _stCutFirst, _stCutTt, _stFutility, _stLmp, _stSeePrune, _stLmr, _stLmrResearch,
-                 _stLoop, _stLmrReduced, _stIir, _stCapFutReach, _stCapFutPrune;
+                 _stLoop, _stLmrReduced, _stIir;
     // TtCutoffNodeType refusals: [cutNode ? 2 : 0] + [fail-high ? 1 : 0].
     private readonly long[] _stTtNodeTypeRefused = new long[4];
 
@@ -1367,7 +1367,11 @@ public sealed class AlphaBetaSearch
     // search of this window, which both costs PV accuracy and can truncate it.
     // The reference has never cut at PV nodes. Off until measured at fixed
     // nodes: it changes node counts.
-    public bool UseTtNoPvCutoff = false;
+    // ON since v5.9.14 as one of three (TtNoPvCutoff, FutilityFailSoft,
+    // ImprovingAboveBeta): each alone a slow positive that would not close,
+    // together +11.8 +/- 9.4, LLR +3.00, H1 over 2,259 fixed-node games against
+    // v5.9.12 (2026-09-22).
+    public bool UseTtNoPvCutoff = true;
 
     // Three refinements of the transposition cutoff from the reference
     // (fail-high entries one ply deeper, the cutoff refused at depth <= 4
@@ -1568,14 +1572,13 @@ public sealed class AlphaBetaSearch
     // Fail-soft accounting for futility-pruned quiets (reference step 14):
     // the pruned move's value is at most its futility value, so a fail-low
     // node's returned upper bound is raised to it instead of ignoring the move.
-    public bool UseFutilityFailSoft = false;
+    // ON since v5.9.14 as one of three (TtNoPvCutoff, FutilityFailSoft,
+    // ImprovingAboveBeta): each alone a slow positive that would not close,
+    // together +11.8 +/- 9.4, LLR +3.00, H1 over 2,259 fixed-node games against
+    // v5.9.12 (2026-09-22).
+    public bool UseFutilityFailSoft = true;
 
-    // Capture futility pruning (reference step 14), never present here.
-    // First form (raw margins on the full depth, depth <= 6) measured flat
-    // 2026-09-21: -1.7 +/- 12.3 over 1,202 games - it practically never fired.
-    // Now the corrected form: margins in this engine's material units (see
-    // the site).
-    public bool UseCaptureFutility = false;
+    // Capture futility: measured twice and removed (see the capture-pruning site).
 
     // Continuation-history pruning of quiets (reference step 14), which this
     // engine only had inside the pruning ladder package. The bar is
@@ -1612,9 +1615,13 @@ public sealed class AlphaBetaSearch
     // might have escaped. The same switch adds the reference's !is_loss(beta)
     // to the null-move entry.
     public bool UsePruneLossGuard = false;
-    // PruneNpmGuard: the same step is entered only with non-pawn material for
-    // the side to move; king-and-pawn positions search every move.
-    public bool UsePruneNpmGuard = false;
+    // PruneNpmGuard (the reference enters step 14 only with non-pawn material
+    // for the side to move, so king-and-pawn positions search every move) was
+    // measured inside two bundles on 2026-09-22 against v5.9.12: with it H0
+    // -3.8 over 1,729, without it flat +1.7 over 1,211 - about five Elo lost
+    // to it alone. Removed. The other three switches of the bundle stay, off:
+    // they are real defects whose fixes measure level, a tie for the user's
+    // decision rather than a win.
     // LosingCaptureOrder: moving the quiet block in front of the losing
     // captures swapped two ranges of different length, which reverses or
     // rotates the captures; they are re-sorted afterwards.
@@ -1625,7 +1632,11 @@ public sealed class AlphaBetaSearch
     // ImprovingAboveBeta: after the null move, a node whose corrected eval
     // already clears beta counts as improving (reference improving |=
     // staticEval >= beta) for ProbCut, LMP and LMR.
-    public bool UseImprovingAboveBeta = false;
+    // ON since v5.9.14 as one of three (TtNoPvCutoff, FutilityFailSoft,
+    // ImprovingAboveBeta): each alone a slow positive that would not close,
+    // together +11.8 +/- 9.4, LLR +3.00, H1 over 2,259 fixed-node games against
+    // v5.9.12 (2026-09-22).
+    public bool UseImprovingAboveBeta = true;
     // GoodCaptureSlack: in the staged main loop a capture is served with the
     // good ones when SEE >= -captureScore / 18 (reference movepick), not only
     // when SEE >= 0, so a defended BxN is no longer served after every quiet.
@@ -1661,6 +1672,7 @@ public sealed class AlphaBetaSearch
     // searched at, with its history, the reference's raw constants; the one
     // valuable rung of the pruning ladder, measured alone (see the site).
     public bool UseReducedFutility = false;
+    public bool UseReducedFutilityUnclamped = false;
     // NmpEvalR: the null reduction grows with how far the refined eval sits
     // above beta, min((eval - beta) / 81, 3) extra plies (168 x0.48 per ply,
     // capped because verification only exists from depth 14). The measured
@@ -1933,7 +1945,7 @@ public sealed class AlphaBetaSearch
         if (SearchStats)
             _stMain = _stQs = _stTtHit = _stTtCut = _stTtServed = _stNullTry = _stNullCut
                 = _stCut = _stCutFirst = _stCutTt = _stFutility = _stLmp = _stSeePrune = _stLmr = _stLmrResearch
-                = _stLoop = _stLmrReduced = _stIir = _stCapFutReach = _stCapFutPrune = 0;
+                = _stLoop = _stLmrReduced = _stIir = 0;
         if (SearchStats)
             Array.Clear(_stTtNodeTypeRefused);
         _rootInTb = false;
@@ -2397,7 +2409,6 @@ public sealed class AlphaBetaSearch
                   + $" ttMoveCut={(double)_stCutTt / Math.Max(1, _stCut):F3}"
                   + $" lmr={_stLmr} lmrReduced={_stLmrReduced} lmrResearch={(double)_stLmrResearch / Math.Max(1, _stLmrReduced):F3}"
                   + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}"
-                  + $" capFut={_stCapFutPrune}/{_stCapFutReach}"
                   + $" ttNodeTypeRefused(all:fl,fh cut:fl,fh)={_stTtNodeTypeRefused[0]},{_stTtNodeTypeRefused[1]},{_stTtNodeTypeRefused[2]},{_stTtNodeTypeRefused[3]}");
             lastReportedMove = bestMove;
             lastReportedDepth = depth;
@@ -4341,10 +4352,6 @@ public sealed class AlphaBetaSearch
             prevPiece >= 0 ? _contHist[0] : null, prevPiece, prevTo);
 
         Color stm = board.SideToMove;
-        // PruneNpmGuard: the reference's shallow pruning needs non-pawn
-        // material for the side to move. Read once per node, and only when
-        // the switch is on, so the default path pays nothing.
-        bool pruneNpm = !UsePruneNpmGuard || board.HasNonPawnMaterial(stm);
         int originalAlpha = alpha;
         Move bestMove = Move.None;
         int bestScore = -Infinity;
@@ -4557,7 +4564,7 @@ public sealed class AlphaBetaSearch
             //      check, at least one move already searched so a best move is
             //      guaranteed) ----
             if (!UsePruningLadder && isQuiet && searched > 0 && nonPv && !inCheck && Math.Abs(alpha) < MateBound
-                && pruneNpm && (!UsePruneLossGuard || bestScore > -TbScoreBound))
+                && (!UsePruneLossGuard || bestScore > -TbScoreBound))
             {
                 // Late move pruning: once enough quiet moves have been tried at
                 // low depth, the remaining ones are very unlikely to be best.
@@ -4650,9 +4657,15 @@ public sealed class AlphaBetaSearch
                     int fR = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)]
                              + LmrScale + (improving ? 0 : LmrScale) + (ttCapture ? 1079 : 0);
                     int fLmrDepth = depth - 1 - fR / LmrScale + fHist / 1024;
-                    futilityValue = staticEval + 166 + 119 * Math.Max(fLmrDepth, -1)
+                    futilityValue = staticEval + 166
+                                    + 119 * (UseReducedFutilityUnclamped ? fLmrDepth : Math.Max(fLmrDepth, -1))
                                     + 90 * (staticEval > alpha ? 1 : 0);
-                    futile = depth <= 8 && fLmrDepth < 12 && futilityValue <= alpha;
+                    // Second arm (ReducedFutilityUnclamped, 2026-09-22, after the
+                    // first read +3.8 over 1,180): the reference's own form, no
+                    // depth gate and no floor on the reduced depth - lmrDepth < 12
+                    // is its only bound, and a badly reputed move prunes harder.
+                    futile = (UseReducedFutilityUnclamped || depth <= 8)
+                             && fLmrDepth < 12 && futilityValue <= alpha;
                 }
                 else
                 {
@@ -4725,7 +4738,7 @@ public sealed class AlphaBetaSearch
 
             // ---- Shallow capture pruning (non-PV, not in check) ----
             if (!UsePruningLadder && move.IsCapture && !move.IsPromotion && searched > 0 && !inCheck
-                && pruneNpm && (!UsePruneLossGuard || bestScore > -TbScoreBound))
+                && (!UsePruneLossGuard || bestScore > -TbScoreBound))
             {
                 // SEE pruning near the horizon: a capture that clearly loses
                 // material will not recover the loss in the couple of plies
@@ -4740,49 +4753,14 @@ public sealed class AlphaBetaSearch
                     continue;
                 }
 
-                // Capture futility (reference step 14): a capture that cannot
-                // lift the static evaluation to alpha even after winning its
-                // victim outright is not worth a search at shallow depth.
-                // Reshaped 2026-09-20 before its first measurement, from the
-                // reference on disk: margins RAW (234 + 247 per ply, plus the
-                // capture history term) because futility margins are risk
-                // thresholds and the x0.48 versions prune twice as hard (the
-                // value-scale rule, part 3); the full depth stands in for the
-                // reduced one, which only widens the margin; and a capture that
-                // gives check is exempt, as the reference exempts it - pruning
-                // a checking capture on the eval alone is the mate-hiding
-                // failure this engine's own notes record. Direct checks only
-                // (the picker's test); a discovered check still gets pruned.
-                //
-                // Third form (re-investigation of 2026-09-21). The first,
-                // raw 234 + 247 * depth on the FULL depth, asked for 4.8
-                // pawns plus the victim at depth 1 - it practically never
-                // fired (paired depth +0.024), hence the flat. The raw-margin
-                // rule was learned on quiet futility, which has no material
-                // term; here the victim is already in this engine's units,
-                // so the constants follow it: 234/247 x0.48 = 112/119. And
-                // the depth is the one the capture is searched at: captures
-                // are never LMR-reduced here, so depth - 1. The loss and
-                // non-pawn-material guards are local, whatever the global
-                // switches say. The capture-history term keeps 134/1024
-                // until its distribution at this site has been sampled.
-                if (UseCaptureFutility && nonPv && depth <= 8 && Math.Abs(alpha) < TbScoreBound
-                    && bestScore > -TbScoreBound && board.HasNonPawnMaterial(stm))
-                {
-                    if (SearchStats) _stCapFutReach++;
-                    int cfDepth = depth - 1;
-                    PieceType victimType = move.Flag == MoveFlag.EnPassant
-                        ? PieceType.Pawn : board.PieceTypeAt(move.To);
-                    int capturePiece = ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From));
-                    int captHist = _captureHistory.Get(capturePiece, move.To, (int)victimType);
-                    if (staticEval + 112 + 119 * cfDepth + PieceValueQs[(int)victimType]
-                        + 134 * captHist / 1024 <= alpha
-                        && !GivesDirectCheck(board, move))
-                    {
-                        if (SearchStats) _stCapFutPrune++;
-                        continue;
-                    }
-                }
+                // No capture futility. Measured twice at 100,000 nodes and removed
+                // on 2026-09-22: raw margins 234 + 247 * depth on the full depth,
+                // which practically never fired (flat, -1.7 over 1,202 against
+                // v5.9.11), and the corrected form in this engine's material
+                // units on the depth the capture is searched at (flat, -2.9 over
+                // 1,202 against v5.9.13). The reduced-depth raw form was rejected
+                // in review before measurement. Our SEE prune above already
+                // covers the captures worth dropping here.
             }
 
             // The singular extension applies to the TT move only: it is the

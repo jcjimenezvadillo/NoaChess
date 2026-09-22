@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.13";
+    public const string Version = "5.9.14";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -365,12 +365,10 @@ public sealed class ChessEngine
             h.UseQsChecks = _search.UseQsChecks;
             h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
             h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
-            h.UseCaptureFutility = _search.UseCaptureFutility;
             h.UseHistoryPrune = _search.UseHistoryPrune;
             h.HistoryPruneScale = _search.HistoryPruneScale;
             h.UseHindsightReset = _search.UseHindsightReset;
             h.UsePruneLossGuard = _search.UsePruneLossGuard;
-            h.UsePruneNpmGuard = _search.UsePruneNpmGuard;
             h.UseLosingCaptureOrder = _search.UseLosingCaptureOrder;
             h.UseSmallProbCutExact = _search.UseSmallProbCutExact;
             h.UseImprovingAboveBeta = _search.UseImprovingAboveBeta;
@@ -379,6 +377,7 @@ public sealed class ChessEngine
             h.UseQsEvasionPruneExemptQsChecks = _search.UseQsEvasionPruneExemptQsChecks;
             h.UseHistoryPruneCounts = _search.UseHistoryPruneCounts;
             h.UseReducedFutility = _search.UseReducedFutility;
+            h.UseReducedFutilityUnclamped = _search.UseReducedFutilityUnclamped;
             h.UseNmpEvalR = _search.UseNmpEvalR;
             h.UseNmpBelowBetaGate = _search.UseNmpBelowBetaGate;
             h.UseTtCutoffNodeType = _search.UseTtCutoffNodeType;
@@ -915,11 +914,6 @@ public sealed class ChessEngine
         set => _search.UseFutilityFailSoft = value;
     }
 
-    public bool UseCaptureFutility
-    {
-        get => _search.UseCaptureFutility;
-        set => _search.UseCaptureFutility = value;
-    }
 
 
     public bool UseHistoryPrune
@@ -947,11 +941,6 @@ public sealed class ChessEngine
         set => _search.UsePruneLossGuard = value;
     }
 
-    public bool UsePruneNpmGuard
-    {
-        get => _search.UsePruneNpmGuard;
-        set => _search.UsePruneNpmGuard = value;
-    }
 
     public bool UseLosingCaptureOrder
     {
@@ -999,6 +988,12 @@ public sealed class ChessEngine
     {
         get => _search.UseReducedFutility;
         set => _search.UseReducedFutility = value;
+    }
+
+    public bool UseReducedFutilityUnclamped
+    {
+        get => _search.UseReducedFutilityUnclamped;
+        set => _search.UseReducedFutilityUnclamped = value;
     }
 
     public bool UseNmpEvalR
