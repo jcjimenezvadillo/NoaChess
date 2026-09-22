@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,6 +8,7 @@ using NoaChess.Core;
 using NoaChess.DataGen;
 using NoaChess.Engine;
 using NoaChess.Engine.Search;
+using NoaChess.Engine.Tablebases;
 
 // NNUE training data generator: multi-threaded self-play of the current
 // engine, labeling every quiet position with the search score and the final
@@ -90,6 +92,23 @@ if (options.RequireBook && options.Book is null && options.LabelBook is null)
     return 2;
 }
 
+// Optional tablebase WDL relabelling (--tb-path): a recorded position that the
+// tablebases cover gets the EXACT outcome under best play as its WDL label
+// instead of the self-play game's eventual result, which in the tablebase
+// range is only as good as the engine's endgame play. The search itself also
+// probes the tables once they are loaded (the same static index the engine's
+// own SyzygyPath option fills), so the score label in that range is the one
+// the deployed engine would produce. Off unless a path is given; the manifest
+// records the setting and the count.
+long tbRelabelled = 0;
+if (options.TbPath is not null)
+{
+    Syzygy.Init(options.TbPath);
+    if (!Syzygy.Available)
+        throw new InvalidOperationException($"No tablebases found under '{options.TbPath}'.");
+    Console.WriteLine($"tb     : {options.TbPath} (up to {Syzygy.Cardinality} men; WDL labels inside that range come from the tables)");
+}
+
 // Optional human-opening seed book (from the pgnbook subcommand): each game
 // starts from a random position in it instead of 8-9 random legal plies.
 string[]? book = null;
@@ -128,7 +147,8 @@ if (options.ShardSize > 0)
                     + (options.TargetPositions > 0 ? $", target {options.TargetPositions:N0} positions" : ""));
 
 using (var shards = new ShardWriter(options.Output, options.ShardSize, startShard,
-           (index, records, sha) => BuildManifest(options, index, records, sha, gamesDone)))
+           (index, records, sha) => BuildManifest(options, index, records, sha, gamesDone,
+                                                  Interlocked.Read(ref tbRelabelled))))
 {
 
     // ---- Elite-game WDL anchoring (--label-book) ----
@@ -198,6 +218,11 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
 
                 int ply = 2 * (board.FullmoveNumber - 1) + (board.SideToMove == Color.Black ? 1 : 0);
                 int resultStm = board.SideToMove == Color.White ? whiteResult : -whiteResult;
+                if (TryTablebaseResult(board, out int tbResult))
+                {
+                    resultStm = tbResult;
+                    Interlocked.Increment(ref tbRelabelled);
+                }
                 DatasetFormat.WriteRecord(record, board, ply, search.Score, resultStm);
                 batch.Add((byte[])record.Clone());
 
@@ -220,9 +245,17 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
                     int done = labelled += pending.Count;
                     if (done % 5000 < pending.Count)
                     {
-                        double perPos = stopwatch.Elapsed.TotalSeconds / Math.Max(1, done);
+                        // The ETA runs on book LINES consumed, labelled or skipped.
+                        // It used to subtract only the labelled ones, so every
+                        // filtered position still counted as pending: the elite
+                        // pass of 2026-09-21 finished its whole book while
+                        // reporting 1,452 minutes to go (5.79M skipped lines at
+                        // the labelling rate).
+                        int processed = done + Volatile.Read(ref skipped);
+                        double perLine = stopwatch.Elapsed.TotalSeconds / Math.Max(1, processed);
                         Console.WriteLine($"  {done:N0} labelled, {skipped:N0} skipped, "
-                                        + $"ETA {(lines.Length - done) * perPos / 60:F0} min");
+                                        + $"{processed:N0}/{lines.Length:N0} lines, "
+                                        + $"ETA {Math.Max(0, lines.Length - processed) * perLine / 60:F0} min");
                     }
                 }
                 pending.Clear();
@@ -252,7 +285,7 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
                 throw new InvalidOperationException($"Failed to load NNUE model '{options.Model}': {error}");
             engine.SetUseNnue(true);
         }
-        var buffer = new List<(byte[] Record, Color Stm)>(256);
+        var buffer = new List<(byte[] Record, Color Stm, bool TbLabelled)>(256);
         var record = new byte[DatasetFormat.RecordSize];
 
         while (gameQueue.TryDequeue(out int gameIndex))
@@ -344,8 +377,13 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
                 bool tactical = result.BestMove.IsCapture || result.BestMove.IsPromotion;
                 if (!board.IsInCheck() && !tactical && Math.Abs(result.Score) < 20_000)
                 {
-                    DatasetFormat.WriteRecord(record, board, ply, result.Score, resultStm: 0);
-                    buffer.Add(((byte[])record.Clone(), board.SideToMove));
+                    // Inside the tablebase range the exact outcome is known now;
+                    // the game's eventual result is patched in only for the rest.
+                    bool tbLabelled = TryTablebaseResult(board, out int tbResult);
+                    if (tbLabelled)
+                        Interlocked.Increment(ref tbRelabelled);
+                    DatasetFormat.WriteRecord(record, board, ply, result.Score, tbLabelled ? tbResult : 0);
+                    buffer.Add(((byte[])record.Clone(), board.SideToMove, tbLabelled));
                 }
 
                 // Root diversity (2026-09-18, off by default): the RECORDED
@@ -370,10 +408,13 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
             // side to move) and append the game atomically.
             lock (writeLock)
             {
-                foreach ((byte[] rec, Color stm) in buffer)
+                foreach ((byte[] rec, Color stm, bool tbLabelled) in buffer)
                 {
-                    int resultStm = stm == Color.White ? whiteResult : -whiteResult;
-                    rec[32] = (byte)(sbyte)resultStm;
+                    if (!tbLabelled)
+                    {
+                        int resultStm = stm == Color.White ? whiteResult : -whiteResult;
+                        rec[32] = (byte)(sbyte)resultStm;
+                    }
                     shards.Write(rec);
                 }
                 // Rolled here, between games, so a game's positions never span
@@ -434,12 +475,27 @@ return 0;
 // always in the pool) but a real, closely-competitive alternative sometimes
 // is - unlike a uniformly random legal move, every candidate here is
 // something the engine's own search judged close to its best idea.
+// Tablebase WDL for a recorded position, from the side to move, in the record's
+// own -1/0/+1 units. Cursed wins and blessed losses are draws under the
+// fifty-move rule, which is the rule every game here is played under.
+static bool TryTablebaseResult(Board board, out int resultStm)
+{
+    resultStm = 0;
+    if (!Syzygy.Available || BitOperations.PopCount(board.AllOccupancy) > Syzygy.Cardinality)
+        return false;
+    if (!Syzygy.ProbeWdl(board, out WdlScore wdl))
+        return false;
+    resultStm = wdl == WdlScore.Win ? 1 : wdl == WdlScore.Loss ? -1 : 0;
+    return true;
+}
+
 static Move PickDiversifiedMove(
     ChessEngine engine, Board board,
     (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign,
      int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook,
      bool RequireBook, long ShardSize, long TargetPositions, bool Resume,
-     double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly) options,
+     double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly,
+     string? TbPath) options,
     SearchResult best, Random rng, MoveList excluded)
 {
     excluded.Clear();
@@ -472,8 +528,9 @@ static object BuildManifest(
     (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign,
      int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook,
      bool RequireBook, long ShardSize, long TargetPositions, bool Resume,
-     double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly) options,
-    int shardIndex, long records, string datasetSha, int gamesDone) => new
+     double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly,
+     string? TbPath) options,
+    int shardIndex, long records, string datasetSha, int gamesDone, long tbRelabelled) => new
 {
     generator = "NoaChess.DataGen",
     formatVersion = DatasetFormat.FormatVersion,
@@ -492,8 +549,12 @@ static object BuildManifest(
                  : options.Book is null ? "8-9 random legal" : $"book:{options.Book}",
     maxPlies = options.MaxPlies,
     filters = "no in-check, no tactical best move, |score| < 20000",
-    wdlSource = options.LabelBook is null ? "self-play game outcome"
-                                          : "real elite game outcome (external signal)",
+    wdlSource = (options.LabelBook is null ? "self-play game outcome"
+                                           : "real elite game outcome (external signal)")
+                + (options.TbPath is null ? ""
+                   : $"; tablebase WDL inside {Syzygy.Cardinality} men (search probes them too)"),
+    tablebaseWdl = options.TbPath is null ? "off"
+        : $"path={options.TbPath} men<={Syzygy.Cardinality} relabelled={tbRelabelled} (cumulative this run)",
     resignAdjudication = options.LabelBook is null
         ? $"|score| >= {options.Resign} for 6 plies" : "n/a (no self-play games)",
     drawAdjudication = options.LabelBook is null
@@ -508,13 +569,16 @@ static object BuildManifest(
     datasetSha256BeforeHeaderPatch = datasetSha
 };
 
-static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook, bool RequireBook, long ShardSize, long TargetPositions, bool Resume, double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly) ParseArgs(string[] args)
+static (int Games, int Nodes, int Threads, int Seed, string Output, string? Model, int Resign, int MaxPlies, int DrawScore, int DrawCount, string? Book, string? LabelBook, bool RequireBook, long ShardSize, long TargetPositions, bool Resume, double DiversifyProb, int DiversifyTopK, int DiversifyMargin, int DiversifyMaxPly, string? TbPath) ParseArgs(string[] args)
 {
     int games = 500, nodes = 5000, threads = Math.Max(1, Environment.ProcessorCount - 2), seed = 1;
     string output = "data/selfplay.noadata";
     string? model = null;
     string? book = null;
     string? labelBook = null;
+    // Tablebase WDL relabelling (2026-09-19): off unless a path is given, so
+    // every existing corpus keeps generating byte-for-byte the same way.
+    string? tbPath = null;
     // Root diversity (2026-09-18): off by default (0 probability) so every
     // existing corpus keeps generating byte-for-byte the same way until this
     // is deliberately turned on for a run. When on, at most DiversifyMaxPly
@@ -568,6 +632,7 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
             case "--diversify-topk": diversifyTopK = int.Parse(args[i + 1]); break;
             case "--diversify-margin": diversifyMargin = int.Parse(args[i + 1]); break;
             case "--diversify-maxply": diversifyMaxPly = int.Parse(args[i + 1]); break;
+            case "--tb-path": tbPath = args[i + 1]; break;
         }
     }
 
@@ -589,5 +654,6 @@ static (int Games, int Nodes, int Threads, int Seed, string Output, string? Mode
 
     return (games, nodes, threads, seed, output, model, resign, maxPlies, drawScore, drawCount,
             book, labelBook, requireBook || requireBookFlag, shardSize, targetPositions,
-            resume || resumeFlag, diversifyProb, diversifyTopK, diversifyMargin, diversifyMaxPly);
+            resume || resumeFlag, diversifyProb, diversifyTopK, diversifyMargin, diversifyMaxPly,
+            tbPath);
 }

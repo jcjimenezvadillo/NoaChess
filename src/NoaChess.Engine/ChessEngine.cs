@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.11";
+    public const string Version = "5.9.12";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -320,7 +320,6 @@ public sealed class ChessEngine
             h.UseSmpAspDiversify = _search.UseSmpAspDiversify;
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
-            h.UseNmpEvalGate = _search.UseNmpEvalGate;
             h.UseMoveCountLmr = _search.UseMoveCountLmr;
             h.UseFailLowCorrection = _search.UseFailLowCorrection;
             h.UseDynamicAspiration = _search.UseDynamicAspiration;
@@ -348,7 +347,6 @@ public sealed class ChessEngine
             h.UsePonderMinThink = _search.UsePonderMinThink;
             h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
             h.UseSlowTcEasyMoveDamp = _search.UseSlowTcEasyMoveDamp;
-            h.UseRootStaticEval = _search.UseRootStaticEval;
             h.UseQsStackMove = _search.UseQsStackMove;
             h.UseCheckExemptFutility = _search.UseCheckExemptFutility;
             h.UseMateDistancePruning = _search.UseMateDistancePruning;
@@ -363,13 +361,37 @@ public sealed class ChessEngine
             h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
             h.UseTtMateReuse = _search.UseTtMateReuse;
             h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
-            h.UseRazoring = _search.UseRazoring;
             h.UseNoDecayOnRelaunch = _search.UseNoDecayOnRelaunch;
             h.UseQsChecks = _search.UseQsChecks;
             h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
             h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
             h.UseCaptureFutility = _search.UseCaptureFutility;
             h.UseHistoryPrune = _search.UseHistoryPrune;
+            h.HistoryPruneScale = _search.HistoryPruneScale;
+            h.UseHindsightReset = _search.UseHindsightReset;
+            h.UsePruneLossGuard = _search.UsePruneLossGuard;
+            h.UsePruneNpmGuard = _search.UsePruneNpmGuard;
+            h.UseLosingCaptureOrder = _search.UseLosingCaptureOrder;
+            h.UseSmallProbCutExact = _search.UseSmallProbCutExact;
+            h.UseImprovingAboveBeta = _search.UseImprovingAboveBeta;
+            h.UseGoodCaptureSlack = _search.UseGoodCaptureSlack;
+            h.UseQsEvasionPrune = _search.UseQsEvasionPrune;
+            h.UseQsEvasionPruneExemptQsChecks = _search.UseQsEvasionPruneExemptQsChecks;
+            h.UseLmpCountsPruned = _search.UseLmpCountsPruned;
+            h.UseReducedFutility = _search.UseReducedFutility;
+            h.UseNmpEvalR = _search.UseNmpEvalR;
+            h.UseNmpBelowBetaGate = _search.UseNmpBelowBetaGate;
+            h.UseTtCutoffNodeType = _search.UseTtCutoffNodeType;
+            h.UseTtCutoffHistory = _search.UseTtCutoffHistory;
+            h.UseFailHighDamping = _search.UseFailHighDamping;
+            h.UseFailHighDampingQs = _search.UseFailHighDampingQs;
+            h.UseCutoffCountLmrAllNode = _search.UseCutoffCountLmrAllNode;
+            h.UseRazoring = _search.UseRazoring;
+            h.UsePvWindowEarly = _search.UsePvWindowEarly;
+            h.UseTtRule50Guard = _search.UseTtRule50Guard;
+            h.UseCorrectionGravity = _search.UseCorrectionGravity;
+            h.UseCorrectionWeightCap = _search.UseCorrectionWeightCap;
+            h.NmpGateMargin = _search.NmpGateMargin;
             h.UseQsContCorrection = _search.UseQsContCorrection;
             h.UseSingularTight = _search.UseSingularTight;
             h.UseQsEntryKey = _search.UseQsEntryKey;
@@ -381,9 +403,7 @@ public sealed class ChessEngine
             h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
             h.UseDrawRandom = _search.UseDrawRandom;
             h.UseHindsightDepth = _search.UseHindsightDepth;
-            h.UseCutoffCountLmr = _search.UseCutoffCountLmr;
             h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
-            h.UseCorrectionBlend = _search.UseCorrectionBlend;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
             h.SyzygyProbeLimit = _search.SyzygyProbeLimit;
@@ -635,12 +655,8 @@ public sealed class ChessEngine
         set => _search.UseOptimism = value;
     }
 
-    // Null-move entry gate (off by default, measured before it ships).
-    public bool UseNmpEvalGate
-    {
-        get => _search.UseNmpEvalGate;
-        set => _search.UseNmpEvalGate = value;
-    }
+    // The same gate licensing the reference's deep null reduction instead of
+    // forbidding probes (off by default, measured before it ships).
 
     public bool UseMoveCountLmr
     {
@@ -784,12 +800,6 @@ public sealed class ChessEngine
         set => _search.UseSlowTcEasyMoveDamp = value;
     }
 
-    public bool UseRootStaticEval
-    {
-        get => _search.UseRootStaticEval;
-        set => _search.UseRootStaticEval = value;
-    }
-
     public bool UseQsStackMove
     {
         get => _search.UseQsStackMove;
@@ -801,6 +811,7 @@ public sealed class ChessEngine
         get => _search.UseCheckExemptFutility;
         set => _search.UseCheckExemptFutility = value;
     }
+
 
     public bool UseMateDistancePruning
     {
@@ -881,11 +892,6 @@ public sealed class ChessEngine
         set => _search.UseRootScoreOrdering = value;
     }
 
-    public bool UseRazoring
-    {
-        get => _search.UseRazoring;
-        set => _search.UseRazoring = value;
-    }
 
     public bool UseNoDecayOnRelaunch
     {
@@ -917,10 +923,162 @@ public sealed class ChessEngine
         set => _search.UseCaptureFutility = value;
     }
 
+
     public bool UseHistoryPrune
     {
         get => _search.UseHistoryPrune;
         set => _search.UseHistoryPrune = value;
+    }
+
+    public int HistoryPruneScale
+    {
+        get => _search.HistoryPruneScale;
+        set => _search.HistoryPruneScale = value;
+    }
+
+    public bool UseHindsightReset
+    {
+        get => _search.UseHindsightReset;
+        set => _search.UseHindsightReset = value;
+    }
+
+
+    public bool UsePruneLossGuard
+    {
+        get => _search.UsePruneLossGuard;
+        set => _search.UsePruneLossGuard = value;
+    }
+
+    public bool UsePruneNpmGuard
+    {
+        get => _search.UsePruneNpmGuard;
+        set => _search.UsePruneNpmGuard = value;
+    }
+
+    public bool UseLosingCaptureOrder
+    {
+        get => _search.UseLosingCaptureOrder;
+        set => _search.UseLosingCaptureOrder = value;
+    }
+
+    public bool UseSmallProbCutExact
+    {
+        get => _search.UseSmallProbCutExact;
+        set => _search.UseSmallProbCutExact = value;
+    }
+
+    public bool UseImprovingAboveBeta
+    {
+        get => _search.UseImprovingAboveBeta;
+        set => _search.UseImprovingAboveBeta = value;
+    }
+
+    public bool UseGoodCaptureSlack
+    {
+        get => _search.UseGoodCaptureSlack;
+        set => _search.UseGoodCaptureSlack = value;
+    }
+
+    public bool UseQsEvasionPrune
+    {
+        get => _search.UseQsEvasionPrune;
+        set => _search.UseQsEvasionPrune = value;
+    }
+
+    public bool UseQsEvasionPruneExemptQsChecks
+    {
+        get => _search.UseQsEvasionPruneExemptQsChecks;
+        set => _search.UseQsEvasionPruneExemptQsChecks = value;
+    }
+
+    public bool UseLmpCountsPruned
+    {
+        get => _search.UseLmpCountsPruned;
+        set => _search.UseLmpCountsPruned = value;
+    }
+
+    public bool UseReducedFutility
+    {
+        get => _search.UseReducedFutility;
+        set => _search.UseReducedFutility = value;
+    }
+
+    public bool UseNmpEvalR
+    {
+        get => _search.UseNmpEvalR;
+        set => _search.UseNmpEvalR = value;
+    }
+
+    public bool UseNmpBelowBetaGate
+    {
+        get => _search.UseNmpBelowBetaGate;
+        set => _search.UseNmpBelowBetaGate = value;
+    }
+
+    public bool UseTtCutoffNodeType
+    {
+        get => _search.UseTtCutoffNodeType;
+        set => _search.UseTtCutoffNodeType = value;
+    }
+
+    public bool UseTtCutoffHistory
+    {
+        get => _search.UseTtCutoffHistory;
+        set => _search.UseTtCutoffHistory = value;
+    }
+
+    public bool UseFailHighDamping
+    {
+        get => _search.UseFailHighDamping;
+        set => _search.UseFailHighDamping = value;
+    }
+
+    public bool UseFailHighDampingQs
+    {
+        get => _search.UseFailHighDampingQs;
+        set => _search.UseFailHighDampingQs = value;
+    }
+
+    public bool UseCutoffCountLmrAllNode
+    {
+        get => _search.UseCutoffCountLmrAllNode;
+        set => _search.UseCutoffCountLmrAllNode = value;
+    }
+
+    public bool UseRazoring
+    {
+        get => _search.UseRazoring;
+        set => _search.UseRazoring = value;
+    }
+
+    public bool UsePvWindowEarly
+    {
+        get => _search.UsePvWindowEarly;
+        set => _search.UsePvWindowEarly = value;
+    }
+
+    public bool UseTtRule50Guard
+    {
+        get => _search.UseTtRule50Guard;
+        set => _search.UseTtRule50Guard = value;
+    }
+
+    public bool UseCorrectionGravity
+    {
+        get => _search.UseCorrectionGravity;
+        set => _search.UseCorrectionGravity = value;
+    }
+
+    public bool UseCorrectionWeightCap
+    {
+        get => _search.UseCorrectionWeightCap;
+        set => _search.UseCorrectionWeightCap = value;
+    }
+
+    public int NmpGateMargin
+    {
+        get => _search.NmpGateMargin;
+        set => _search.NmpGateMargin = value;
     }
 
     public bool UseQsContCorrection
@@ -982,11 +1140,6 @@ public sealed class ChessEngine
         get => _search.UseHindsightDepth;
         set => _search.UseHindsightDepth = value;
     }
-    public bool UseCutoffCountLmr
-    {
-        get => _search.UseCutoffCountLmr;
-        set => _search.UseCutoffCountLmr = value;
-    }
 
     public bool UseCaptureSeePruneDeep
     {
@@ -1009,12 +1162,6 @@ public sealed class ChessEngine
     {
         get => _search.UseStatScoreLmr;
         set => _search.UseStatScoreLmr = value;
-    }
-
-    public bool UseCorrectionBlend
-    {
-        get => _search.UseCorrectionBlend;
-        set => _search.UseCorrectionBlend = value;
     }
 
     public bool UsePruningLadder

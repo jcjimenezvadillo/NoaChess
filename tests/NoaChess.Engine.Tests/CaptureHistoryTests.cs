@@ -191,4 +191,53 @@ public class CaptureHistoryTests
         Assert.Equal(lowQuiet, moves[0]);
         Assert.Equal(losingCapture, moves[1]);
     }
+
+    // Two losing captures and three quiets: moving the quiet block in front
+    // swaps ranges of different length and used to hand the captures back
+    // reversed ([b1 b2 q1 q2 q3] -> [q1 q2 q3 b2 b1]). With the LosingCaptureOrder
+    // switch they come back in their sorted order.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MovingQuietsInFront_LosingCaptureOrder(bool sortLosingCaptures)
+    {
+        var board = new Board();
+        Move betterLoser = new(Sq("a1"), Sq("a8"), MoveFlag.Capture);
+        Move worseLoser = new(Sq("h1"), Sq("h8"), MoveFlag.Capture);
+        Move q1 = new(Sq("a2"), Sq("a3"), MoveFlag.Quiet);
+        Move q2 = new(Sq("b2"), Sq("b3"), MoveFlag.Quiet);
+        Move q3 = new(Sq("c2"), Sq("c3"), MoveFlag.Quiet);
+
+        var moves = new MoveList();
+        moves.Add(betterLoser);
+        moves.Add(worseLoser);
+        moves.Add(q1);
+        moves.Add(q2);
+        moves.Add(q3);
+        // Scored and sorted by the preceding capture stage.
+        moves.Scores[0] = -4_000_000;
+        moves.Scores[1] = -4_500_000;
+
+        MovePicker.ScoreAndSortQuiets(
+            moves, quietsFrom: 2, sortFrom: 0, board,
+            new KillerTable(1), new HistoryTable(), ply: 0,
+            contHist: default, counterMove: Move.None,
+            depth: 3, sortLosingCaptures: sortLosingCaptures);
+
+        // The quiets always lead.
+        for (int i = 0; i < 3; i++)
+            Assert.False(moves[i].IsCapture);
+        if (sortLosingCaptures)
+        {
+            Assert.Equal(betterLoser, moves[3]);
+            Assert.Equal(worseLoser, moves[4]);
+        }
+        else
+        {
+            // The documented defect of the default path, kept visible until
+            // the switch is measured.
+            Assert.Equal(worseLoser, moves[3]);
+            Assert.Equal(betterLoser, moves[4]);
+        }
+    }
 }

@@ -1003,14 +1003,10 @@ public sealed class UciLoop
             _engine.Profile = EngineProfile.ByName(_options.Profile);
         if (changed == "Optimism")
             _engine.UseOptimism = _options.Optimism;
-        if (changed == "NmpEvalGate")
-            _engine.UseNmpEvalGate = _options.NmpEvalGate;
         if (changed == "PruningLadder")
             _engine.UsePruningLadder = _options.PruningLadder;
         if (changed == "PruningLadderFutility")
             _engine.UsePruningLadderFutility = _options.PruningLadderFutility;
-        if (changed == "CorrectionBlend")
-            _engine.UseCorrectionBlend = _options.CorrectionBlend;
         if (changed == "StatScoreLmr")
             _engine.UseStatScoreLmr = _options.StatScoreLmr;
         if (changed == "NodeTimeFactor")
@@ -1025,8 +1021,6 @@ public sealed class UciLoop
             _engine.UseEasyMoveWinOnly = _options.EasyMoveWinOnly;
         if (changed == "SlowTcEasyMoveDamp")
             _engine.UseSlowTcEasyMoveDamp = _options.SlowTcEasyMoveDamp;
-        if (changed == "RootStaticEval")
-            _engine.UseRootStaticEval = _options.RootStaticEval;
         if (changed == "QsStackMove")
             _engine.UseQsStackMove = _options.QsStackMove;
         if (changed == "CheckExemptFutility")
@@ -1055,8 +1049,6 @@ public sealed class UciLoop
             _engine.UseTtMateReuse = _options.TtMateReuse;
         if (changed == "RootScoreOrdering")
             _engine.UseRootScoreOrdering = _options.RootScoreOrdering;
-        if (changed == "Razoring")
-            _engine.UseRazoring = _options.Razoring;
         if (changed == "PickerCheckBonus")
             NoaChess.Engine.Heuristics.MovePicker.CheckBonus = _options.PickerCheckBonus;
         if (changed == "PickerThreatWeight")
@@ -1073,6 +1065,56 @@ public sealed class UciLoop
             _engine.UseCaptureFutility = _options.CaptureFutility;
         if (changed == "HistoryPrune")
             _engine.UseHistoryPrune = _options.HistoryPrune;
+        if (changed == "HistoryPruneScale")
+            _engine.HistoryPruneScale = _options.HistoryPruneScale;
+        if (changed == "HindsightReset")
+            _engine.UseHindsightReset = _options.HindsightReset;
+        if (changed == "PruneLossGuard")
+            _engine.UsePruneLossGuard = _options.PruneLossGuard;
+        if (changed == "PruneNpmGuard")
+            _engine.UsePruneNpmGuard = _options.PruneNpmGuard;
+        if (changed == "LosingCaptureOrder")
+            _engine.UseLosingCaptureOrder = _options.LosingCaptureOrder;
+        if (changed == "SmallProbCutExact")
+            _engine.UseSmallProbCutExact = _options.SmallProbCutExact;
+        if (changed == "ImprovingAboveBeta")
+            _engine.UseImprovingAboveBeta = _options.ImprovingAboveBeta;
+        if (changed == "GoodCaptureSlack")
+            _engine.UseGoodCaptureSlack = _options.GoodCaptureSlack;
+        if (changed == "QsEvasionPrune")
+            _engine.UseQsEvasionPrune = _options.QsEvasionPrune;
+        if (changed == "QsEvasionPruneExemptQsChecks")
+            _engine.UseQsEvasionPruneExemptQsChecks = _options.QsEvasionPruneExemptQsChecks;
+        if (changed == "LmpCountsPruned")
+            _engine.UseLmpCountsPruned = _options.LmpCountsPruned;
+        if (changed == "ReducedFutility")
+            _engine.UseReducedFutility = _options.ReducedFutility;
+        if (changed == "NmpEvalR")
+            _engine.UseNmpEvalR = _options.NmpEvalR;
+        if (changed == "NmpBelowBetaGate")
+            _engine.UseNmpBelowBetaGate = _options.NmpBelowBetaGate;
+        if (changed == "TtCutoffNodeType")
+            _engine.UseTtCutoffNodeType = _options.TtCutoffNodeType;
+        if (changed == "TtCutoffHistory")
+            _engine.UseTtCutoffHistory = _options.TtCutoffHistory;
+        if (changed == "FailHighDamping")
+            _engine.UseFailHighDamping = _options.FailHighDamping;
+        if (changed == "FailHighDampingQs")
+            _engine.UseFailHighDampingQs = _options.FailHighDampingQs;
+        if (changed == "CutoffCountLmrAllNode")
+            _engine.UseCutoffCountLmrAllNode = _options.CutoffCountLmrAllNode;
+        if (changed == "Razoring")
+            _engine.UseRazoring = _options.Razoring;
+        if (changed == "PvWindowEarly")
+            _engine.UsePvWindowEarly = _options.PvWindowEarly;
+        if (changed == "TtRule50Guard")
+            _engine.UseTtRule50Guard = _options.TtRule50Guard;
+        if (changed == "CorrectionGravity")
+            _engine.UseCorrectionGravity = _options.CorrectionGravity;
+        if (changed == "CorrectionWeightCap")
+            _engine.UseCorrectionWeightCap = _options.CorrectionWeightCap;
+        if (changed == "NmpGateMargin")
+            _engine.NmpGateMargin = _options.NmpGateMargin;
         if (changed == "QsContCorrection")
             _engine.UseQsContCorrection = _options.QsContCorrection;
         if (changed == "SingularTight")
@@ -1094,8 +1136,6 @@ public sealed class UciLoop
             _engine.UseDrawRandom = _options.DrawRandom;
         if (changed == "HindsightDepth")
             _engine.UseHindsightDepth = _options.HindsightDepth;
-        if (changed == "CutoffCountLmr")
-            _engine.UseCutoffCountLmr = _options.CutoffCountLmr;
         if (changed == "QuietSeePrune")
             _engine.UseQuietSeePrune = _options.QuietSeePrune;
         if (changed == "CaptureSeePruneDeep")

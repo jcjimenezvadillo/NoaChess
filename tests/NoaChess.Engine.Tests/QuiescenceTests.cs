@@ -30,10 +30,12 @@ public class QuiescenceTests
         MethodInfo? method = typeof(AlphaBetaSearch).GetMethod(
             "Quiescence", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        // The trailing arguments are the NMP package's first-ply check flag
-        // and the quiescence entry ply (-1 = this call); reflection does not
-        // fill optional parameters, so both are explicit.
-        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply, false, -1])!;
+        // The trailing arguments are the NMP package's first-ply check flag,
+        // the quiescence entry ply (-1 = this call), whether the node answers
+        // one of the entry node's quiet checks, and the PV hint (-1 = take the
+        // window as received); reflection does not fill optional parameters,
+        // so all four are explicit.
+        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply, false, -1, false, -1])!;
     }
 
     private sealed class ConstantEvaluator(int value) : IPositionEvaluator

@@ -167,8 +167,12 @@ public static class MovePicker
     // Scores moves[from..Count) as captures/promotions and sorts the range.
     // Winning/equal captures land above 0, losing captures in a deeply
     // negative band - the caller uses the sign as the "losers start here" cue.
+    // captureSlack (option GoodCaptureSlack): a capture joins the good band
+    // when SEE >= -captureScore / 18, the reference's split, instead of only
+    // when SEE >= 0.
     public static void ScoreAndSortCaptures(MoveList moves, int from, Board board,
-                                            CaptureHistory? captureHistory = null)
+                                            CaptureHistory? captureHistory = null,
+                                            bool captureSlack = false)
     {
         Move[] items = moves.Moves;
         int[] scores = moves.Scores;
@@ -176,7 +180,7 @@ public static class MovePicker
         for (int i = from; i < count; i++)
             scores[i] = Score(items[i], board, Move.None, NoKillers, NoHistory, 0,
                               contHist: default, counterMove: Move.None, captureHistory: captureHistory,
-                              quietContext: default);
+                              quietContext: default, captureSlack: captureSlack);
         SortRange(moves, from);
     }
 
@@ -188,7 +192,8 @@ public static class MovePicker
                                           Board board, KillerTable killers, HistoryTable history,
                                           int ply, in ContinuationContext contHist,
                                           Move counterMove,
-                                          int? depth = null)
+                                          int? depth = null,
+                                          bool sortLosingCaptures = false)
     {
         Move[] items = moves.Moves;
         int[] scores = moves.Scores;
@@ -209,6 +214,13 @@ public static class MovePicker
             MoveRangeToFront(moves, quietsFrom, sortFrom, quietCount);
             PartialSortRange(moves, sortFrom, sortFrom + quietCount,
                              QuietSortLimit(searchDepth));
+            // MoveRangeToFront swaps two ranges of DIFFERENT length, which
+            // reverses or rotates the losing captures it pushes back
+            // ([b1 b2 q1 q2 q3] becomes [q1 q2 q3 b2 b1]), and the staged loop
+            // serves strictly by index. LosingCaptureOrder restores their
+            // sorted order (sweep find, 2026-09-21).
+            if (sortLosingCaptures)
+                SortRange(moves, sortFrom + quietCount);
         }
         else
             SortRange(moves, sortFrom);
@@ -331,7 +343,8 @@ public static class MovePicker
                              KillerTable killers, HistoryTable history, int ply,
                              in ContinuationContext contHist,
                              Move counterMove, CaptureHistory? captureHistory = null,
-                             QuietOrderingContext quietContext = default)
+                             QuietOrderingContext quietContext = default,
+                             bool captureSlack = false)
     {
         if (move == ttMove)
             return TTMoveScore;
@@ -345,7 +358,22 @@ public static class MovePicker
             // ones at the very back. Inside either band, seven times the
             // victim value supplies the material prior and capture history
             // learns which exchanges actually work in searched positions.
-            return StaticExchangeEvaluator.LosesAtLeast(board, move)
+            // With captureSlack the bar is the reference's SEE >= -score/18:
+            // a well-reputed capture of a valuable piece may lose a little
+            // (a defended BxN is SEE -10 here) and still be served early. A
+            // negative score raises the bar above zero, as it does there.
+            bool losing;
+            if (!captureSlack)
+                losing = StaticExchangeEvaluator.LosesAtLeast(board, move);
+            else
+            {
+                int slack = captureScore / 18;
+                losing = !move.IsPromotion
+                    && (slack >= 0
+                        ? StaticExchangeEvaluator.LosesAtLeast(board, move, slack)
+                        : StaticExchangeEvaluator.Evaluate(board, move) < -slack);
+            }
+            return losing
                 ? LosingCaptureBase + captureScore
                 : GoodCaptureBase + captureScore;
         }
