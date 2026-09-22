@@ -41,37 +41,19 @@ public sealed class CorrectionHistory
     // of once per table.
     public int RawEntry(Board board, ulong key) => _entries[Index(board, key)];
 
-    public void Update(Board board, ulong key, int errorCp, int depth, bool gravity = false,
-                       bool weightCap = false)
+    // The update rule was measured three other ways on 2026-09-21/22 against
+    // v5.9.11/v5.9.12 at 100,000 nodes, and all three were removed: the
+    // reference's read weights and context tables (CorrectionBlend, flat
+    // +1.6 over 2,014), the reference's gravity integrator that corrects a
+    // shared bias almost fully instead of the ~69% this EMA settles at
+    // (CorrectionGravity, H0 -9.6 over 1,082), and this EMA with its
+    // per-update weight capped at 64/256 (CorrectionWeightCap, flat -1.4 over
+    // 1,209). Neither more correction nor gentler updates pay here.
+    public void Update(Board board, ulong key, int errorCp, int depth)
     {
-        ref int entry = ref _entries[Index(board, key)];
-        if (gravity)
-        {
-            // CorrectionGravity (re-investigation of 2026-09-21). The update
-            // below moves each table toward the POST-correction residual, so a
-            // bias every table sees settles at W / (1 + W) = 69% corrected
-            // (W = 2.25, the set's read gain), and one deep update can move a
-            // structure by up to 288 cp. The reference integrates instead:
-            // a gravity accumulator (the same val + b - val*|b|/D rule as the
-            // history tables) whose equilibrium does not depend on the read
-            // weights, so a clean bias is corrected almost fully and noisy
-            // keys shrink. Loop gain W * depth / 37 = 0.061 * depth, the
-            // reference's; at most 32 cp per table per update, 128 cp bound
-            // per table, 288 cp in total under the set's 320 clamp.
-            int e = Math.Clamp(errorCp, -MaxCorrectionCp, MaxCorrectionCp);
-            int bonus = Math.Clamp(e * Scale * depth / 37, -2048, 2048);
-            entry += bonus - (int)((long)entry * Math.Abs(bonus) / 8192);
-            return;
-        }
-
         int target = Math.Clamp(errorCp, -MaxCorrectionCp, MaxCorrectionCp) * Scale;
-        // CorrectionWeightCap (third form, 2026-09-22, after the gravity rule
-        // measured H0 at -9.6 over 1,082: correcting MORE cost Elo). The other
-        // direction: read gain 2.25 times this weight is how far one update
-        // moves the correction, 1.02 of the observed deviation at depth 10 and
-        // 1.125 from depth 11, so one deep result can swing a structure by up
-        // to 288 cp. Capped at 64/256 the product stays at or under 0.56.
-        int weight = Math.Min(16 + depth * depth, weightCap ? 64 : 128);
+        int weight = Math.Min(16 + depth * depth, 128);
+        ref int entry = ref _entries[Index(board, key)];
 
         // Bounded exponential update toward the observed residual. Deep results
         // are better teachers, while shallow noise changes the estimate slowly.

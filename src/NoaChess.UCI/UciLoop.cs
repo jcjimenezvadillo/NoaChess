@@ -1085,8 +1085,8 @@ public sealed class UciLoop
             _engine.UseQsEvasionPrune = _options.QsEvasionPrune;
         if (changed == "QsEvasionPruneExemptQsChecks")
             _engine.UseQsEvasionPruneExemptQsChecks = _options.QsEvasionPruneExemptQsChecks;
-        if (changed == "LmpCountsPruned")
-            _engine.UseLmpCountsPruned = _options.LmpCountsPruned;
+        if (changed == "HistoryPruneCounts")
+            _engine.UseHistoryPruneCounts = _options.HistoryPruneCounts;
         if (changed == "ReducedFutility")
             _engine.UseReducedFutility = _options.ReducedFutility;
         if (changed == "NmpEvalR")
@@ -1109,10 +1109,6 @@ public sealed class UciLoop
             _engine.UsePvWindowEarly = _options.PvWindowEarly;
         if (changed == "TtRule50Guard")
             _engine.UseTtRule50Guard = _options.TtRule50Guard;
-        if (changed == "CorrectionGravity")
-            _engine.UseCorrectionGravity = _options.CorrectionGravity;
-        if (changed == "CorrectionWeightCap")
-            _engine.UseCorrectionWeightCap = _options.CorrectionWeightCap;
         if (changed == "NmpGateMargin")
             _engine.NmpGateMargin = _options.NmpGateMargin;
         if (changed == "QsContCorrection")

@@ -89,9 +89,9 @@ public sealed class UciOptions
     public bool QsEvasionPrune { get; private set; }
     public bool QsEvasionPruneExemptQsChecks { get; private set; }
     // Re-investigation of 2026-09-21 (see AlphaBetaSearch for each one).
-    public bool LmpCountsPruned { get; private set; }
+    public bool HistoryPruneCounts { get; private set; }
     public bool ReducedFutility { get; private set; }
-    public bool NmpEvalR { get; private set; }
+    public bool NmpEvalR { get; private set; } = true;
     public bool NmpBelowBetaGate { get; private set; }
     public bool TtCutoffNodeType { get; private set; }
     public bool TtCutoffHistory { get; private set; }
@@ -101,8 +101,6 @@ public sealed class UciOptions
     public bool Razoring { get; private set; }
     public bool PvWindowEarly { get; private set; }
     public bool TtRule50Guard { get; private set; }
-    public bool CorrectionGravity { get; private set; }
-    public bool CorrectionWeightCap { get; private set; }
     public int NmpGateMargin { get; private set; } = 0;
     public bool QsContCorrection { get; private set; }
     public bool SingularTight { get; private set; }
@@ -281,9 +279,9 @@ public sealed class UciOptions
         output.WriteLine("option name GoodCaptureSlack type check default true");
         output.WriteLine("option name QsEvasionPrune type check default false");
         output.WriteLine("option name QsEvasionPruneExemptQsChecks type check default false");
-        output.WriteLine("option name LmpCountsPruned type check default false");
+        output.WriteLine("option name HistoryPruneCounts type check default false");
         output.WriteLine("option name ReducedFutility type check default false");
-        output.WriteLine("option name NmpEvalR type check default false");
+        output.WriteLine("option name NmpEvalR type check default true");
         output.WriteLine("option name NmpBelowBetaGate type check default false");
         output.WriteLine("option name TtCutoffNodeType type check default false");
         output.WriteLine("option name TtCutoffHistory type check default false");
@@ -293,8 +291,6 @@ public sealed class UciOptions
         output.WriteLine("option name Razoring type check default false");
         output.WriteLine("option name PvWindowEarly type check default false");
         output.WriteLine("option name TtRule50Guard type check default false");
-        output.WriteLine("option name CorrectionGravity type check default false");
-        output.WriteLine("option name CorrectionWeightCap type check default false");
         output.WriteLine("option name NmpGateMargin type spin default 0 min 0 max 1000");
         output.WriteLine("option name QsContCorrection type check default false");
         output.WriteLine("option name SingularTight type check default false");
@@ -507,9 +503,9 @@ public sealed class UciOptions
             case "qsevasionpruneexemptqschecks" when bool.TryParse(value, out bool qepx):
                 QsEvasionPruneExemptQsChecks = qepx;
                 return "QsEvasionPruneExemptQsChecks";
-            case "lmpcountspruned" when bool.TryParse(value, out bool ri0):
-                LmpCountsPruned = ri0;
-                return "LmpCountsPruned";
+            case "historyprunecounts" when bool.TryParse(value, out bool ri0):
+                HistoryPruneCounts = ri0;
+                return "HistoryPruneCounts";
             case "reducedfutility" when bool.TryParse(value, out bool ri1):
                 ReducedFutility = ri1;
                 return "ReducedFutility";
@@ -543,12 +539,6 @@ public sealed class UciOptions
             case "ttrule50guard" when bool.TryParse(value, out bool ri11):
                 TtRule50Guard = ri11;
                 return "TtRule50Guard";
-            case "correctiongravity" when bool.TryParse(value, out bool ri12):
-                CorrectionGravity = ri12;
-                return "CorrectionGravity";
-            case "correctionweightcap" when bool.TryParse(value, out bool cwc):
-                CorrectionWeightCap = cwc;
-                return "CorrectionWeightCap";
             case "nmpgatemargin" when int.TryParse(value, out int ngm):
                 NmpGateMargin = Math.Clamp(ngm, 0, 1000);
                 return "NmpGateMargin";

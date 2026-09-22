@@ -84,21 +84,15 @@ public sealed class CorrectionHistorySet
     // Feeds the observed residual to every table. They all learn from the same
     // observation; what differs is the key each one files it under, which is
     // what lets them generalise over different things.
-    // CorrectionGravity: every table integrates with a gravity rule instead of
-    // tracking the post-correction residual (see CorrectionHistory.Update).
-    public bool Gravity;
-    // CorrectionWeightCap: the EMA's per-update weight capped at 64/256.
-    public bool WeightCap;
-
     public void Update(Board board, int errorCp, int depth, ulong continuationKey)
     {
-        _pawn.Update(board, board.PawnZobristKey, errorCp, depth, Gravity, WeightCap);
-        _minor.Update(board, board.MinorZobristKey, errorCp, depth, Gravity, WeightCap);
-        _nonPawn[0].Update(board, board.NonPawnZobristKey(Color.White), errorCp, depth, Gravity, WeightCap);
-        _nonPawn[1].Update(board, board.NonPawnZobristKey(Color.Black), errorCp, depth, Gravity, WeightCap);
-        _major.Update(board, board.MajorZobristKey, errorCp, depth, Gravity, WeightCap);
+        _pawn.Update(board, board.PawnZobristKey, errorCp, depth);
+        _minor.Update(board, board.MinorZobristKey, errorCp, depth);
+        _nonPawn[0].Update(board, board.NonPawnZobristKey(Color.White), errorCp, depth);
+        _nonPawn[1].Update(board, board.NonPawnZobristKey(Color.Black), errorCp, depth);
+        _major.Update(board, board.MajorZobristKey, errorCp, depth);
         if (continuationKey != 0)
-            _continuation.Update(board, continuationKey, errorCp, depth, Gravity, WeightCap);
+            _continuation.Update(board, continuationKey, errorCp, depth);
     }
 
     // Key for the continuation table: the (piece, destination) of the move that

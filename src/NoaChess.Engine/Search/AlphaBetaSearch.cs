@@ -1076,7 +1076,7 @@ public sealed class AlphaBetaSearch
         _nmpStatsAfterFailCount![bucket]++;
     }
 
-    // LmpCountsPruned: is a quiet the pruning just skipped actually legal?
+    // HistoryPruneCounts: is a quiet the pruning just skipped actually legal?
     // Only asked with the switch on. The board is restored exactly; the NNUE
     // accumulator stack is not touched because nothing is evaluated.
     private static bool QuietIsLegal(Board board, Move move, Color stm)
@@ -1647,9 +1647,16 @@ public sealed class AlphaBetaSearch
     //      (seven investigators and a judge, every diagnosis re-verified
     //      against the code that was actually measured). ----
     //
-    // LmpCountsPruned: quiets pruned by history or SEE count toward the LMP
-    // budget, as the reference's moveCount does (see the LMP site).
-    public bool UseLmpCountsPruned = false;
+    // LmpCountsPruned (quiets pruned by history or SEE counted toward the LMP
+    // budget, as the reference's moveCount counts every legal move) measured
+    // 2026-09-22 against v5.9.12: H0, -17.4 +/- 16.9 over 680 games - counting
+    // the SEE-pruned quiets fires LMP far earlier than the thresholds this
+    // engine calibrated on searched quiets, and it changed the shipped
+    // QuietSeePrune. Removed. What survives is the part HistoryPrune needs:
+    // HistoryPruneCounts counts only the quiets HistoryPrune itself removes,
+    // so that pruning stops being a swap (each pruned quiet let one more
+    // later quiet through at an LMP-bound node) and becomes a saving.
+    public bool UseHistoryPruneCounts = false;
     // ReducedFutility: parent futility on the depth the move would be
     // searched at, with its history, the reference's raw constants; the one
     // valuable rung of the pruning ladder, measured alone (see the site).
@@ -1662,7 +1669,9 @@ public sealed class AlphaBetaSearch
     // does turn some shallow probes into quiescence calls (depth 5 from
     // beta + 81, depth 7-8 from beta + 243), as the reference's own R does;
     // the tactical check before measuring is WAC-300 against the base.
-    public bool UseNmpEvalR = false;
+    // ON since v5.9.13: fixed-node SPRT at 100,000 nodes against v5.9.12,
+    // +14.4 +/- 11.1, LLR +2.96, H1 over 1,492 games (2026-09-22).
+    public bool UseNmpEvalR = true;
     // NmpBelowBetaGate: null probes only where the refined eval is at least
     // beta - NmpGateMargin. The measured gate asked for the reference's raw
     // +365 (about twice the reference's distance in our pawns) and starved
@@ -1709,22 +1718,8 @@ public sealed class AlphaBetaSearch
     // more (reference: rule50_count() < 96), where a score stored at a low
     // clock can end a node whose line is drawn by rule.
     public bool UseTtRule50Guard = false;
-    // CorrectionGravity: the correction tables integrate with a gravity rule
-    // instead of an EMA of the post-correction residual (see
-    // CorrectionHistory.Update); keys, read path and update conditions stay.
-    public bool UseCorrectionGravity
-    {
-        get => _corrections.Gravity;
-        set => _corrections.Gravity = value;
-    }
-    // Measured 2026-09-22: CorrectionGravity H0, -9.6 +/- 13.8 over 1,082
-    // games - correcting more fully cost Elo. CorrectionWeightCap is the
-    // third form, in the other direction (see CorrectionHistory.Update).
-    public bool UseCorrectionWeightCap
-    {
-        get => _corrections.WeightCap;
-        set => _corrections.WeightCap = value;
-    }
+    // CorrectionGravity and CorrectionWeightCap were measured and removed on
+    // 2026-09-22; the numbers are at CorrectionHistory.Update.
 
     // The ProbCut verification search may itself try a null move, as the
     // reference's does (its child is an ordinary NonPV search); this engine
@@ -4355,7 +4350,7 @@ public sealed class AlphaBetaSearch
         int bestScore = -Infinity;
         int searched = 0;
         int quietsSearched = 0;
-        int quietsPruned = 0;    // pruned by history or SEE (LmpCountsPruned)
+        int quietsPruned = 0;    // removed by HistoryPrune (HistoryPruneCounts)
         int alphaBeforeCut = alpha; // the alpha a fail-high broke through (FailHighDamping)
         bool skipQuiets = false; // pruning ladder: LMP at every depth
         int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
@@ -4570,15 +4565,13 @@ public sealed class AlphaBetaSearch
                 // halve the count before the cut (reference LMP shape).
                 int lmpThreshold = 3 + depth * depth;
                 if (!improving) lmpThreshold /= 2;
-                // LmpCountsPruned: the reference counts every legal move before
-                // its pruning step, so a quiet pruned by history or SEE still
-                // uses up the LMP budget. Here only searched quiets counted, so
-                // at an LMP-bound node each pruned quiet let one more later
-                // quiet through - a swap, not a saving (re-investigation of
-                // 2026-09-21: HistoryPrune moved paired depth by 0.000).
+                // HistoryPruneCounts: quiets that HistoryPrune removed use up the
+                // LMP budget too (quietsPruned stays 0 otherwise), so that
+                // pruning saves nodes instead of letting one more later quiet
+                // through (re-investigation of 2026-09-21: HistoryPrune moved
+                // paired depth by 0.000).
                 if ((depth <= 3 || UseLmpAllDepths)
-                    && (UseLmpCountAllMoves ? searched
-                        : quietsSearched + (UseLmpCountsPruned ? quietsPruned : 0)) >= lmpThreshold)
+                    && (UseLmpCountAllMoves ? searched : quietsSearched + quietsPruned) >= lmpThreshold)
                 {
                     if (SearchStats) _stLmp++;
                     continue;
@@ -4606,7 +4599,7 @@ public sealed class AlphaBetaSearch
                         RecordPruneHistory(pruneHist / depth);
                     if (UseHistoryPrune && pruneHist < -HistoryPruneScale * depth)
                     {
-                        if (UseLmpCountsPruned && QuietIsLegal(board, move, stm))
+                        if (UseHistoryPruneCounts && QuietIsLegal(board, move, stm))
                             quietsPruned++;
                         continue;
                     }
@@ -4614,16 +4607,9 @@ public sealed class AlphaBetaSearch
 
                 // A quiet move that loses material outright by SEE is not the
                 // one that rescues a node; the bar tightens with depth squared.
-                // (An illegal king step scores about -20000 here and is always
-                // pruned, which is why LmpCountsPruned tests legality before
-                // counting: the reference counts legal moves only.)
                 if (UseQuietSeePrune && depth <= 8
                     && StaticExchangeEvaluator.Evaluate(board, move) < -23 * depth * depth)
-                {
-                    if (UseLmpCountsPruned && QuietIsLegal(board, move, stm))
-                        quietsPruned++;
                     continue;
-                }
 
                 // Futility pruning (reference parent-node shape): if the static
                 // eval plus a margin that grows with the LMR-reduced depth

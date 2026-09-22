@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.12";
+    public const string Version = "5.9.13";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -377,7 +377,7 @@ public sealed class ChessEngine
             h.UseGoodCaptureSlack = _search.UseGoodCaptureSlack;
             h.UseQsEvasionPrune = _search.UseQsEvasionPrune;
             h.UseQsEvasionPruneExemptQsChecks = _search.UseQsEvasionPruneExemptQsChecks;
-            h.UseLmpCountsPruned = _search.UseLmpCountsPruned;
+            h.UseHistoryPruneCounts = _search.UseHistoryPruneCounts;
             h.UseReducedFutility = _search.UseReducedFutility;
             h.UseNmpEvalR = _search.UseNmpEvalR;
             h.UseNmpBelowBetaGate = _search.UseNmpBelowBetaGate;
@@ -389,8 +389,6 @@ public sealed class ChessEngine
             h.UseRazoring = _search.UseRazoring;
             h.UsePvWindowEarly = _search.UsePvWindowEarly;
             h.UseTtRule50Guard = _search.UseTtRule50Guard;
-            h.UseCorrectionGravity = _search.UseCorrectionGravity;
-            h.UseCorrectionWeightCap = _search.UseCorrectionWeightCap;
             h.NmpGateMargin = _search.NmpGateMargin;
             h.UseQsContCorrection = _search.UseQsContCorrection;
             h.UseSingularTight = _search.UseSingularTight;
@@ -991,10 +989,10 @@ public sealed class ChessEngine
         set => _search.UseQsEvasionPruneExemptQsChecks = value;
     }
 
-    public bool UseLmpCountsPruned
+    public bool UseHistoryPruneCounts
     {
-        get => _search.UseLmpCountsPruned;
-        set => _search.UseLmpCountsPruned = value;
+        get => _search.UseHistoryPruneCounts;
+        set => _search.UseHistoryPruneCounts = value;
     }
 
     public bool UseReducedFutility
@@ -1063,17 +1061,7 @@ public sealed class ChessEngine
         set => _search.UseTtRule50Guard = value;
     }
 
-    public bool UseCorrectionGravity
-    {
-        get => _search.UseCorrectionGravity;
-        set => _search.UseCorrectionGravity = value;
-    }
 
-    public bool UseCorrectionWeightCap
-    {
-        get => _search.UseCorrectionWeightCap;
-        set => _search.UseCorrectionWeightCap = value;
-    }
 
     public int NmpGateMargin
     {

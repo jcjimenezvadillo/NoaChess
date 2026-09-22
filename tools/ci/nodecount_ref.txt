@@ -1,7 +1,7 @@
-126949
+141262
 
-# Regenerated 2026-09-22 against the 5.9.12 tree (GoodCaptureSlack on by
-# default), with the published Release binary and UseNNUE=false forced by the
+# Regenerated 2026-09-22 against the 5.9.13 tree (GoodCaptureSlack and
+# NmpEvalR on by default; 5.9.12 gave 126949), with the published Release binary and UseNNUE=false forced by the
 # check. The previous number (258577, generated 2026-08-30 against 5.3.0) had
 # not been regenerated since, so the check had failed on every release after
 # 5.3.0; v5.9.11 gives 133561. The number is tied to the SEARCH plus the
