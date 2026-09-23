@@ -864,7 +864,14 @@ public sealed class AlphaBetaSearch
     // zero or once the root is proven lost); on also probes proven draws
     // and losses at any clock, which is what a long quiet drawn endgame
     // needs to keep the search anchored to the truth instead of NNUE eval.
-    public bool UseTbDrawProbeAlways = false;
+    // ON since v5.9.19 by criterion, not by H1: verified against Syzygy
+    // directly (not just our own search) on three separate points of one
+    // real bot game (a K+R vs K+R+B draw, WDL=0), each stuck at -122 to
+    // -125 cp off and correcting to 0 on; identical bench nodes with
+    // Syzygy loaded (5,193,386, 60 positions) in either state, since the
+    // gate only ever narrows the pieceCount <= _tbMaxMen endgames a normal
+    // game does not reach; wins untouched (checked on two win positions).
+    public bool UseTbDrawProbeAlways = true;
 
     // Set between iterations: the completed root score sat in the TB loss
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
