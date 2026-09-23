@@ -74,9 +74,9 @@ public sealed class UciOptions
     public bool HistoryPrune { get; private set; }
     public int HistoryPruneScale { get; private set; } = 20;
     // Search sweep of 2026-09-21 (see AlphaBetaSearch for each one).
-    public bool PruneLossGuard { get; private set; }
-    public bool LosingCaptureOrder { get; private set; }
-    public bool SmallProbCutExact { get; private set; }
+    public bool PruneLossGuard { get; private set; } = true;
+    public bool LosingCaptureOrder { get; private set; } = true;
+    public bool SmallProbCutExact { get; private set; } = true;
     public bool ImprovingAboveBeta { get; private set; } = true;
     public bool GoodCaptureSlack { get; private set; } = true;
     // Re-investigation of 2026-09-21 (see AlphaBetaSearch for each one).
@@ -84,7 +84,7 @@ public sealed class UciOptions
     public bool NmpEvalR { get; private set; } = true;
     public bool TtCutoffHistory { get; private set; } = true;
     public bool CutoffCountLmrAllNode { get; private set; }
-    public bool PvWindowEarly { get; private set; }
+    public bool PvWindowEarly { get; private set; } = true;
     public bool TtRule50Guard { get; private set; }
     public bool QsContCorrection { get; private set; }
     public bool SingularTight { get; private set; }
@@ -248,16 +248,16 @@ public sealed class UciOptions
         output.WriteLine("option name FutilityFailSoft type check default true");
         output.WriteLine("option name HistoryPrune type check default false");
         output.WriteLine("option name HistoryPruneScale type spin default 20 min 1 max 8192");
-        output.WriteLine("option name PruneLossGuard type check default false");
-        output.WriteLine("option name LosingCaptureOrder type check default false");
-        output.WriteLine("option name SmallProbCutExact type check default false");
+        output.WriteLine("option name PruneLossGuard type check default true");
+        output.WriteLine("option name LosingCaptureOrder type check default true");
+        output.WriteLine("option name SmallProbCutExact type check default true");
         output.WriteLine("option name ImprovingAboveBeta type check default true");
         output.WriteLine("option name GoodCaptureSlack type check default true");
         output.WriteLine("option name HistoryPruneCounts type check default false");
         output.WriteLine("option name NmpEvalR type check default true");
         output.WriteLine("option name TtCutoffHistory type check default true");
         output.WriteLine("option name CutoffCountLmrAllNode type check default false");
-        output.WriteLine("option name PvWindowEarly type check default false");
+        output.WriteLine("option name PvWindowEarly type check default true");
         output.WriteLine("option name TtRule50Guard type check default false");
         output.WriteLine("option name QsContCorrection type check default false");
         output.WriteLine("option name SingularTight type check default false");

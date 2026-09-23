@@ -1657,21 +1657,27 @@ public sealed class AlphaBetaSearch
     // pruned on the static eval and the node returned a mate its pruned moves
     // might have escaped. The same switch adds the reference's !is_loss(beta)
     // to the null-move entry.
-    public bool UsePruneLossGuard = false;
     // PruneNpmGuard (the reference enters step 14 only with non-pawn material
     // for the side to move, so king-and-pawn positions search every move) was
     // measured inside two bundles on 2026-09-22 against v5.9.12: with it H0
     // -3.8 over 1,729, without it flat +1.7 over 1,211 - about five Elo lost
-    // to it alone. Removed. The other three switches of the bundle stay, off:
-    // they are real defects whose fixes measure level, a tie for the user's
-    // decision rather than a win.
+    // to it alone. Removed. The other three switches of the bundle, this one
+    // included, are real defects whose fixes measured level (flat, +1.2 over
+    // 1,213 as a bundle against v5.9.15): not H1, but not a bet either, since
+    // each one corrects a case the unfixed code gets wrong.
+    // ON since v5.9.18 by criterion, not by H1: the bundle also measured
+    // -1.42% bench nodes on the shipping build (5,193,384 against 5,268,200
+    // at depth 11, 60 positions) - cheaper, not costlier, for a flat Elo read.
+    public bool UsePruneLossGuard = true;
     // LosingCaptureOrder: moving the quiet block in front of the losing
     // captures swapped two ranges of different length, which reverses or
     // rotates the captures; they are re-sorted afterwards.
-    public bool UseLosingCaptureOrder = false;
+    // ON since v5.9.18, with UsePruneLossGuard (see its comment).
+    public bool UseLosingCaptureOrder = true;
     // SmallProbCutExact: the small ProbCut accepted only LowerBound entries;
     // the reference tests the lower-bound BIT, which an Exact entry carries.
-    public bool UseSmallProbCutExact = false;
+    // ON since v5.9.18, with UsePruneLossGuard (see its comment).
+    public bool UseSmallProbCutExact = true;
     // ImprovingAboveBeta: after the null move, a node whose corrected eval
     // already clears beta counts as improving (reference improving |=
     // staticEval >= beta) for ProbCut, LMP and LMR.
@@ -1762,8 +1768,13 @@ public sealed class AlphaBetaSearch
     // PvWindowEarly: the PV/non-PV decision is taken from the window as the
     // node received it, before the upcoming-repetition raise or the
     // mate-distance clamp can narrow it (the reference's node type is a
-    // template parameter nothing can change). Rare.
-    public bool UsePvWindowEarly = false;
+    // template parameter nothing can change). Rare: measured flat, +4.9 +/-
+    // 12.4 over 1,207 games against v5.9.15.
+    // ON since v5.9.18 by criterion, not by H1: it corrects a real
+    // classification bug (the unfixed code can mislabel the rare node whose
+    // window narrows after entry) at a measured cost of 3 nodes on 5,268,200
+    // (depth 11, 60 positions) - rounding, not a real change.
+    public bool UsePvWindowEarly = true;
     // TtRule50Guard: no transposition cutoff at a fifty-move clock of 96 or
     // more (reference: rule50_count() < 96), where a score stored at a low
     // clock can end a node whose line is drawn by rule.
