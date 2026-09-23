@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 2026-09-23 (v5.9.19) - a tablebase draw was invisible to almost the whole search
+
+**`TbDrawProbeAlways` ON.** Found reviewing two real bot games the user flagged as playing without
+any apparent plan in a long endgame. One of them (a Lichess blitz game, NoaBot vs RustyRival,
+2026-09-22) reached a King+Rook vs King+Rook+Bishop ending with no pawns - a position confirmed a
+draw by probing the Syzygy tables directly, not through any engine's own search. The shipped engine,
+with the same tables loaded, stayed at -122 to -125 centipawns for 24 iterations straight in that
+same position, as if it were losing.
+
+**The cause.** The node-level Syzygy probe only fires when the fifty-move counter reads exactly
+zero, or once the root is already known lost. That guard exists for the WIN case: the tables answer
+"won" with no regard for the fifty-move rule, so a win that needs more plies than the counter allows
+is really a draw, and the clock has to be checked before trusting it. A draw or a loss has no such
+ambiguity - the fifty-move rule can only ever turn a win into a draw, never touch a result that is
+already a draw or a loss - but the guard blocked all three alike. In a long, quiet endgame with no
+captures for many plies the clock is almost never zero, so the probe skipped nearly every node in a
+tablebase-covered subtree and the search fell back to the NNUE evaluation, which does not know this
+material shape and read it as substantially worse for White the whole time. The win case is
+untouched: a proven win still needs the clock at zero (or the root already lost) before it is
+trusted, exactly as before.
+
+**Verified on three separate points of the real game**, each stuck at -122 to -125 cp with the guard
+as shipped and correcting to the true 0 with it loosened, and on two won positions with unrelated
+material, where the option changes nothing. Node-identical with Syzygy loaded on the 60-position
+bench at depth 11 (5,193,386 nodes in every configuration): the gate only ever narrows tablebase-size
+endgames a normal game's node-identity bench never reaches. 461 tests.
+
+The root move selection itself was never in danger - a separate, unconditional filter always keeps
+the root restricted to game-theoretically optimal moves regardless of the clock, which is why the
+flagged game still ended in the draw the tables call it. What this fixes is the search staying
+truthfully anchored to that draw instead of playing the rest of the game convinced it was losing.
+
 ## 2026-09-23 (v5.9.18) - three fidelity fixes ship on judgment, not on Elo
 
 **`PruneLossGuard`, `LosingCaptureOrder`, `SmallProbCutExact` and `PvWindowEarly` ON.** None of the
