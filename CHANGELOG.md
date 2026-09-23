@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## 2026-09-23 (v5.9.17) - fqco5911 embedded: a real, small data step, and why it is small
+
+**`fqco5911` replaces `fqco592` as the embedded net.** Same recipe, a larger corpus (datascale2 +
+datascale4 + datascale5 + selfplay-gen8 + the 17 elite WDL shards, 1,219,446,812 records against
+904,912,411, 0.43 doublings). **Measured at 100,000 fixed nodes: +7.8 +/- 6.0, LOS 99.4%, LLR 2.96,
+H1 over 5,401 games.** No node-count change (a net swap never moves the classical-path CI reference).
+
+**Why the gain is small, investigated end to end.** Seven independent readings of the training
+pipeline, each adversarially checked against the code and the data rather than the project's own
+notes about itself, converged on one finding: the project's two largest NNUE wins on record, gen9's
++18 and fqcohuman3's +21.6, were never data steps. Both were the tail of one 60-epoch cosine
+learning-rate anneal (`lr0=1e-3, T_max=60`) on a fixed 190-file corpus, delivered across three
+crash-resumed segments (39+14+7 epochs). The learning rate every generation since has inherited
+through `dump_args.py` - `4.287769e-05` - is not a recipe; it is that schedule evaluated at epoch 53
+of 60, to nine figures. `fqco592` and `fqco5911` are the only two nets ever trained as 7 epochs of
+tail polish at the floor of that already-finished anneal, warm-started each time from the previous
+tail-polish net, and they are exactly the two generations that measured almost nothing. The
+data-scale axis itself is real but decaying as documented (+82 Elo per doubling at 4.3M-20M, +26 at
+20M-324M, about +12 here at 0.43 doublings of a 1.2-billion corpus) and is not, on its own, the
+reason this generation gained little.
+
+Ruled out with measurements, not assumptions: the corpus was consumed in full, every epoch
+(`--max-records` is dead code on the streaming path and was decoration in five checkpoints' recorded
+args); quantization costs under 3 Elo (RMS 2.67 cp between the trained function and the engine's
+integer forward pass, against a 161-231 cp mean evaluation); duplicate positions and root-diversity
+composition cost about 0; and the measurement protocol was not hiding a larger effect (the SPRT's
+point estimate held inside [+4.1, +8.0] from game 800 to game 5,401).
+
+**Also closed since v5.9.16, node-identical, no engine change from this SPRT protocol:** the
+confirmation run of the whole two-day campaign, v5.9.16 against v5.9.11 with the same embedded net
+on both sides, **+25.3 +/- 16.3, LLR +2.97, H1 over 728 games**; and a full re-investigation of nine
+options whose only verdicts dated from 2026-09-08, taken before the `improving` flag was fixed and
+before the cutNode labels were corrected, plus the LMR adjusters only ever measured inside a
+package. Deleted from the engine: `ReducedFutility` with `ReducedFutilityRefDepth` (H0, -12.7 over
+792, the line exhausted after three shapes), `MoveCountLmr` (-7.9 over 757 node-neutral), `LmrChecks`
+(-3.6 over 1,199, a new option: checking moves may now be reduced, and doing so measured worse),
+`NmpPackage` (flat, -0.3 over 1,119, the corrected x0.48 gate), and the quiescence evasion prune
+(-6.4 over 1,205 against v5.9.16 after an earlier +4.6 screen). Fourteen more options settled as ties
+and stay off pending a decision (`PriorFailLowBonus`, `SingularTight`, `CaptureSeePruneDeep`,
+`HistoryPrune`, `CutoffCountLmrAllNode`, `QsContCorrection`, `QsEntryKey`, the fidelity trio,
+`PvWindowEarly`, `NmpNonPvOnly`, `NmpCutNodeOnly`, `CutNodeLmr`, `CutNodeLmrTtPv`, `TtRule50Guard`);
+two packages of the strongest ties do not add either (-3.5 over 1,216; flat +2.9 over 1,222). Full
+numbers and method in ROADMAP.md, 2026-09-23. 461 tests, default search node-identical throughout.
+
+Two real defects found while investigating, left documented rather than fixed this release: the
+training validation split is a per-file tail cut and leaks (5.48% of one shard's val tail is found
+verbatim inside 1.64% of the training corpus, in four other shards); and this training run left no
+log, so its epoch-by-epoch loss curve cannot be recovered. `fqco592`'s own promotion (107 games,
+0.500, with ponder ON against this project's own ponder-off rule for SPRTs) is also flagged as
+under-measured and worth re-running properly. See NNUE_HISTORY.md, 2026-09-23, for the full recipe
+and the experiment plan ranked by cost for the next generation (a real anneal on the current corpus
+is the highest-expected-value experiment on the list, ahead of more datagen of the same kind).
+
 ## 2026-09-22 (v5.9.16) - a transposition cutoff teaches the move that caused it
 
 **`TtCutoffHistory` ON, in its third form.** A node cut by the transposition table returned at once
@@ -8,13 +61,13 @@ had just produced again; only a searched cutoff fed the history tables. Now a qu
 move that fails high at a non-PV node earns about 0.56x of the depth-squared bonus a searched cutoff
 earns, in the butterfly table and the first continuation table, capped at depth 6 where the
 reference caps its own `min(112 * depth, 695)`. The first form gave the full bonus, uncapped and at
-PV windows too, and read flat (+3.4 over 1,215); the second added the reference's malus to the
+PV windows too, and read flat (+3.2 over 1,218); the second added the reference's malus to the
 previous quiet move and was H0 (-18.4 over 642). **Measured at 100,000 fixed nodes against v5.9.14:
 +16.6 +/- 12.2, LLR +3.00, H1 over 1,300 games (LOS 99.6%).**
 
 **Razoring removed again, the line closed.** A fifth shape, restored on 2026-09-21 with every gap
 of the four earlier ones corrected (the TT-refined eval, the quiescence with its first-ply quiet
-checks, the current reference's direct return), measured -13.0 +/- 21.3 over 406 games (LLR -1.52).
+checks, the current reference's direct return), measured -13.0 +/- 21.3 over 409 games (LLR -1.52).
 Node-identical at the shipping settings (60 positions at depth 11, 4,902,968 nodes against v5.9.15
 with the option on). CI node count regenerated. 461 tests.
 
@@ -24,7 +77,7 @@ with the option on). CI node count regenerated. 461 tests.
 eval alone, and this engine has no gives-check test before the make, so a quiet move that checks the
 enemy king was pruned like any other whenever the eval sat under alpha - the node where the check is
 often the only move that matters. The reference prunes only quiets that do not give check. The first
-form exempted every direct check at depth <= 4 and measured -5.7 over 1,220 games (+16.9% nodes: the
+form exempted every direct check at depth <= 4 and measured -4.9 over 1,223 games (+16.9% nodes: the
 exemption fired far more than it paid). The second form keeps the exemption to depth <= 2 and to
 checks that do not lose material on the static exchange. **Measured at 100,000 fixed nodes against
 v5.9.13: +13.0 +/- 10.2, LLR +2.97, H1 over 1,839 games (LOS 99.4%).** Discovered checks are still
@@ -36,7 +89,7 @@ depth 11, 4,622,672 nodes, the same move in every one against v5.9.14 with the o
 margin; H0, -4.4 over 1,744), `HindsightReset` (the reduction that reached a node cleared once read;
 -3.0 over 1,073 alone, -4.7 over 1,108 with the deeper re-search, the reference's configuration of
 the two), `ReducedFutilityUnclamped` (the reduced-depth futility without its depth gate and floor;
--1.7 over 1,203 against +3.8 for the clamped form) and `TtCutoffNodeType` (a shallow TT cutoff
+-1.7 over 1,203 against +4.8 for the clamped form) and `TtCutoffNodeType` (a shallow TT cutoff
 taken only when the node type agrees with the bound; -2.0 over 1,206 on the old labels, -6.6 over
 923 on the corrected ones). Each leaves a tombstone with its numbers at the site. CI node count
 regenerated. 461 tests.
@@ -46,8 +99,8 @@ regenerated. 461 tests.
 **`TtNoPvCutoff`, `FutilityFailSoft` and `ImprovingAboveBeta` ON, as one change.** Each had read
 positive on its own and none closed at elo1 = 10: no transposition cutoff at PV nodes (+6.4 over
 2,920 games against v5.9.11), the futility-pruned quiets' value raising a fail-low node's bound as
-the reference's step 14 does (+7.8 over 2,286), and a node whose corrected eval already clears beta
-counting as improving after the null move (+5.5 over 1,205). **Measured together at 100,000 fixed
+the reference's step 14 does (+8.3 over 2,293), and a node whose corrected eval already clears beta
+counting as improving after the null move (+5.8 over 1,206). **Measured together at 100,000 fixed
 nodes against v5.9.12: +11.8 +/- 9.4, LLR +3.00, H1 over 2,259 games (LOS 99.3%).** Measured on the
 v5.9.12 base, before `NmpEvalR` shipped; the two touch different parts of the node.
 
@@ -58,10 +111,10 @@ three options chose Ka8, one of the longest defences, and tripped the assertion.
 forbids Kc7, with the distances in its comment.
 
 **Also in this build, node-identical at the shipping settings:** `CaptureFutility` removed after two
-measured forms (raw margins flat -1.7, material-unit margins flat -2.9); `PruneNpmGuard` removed
-(inside a bundle it cost about five Elo: -3.8 with it, +1.7 without); `ReducedFutilityUnclamped`
+measured forms (raw margins flat -2.0, material-unit margins flat -2.9); `PruneNpmGuard` removed
+(inside a bundle it cost about five Elo: -4.0 with it, +1.2 without); `ReducedFutilityUnclamped`
 added for measurement. `HindsightReset` with `LmrDeeperResearch`, the reference's configuration,
-read -7.1 over 1,025 (LLR -2.55) and leaves the engine in the next build. CI node count
+read -4.7 over 1,108 (LLR -2.12) and leaves the engine in the next build. CI node count
 regenerated. 461 tests.
 
 ## 2026-09-22 (v5.9.13) - the null move reduces more the further the eval sits above beta
@@ -81,7 +134,7 @@ band for the first time (below beta it cuts 0.4-1% of the time for 1-3 nodes, ab
 (-17.4 over 680) and was removed, its useful half kept as `HistoryPruneCounts` (only the quiets the
 history prune removes count toward the LMP budget, turning that prune into a saving: -4.0% bench
 nodes); the correction family closed after three shapes (`CorrectionGravity` H0 -9.6,
-`CorrectionWeightCap` flat -1.4, both removed). The publish script now sends `isready` before it
+`CorrectionWeightCap` flat -1.2, both removed). The publish script now sends `isready` before it
 checks for the embedded network, which is announced there and not on `uci`. CI node count
 regenerated on this release's binary. 461 tests.
 

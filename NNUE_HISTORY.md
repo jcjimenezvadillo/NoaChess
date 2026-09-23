@@ -3,15 +3,63 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.11, 2026-09-18).** The embedded net is `fqco592` (v5.9.10, entry below):
-fqcohuman3's exact recipe, warm-started from fqcohuman3's `.partial`, trained on datascale2 +
-datascale4 + selfplay-gen8. Architecture is HalfKAv2_hm with factorized features, 128-wide feature
-transformer, coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the
-2026-08-11 status entry further down). Last measured CCRL: **3321 +/- 45** (v5.9.2 gauntlet,
-measured field labels, 52.1% over 240 games); nothing from v5.9.3 onward has been regauntleted, and
-fqco592's own SPRT against fqcohuman3 was cut at 107 games on 0.500, so 3321 is still the number
-that stands. The next corpus, datascale5 (300M at 6,000 nodes, root diversity on, teacher fqco592),
-is generating as this is written. 459 tests.
+**Current state (v5.9.17, 2026-09-23).** The embedded net is `fqco5911` (entry below): fqco592's
+recipe over a larger corpus, warm-started from `fqco592.pt.partial`. Architecture is HalfKAv2_hm
+with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
+training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
+CCRL: **3321 +/- 45** (v5.9.2 gauntlet, measured field labels, 52.1% over 240 games); nothing from
+v5.9.3 onward has been regauntleted (a clock-based gauntlet needs the box free). 461 tests.
+
+**Read this before training another generation the same way.** The investigation that explains
+`fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
+gen9's +18 and fqcohuman3's +21.6 - were not data steps at all: both were the tail of a 60-epoch
+cosine anneal (`lr0=1e-3, T_max=60`) on an unchanged 190-file corpus, split across crash-resumed
+segments. `fqco592` and `fqco5911` are the only two nets ever trained as 7 epochs of tail polish at
+the floor of that same finished schedule (`--lr 4.287769e-05`, evaluated: it is the reference
+schedule at epoch 53 of 60, to nine figures) - and they are exactly the two that measured almost
+nothing. The recipe `dump_args.py` reads off a champion checkpoint is a **resume stub**, not a
+recipe: copying it forward again is the most expensive mistake available. The next generation needs
+either a cold 60-epoch anneal or a real re-entry point in the schedule (not its last 12%), not
+another `--epochs 7` run at this learning rate. `--max-records 120000000` in `Train-Fqco5911.ps1` is
+dead code on the streaming path (`train_streaming` returns before it is read) and should not be
+copied forward as if it limited anything - every run described here consumed its entire corpus,
+every epoch.
+
+---
+
+## fqco5911 ships as v5.9.17 (2026-09-23): a data step, measured small and real
+
+fqco592's exact recipe (7 epochs, batch 16384, lr 4.287769e-05, lambda 0.735 to 0.7, the reference
+loss with exponent 2.5, 240/145 input and output constants, weight decay 1e-05, 128/32/32 widths, one
+output bucket, factorized, coarse lane, QAT at QA 255, seed 1, 5% validation), warm-started from
+`fqco592.pt.partial`, on a larger corpus: datascale2 (600,006,650) + datascale4 (298,082,565) +
+datascale5 (297,839,853, 6,000 nodes, root diversity on, teacher fqco592, completed 2026-09-22) +
+selfplay-gen8 (6,823,196) + the 17 elite WDL shards (16,694,548, teacher fqco592) - 263 files,
+1,219,446,812 records, against fqco592's 904,912,411 (a 1.3475x, 0.43 doublings). Best epoch 6 of 7,
+val 0.005543. Export report against its own teacher labels: pearson 0.9470, slope 0.817, RMS 114.0
+cp, sign agreement 90.2% - the slope and RMS are unremarkable on this architecture (fqcohuman3 reads
+0.811 on the same file) and explain none of the result below. Export verified bit-exact against the
+engine's own probe (`--nnueprobe`, value 57 both sides). Architecture and file size unchanged
+(5,820,956 bytes), so a net swap changes no node counts and costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592: +7.8 +/- 6.0 Elo, LOS 99.4%, LLR 2.96, H1 over
+5,401 games** (1,199-1,078-3,124, draw ratio 57.8%; the point estimate held inside [+4.1, +8.0] from
+game 800 onward, so the run was topped up past the SPRT bounds for precision rather than stopped
+early). At the project's own data-scale curve (+82 Elo per doubling at 4.3M-20M, +26 at 20M-324M,
+NNUE_HISTORY.md, 2026-08-01/09), 0.43 doublings measured here gives about **+11.6 Elo per doubling**
+at this corpus size - the expected shape of diminishing returns, not a broken step. See CHANGELOG.md,
+2026-09-23, for the full investigation into why this generation's gain is small and what it costs to
+recover more: in short, the schedule collapsed from 60 epochs to 7 while the corpus grew, and that
+axis - not data volume - is where the missing Elo most likely is.
+
+Two defects found and fixed while investigating this run, not yet acted on beyond documenting them:
+the validation split is a per-file tail cut, and 5.48% of one shard's tail is found verbatim inside
+1.64% of the training corpus (a real, small leak in every validation number on record); and no
+training log exists for this run (`Lanzar-Train-Fqco5911.bat` redirects nothing), so its epoch-by-
+epoch loss curve is lost. `NNUE_HISTORY.md` previously called datascale2 "924M, human-seeded, the
+fixed base" (2026-09-17 entry below); the shard headers give 600,006,650 records in 121 files - the
+924M figure was wrong and is left uncorrected below as originally published, per this file's own
+convention for stale historical numbers.
 
 ---
 
@@ -60,8 +108,8 @@ v5.9.0 was 0.005860). Against that shipped net, at fixed nodes: **+21.6 +/- 14.6
 LLR 2.98, H1 over 983 games**. Export verified bit-exact against the engine's own probe. Bench
 7,793,209 nodes at depth 12. Gauntlet, single-threaded, field 2, measured labels: **52.1% over 240
 games, 3321 +/- 45 CCRL**, against v5.9.0/v5.9.1's 3276, v5.8.7's 3286 and v5.8.6's 3296 on the same
-measured labels. Internally this final checkpoint is referred to as `fqcohuman3` and is the net
-currently embedded in the engine (see "Current state" above).
+measured labels. Internally this final checkpoint is referred to as `fqcohuman3`; it was the embedded
+net until `fqco592` replaced it in v5.9.10 (see "Current state" above).
 
 **The training loader now survives a machine that reads memory back wrong.** Four training runs died
 in two days with three different faces: an impossible permutation index, two CUDA device-side
