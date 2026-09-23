@@ -859,6 +859,13 @@ public sealed class AlphaBetaSearch
     // better at measured zero cost. Off restores the published behavior.
     public bool UseTbResistance = true;
 
+    // TbDrawProbeAlways: see the comment at its use site (the node-level
+    // Syzygy probe). Off restores the shipped guard (probe only at clock
+    // zero or once the root is proven lost); on also probes proven draws
+    // and losses at any clock, which is what a long quiet drawn endgame
+    // needs to keep the search anchored to the truth instead of NNUE eval.
+    public bool UseTbDrawProbeAlways = false;
+
     // Set between iterations: the completed root score sat in the TB loss
     // band, so the NEXT iteration runs SearchRoot in resistance mode.
     private bool _rootLostTb;
@@ -3771,14 +3778,37 @@ public sealed class AlphaBetaSearch
         // "lost", but among lost moves the eval still knows which resists.
         // Infinity means no cap.
         int tbCeiling = Infinity;
+        // TbDrawProbeAlways: the clock==0 gate below exists for the 50-move
+        // rule's sake, and that rule can only ever turn a WIN into a draw -
+        // it never turns a genuine draw into anything else, and a loss for
+        // the side to move stays a loss regardless of the clock (the rule
+        // only protects the side ahead). Gating draw and loss recognition on
+        // the clock as well was found 2026-09-23 investigating a real bot
+        // game (a K+R vs K+R+B ending, WDL=0 confirmed against the tables
+        // directly): with no captures for many plies the clock almost never
+        // reads 0, so this node-level probe skipped nearly every node in a
+        // long, quiet, tablebase-drawn endgame, and the search fell back to
+        // the NNUE eval, which does not know this material shape and read a
+        // stable, wrong -125 cp for a dead draw for 24 iterations straight.
+        // Off: exactly the shipped guard. On: a proven draw or loss keeps
+        // probing every node in range regardless of the clock; a win still
+        // needs it at 0 (or the root already known lost) to respect the rule.
+        bool tbClockOk = board.HalfmoveClock == 0 || _rootLostInTb;
         if (!_rootInTb
             && pieceCount <= _tbMaxMen
             && (pieceCount < _tbMaxMen || depth >= _tbMinProbeDepth)
-            && (board.HalfmoveClock == 0 || _rootLostInTb) && ply > 0
+            && (tbClockOk || UseTbDrawProbeAlways) && ply > 0
             && excluded == Move.None)
         {
             if (Tablebases.Syzygy.ProbeWdl(board, out var wdlScore))
             {
+                // With the option on and the clock gate the only reason this
+                // node was reached, a WIN cannot be trusted yet: skip it and
+                // let the normal search continue instead of hard-returning a
+                // win the fifty-move counter might not actually allow.
+                if (UseTbDrawProbeAlways && !tbClockOk && wdlScore == Tablebases.WdlScore.Win)
+                    goto SkipTbProbe;
+
                 TbHits++;
 
                 // With the fifty-move rule respected a cursed win is only a
@@ -3821,6 +3851,7 @@ public sealed class AlphaBetaSearch
                     tbCeiling = tbScore;
             }
         }
+        SkipTbProbe:
 
         // ---- Internal Iterative Reductions ----
         // No TT move at a node that deserves real depth means either the

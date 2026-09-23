@@ -1128,6 +1128,8 @@ public sealed class UciLoop
             _engine.UseTbPvCap = _options.TbPvCap;
         if (changed == "TbResistance")
             _engine.UseTbResistance = _options.TbResistance;
+        if (changed == "TbDrawProbeAlways")
+            _engine.UseTbDrawProbeAlways = _options.TbDrawProbeAlways;
         if (changed == "TbWinTieBreak")
             _engine.UseTbWinTieBreak = _options.TbWinTieBreak;
         if (changed == "WonBandMaxMen")

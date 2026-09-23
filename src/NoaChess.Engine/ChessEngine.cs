@@ -327,6 +327,7 @@ public sealed class ChessEngine
             h.UseKillerShallowing = _search.UseKillerShallowing;
             h.UseTbPvCap = _search.UseTbPvCap;
             h.UseTbResistance = _search.UseTbResistance;
+            h.UseTbDrawProbeAlways = _search.UseTbDrawProbeAlways;
             h.UseTbWinTieBreak = _search.UseTbWinTieBreak;
             h.WonBandMaxMen = _search.WonBandMaxMen;
             h.UseWonBandPromoGuard = _search.UseWonBandPromoGuard;
@@ -667,6 +668,12 @@ public sealed class ChessEngine
     {
         get => _search.UseTbResistance;
         set => _search.UseTbResistance = value;
+    }
+
+    public bool UseTbDrawProbeAlways
+    {
+        get => _search.UseTbDrawProbeAlways;
+        set => _search.UseTbDrawProbeAlways = value;
     }
     public bool UseTbWinTieBreak
     {

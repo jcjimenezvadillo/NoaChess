@@ -112,6 +112,7 @@ public sealed class UciOptions
     public bool KillerShallowing { get; private set; } = true;
     public bool TbPvCap { get; private set; }
     public bool TbResistance { get; private set; } = true;
+    public bool TbDrawProbeAlways { get; private set; }
     // Progress tie-break in tablebase-won roots outside the tables (see AlphaBetaSearch.UseTbWinTieBreak).
     public bool TbWinTieBreak { get; private set; } = true;
     // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
@@ -276,6 +277,7 @@ public sealed class UciOptions
         output.WriteLine("option name KillerShallowing type check default true");
         output.WriteLine("option name TbPvCap type check default false");
         output.WriteLine("option name TbResistance type check default true");
+        output.WriteLine("option name TbDrawProbeAlways type check default false");
         output.WriteLine("option name TbWinTieBreak type check default true");
         output.WriteLine("option name WonBandMaxMen type spin default 8 min 4 max 32");
         output.WriteLine("option name WonBandPromoGuard type check default true");
@@ -538,6 +540,9 @@ public sealed class UciOptions
             case "tbresistance" when bool.TryParse(value, out bool tbr):
                 TbResistance = tbr;
                 return "TbResistance";
+            case "tbdrawprobealways" when bool.TryParse(value, out bool tbd):
+                TbDrawProbeAlways = tbd;
+                return "TbDrawProbeAlways";
             case "tbwintiebreak" when bool.TryParse(value, out bool tbw):
                 TbWinTieBreak = tbw;
                 return "TbWinTieBreak";
