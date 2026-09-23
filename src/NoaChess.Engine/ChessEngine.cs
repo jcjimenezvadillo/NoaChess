@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.16";
+    public const string Version = "5.9.17";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -320,7 +320,6 @@ public sealed class ChessEngine
             h.UseSmpAspDiversify = _search.UseSmpAspDiversify;
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
-            h.UseMoveCountLmr = _search.UseMoveCountLmr;
             h.UseFailLowCorrection = _search.UseFailLowCorrection;
             h.UseDynamicAspiration = _search.UseDynamicAspiration;
             h.UseHistoryBonus = _search.UseHistoryBonus;
@@ -338,8 +337,8 @@ public sealed class ChessEngine
             // draw differently would write disagreeing bounds into it.
             h.ContemptCp = _search.ContemptCp;
             h.UseCaptureLmr = _search.UseCaptureLmr;
-            h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
+            h.UseCutNodeLmrTtPv = _search.UseCutNodeLmrTtPv;
             h.UseStatScoreLmr = _search.UseStatScoreLmr;
             h.UseNodeTimeFactor = _search.UseNodeTimeFactor;
             h.UseEvalStabilityTime = _search.UseEvalStabilityTime;
@@ -357,13 +356,12 @@ public sealed class ChessEngine
             h.UseRepetitionAfterRoot = _search.UseRepetitionAfterRoot;
             h.UseRepetitionStrictWhenWorse = _search.UseRepetitionStrictWhenWorse;
             h.UseNmpNonPvOnly = _search.UseNmpNonPvOnly;
+            h.UseNmpCutNodeOnly = _search.UseNmpCutNodeOnly;
             h.UseTtEvalRefine = _search.UseTtEvalRefine;
             h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
-            h.UseTtMateReuse = _search.UseTtMateReuse;
             h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
             h.UseNoDecayOnRelaunch = _search.UseNoDecayOnRelaunch;
             h.UseQsChecks = _search.UseQsChecks;
-            h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
             h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
             h.UseHistoryPrune = _search.UseHistoryPrune;
             h.HistoryPruneScale = _search.HistoryPruneScale;
@@ -372,30 +370,21 @@ public sealed class ChessEngine
             h.UseSmallProbCutExact = _search.UseSmallProbCutExact;
             h.UseImprovingAboveBeta = _search.UseImprovingAboveBeta;
             h.UseGoodCaptureSlack = _search.UseGoodCaptureSlack;
-            h.UseQsEvasionPrune = _search.UseQsEvasionPrune;
-            h.UseQsEvasionPruneExemptQsChecks = _search.UseQsEvasionPruneExemptQsChecks;
             h.UseHistoryPruneCounts = _search.UseHistoryPruneCounts;
-            h.UseReducedFutility = _search.UseReducedFutility;
             h.UseNmpEvalR = _search.UseNmpEvalR;
-            h.UseNmpBelowBetaGate = _search.UseNmpBelowBetaGate;
             h.UseTtCutoffHistory = _search.UseTtCutoffHistory;
-            h.UseFailHighDamping = _search.UseFailHighDamping;
-            h.UseFailHighDampingQs = _search.UseFailHighDampingQs;
             h.UseCutoffCountLmrAllNode = _search.UseCutoffCountLmrAllNode;
             h.UsePvWindowEarly = _search.UsePvWindowEarly;
             h.UseTtRule50Guard = _search.UseTtRule50Guard;
-            h.NmpGateMargin = _search.NmpGateMargin;
             h.UseQsContCorrection = _search.UseQsContCorrection;
             h.UseSingularTight = _search.UseSingularTight;
             h.UseQsEntryKey = _search.UseQsEntryKey;
             h.UseLmpAllDepths = _search.UseLmpAllDepths;
             h.UseQuietSeePrune = _search.UseQuietSeePrune;
             h.UsePriorFailLowBonus = _search.UsePriorFailLowBonus;
-            h.UseRfpTtMoveGuard = _search.UseRfpTtMoveGuard;
-            h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
-            h.UseDrawRandom = _search.UseDrawRandom;
             h.UseHindsightDepth = _search.UseHindsightDepth;
             h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
+            h.CaptureSeeHistK = _search.CaptureSeeHistK;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
             h.SyzygyProbeLimit = _search.SyzygyProbeLimit;
@@ -650,12 +639,6 @@ public sealed class ChessEngine
     // The same gate licensing the reference's deep null reduction instead of
     // forbidding probes (off by default, measured before it ships).
 
-    public bool UseMoveCountLmr
-    {
-        get => _search.UseMoveCountLmr;
-        set => _search.UseMoveCountLmr = value;
-    }
-
     public bool UseFailLowCorrection
     {
         get => _search.UseFailLowCorrection;
@@ -727,12 +710,6 @@ public sealed class ChessEngine
         set => _search.UseCaptureLmr = value;
     }
 
-    public bool UseNmpPackage
-    {
-        get => _search.UseNmpPackage;
-        set => _search.UseNmpPackage = value;
-    }
-
     public bool UseCorrectionLmr
     {
         get => _search.UseCorrectionLmr;
@@ -754,6 +731,12 @@ public sealed class ChessEngine
     {
         get => _search.UseCutNodeLmr;
         set => _search.UseCutNodeLmr = value;
+    }
+
+    public bool UseCutNodeLmrTtPv
+    {
+        get => _search.UseCutNodeLmrTtPv;
+        set => _search.UseCutNodeLmrTtPv = value;
     }
 
     public bool UseNodeTimeFactor
@@ -860,6 +843,12 @@ public sealed class ChessEngine
         set => _search.UseNmpNonPvOnly = value;
     }
 
+    public bool UseNmpCutNodeOnly
+    {
+        get => _search.UseNmpCutNodeOnly;
+        set => _search.UseNmpCutNodeOnly = value;
+    }
+
     public bool UseTtEvalRefine
     {
         get => _search.UseTtEvalRefine;
@@ -870,12 +859,6 @@ public sealed class ChessEngine
     {
         get => _search.UseTtKeepMoveOnFailLow;
         set => _search.UseTtKeepMoveOnFailLow = value;
-    }
-
-    public bool UseTtMateReuse
-    {
-        get => _search.UseTtMateReuse;
-        set => _search.UseTtMateReuse = value;
     }
 
     public bool UseRootScoreOrdering
@@ -895,12 +878,6 @@ public sealed class ChessEngine
     {
         get => _search.UseQsChecks;
         set => _search.UseQsChecks = value;
-    }
-
-    public bool UseProbCutAllowNull
-    {
-        get => _search.UseProbCutAllowNull;
-        set => _search.UseProbCutAllowNull = value;
     }
 
     public bool UseFutilityFailSoft
@@ -955,28 +932,10 @@ public sealed class ChessEngine
         set => _search.UseGoodCaptureSlack = value;
     }
 
-    public bool UseQsEvasionPrune
-    {
-        get => _search.UseQsEvasionPrune;
-        set => _search.UseQsEvasionPrune = value;
-    }
-
-    public bool UseQsEvasionPruneExemptQsChecks
-    {
-        get => _search.UseQsEvasionPruneExemptQsChecks;
-        set => _search.UseQsEvasionPruneExemptQsChecks = value;
-    }
-
     public bool UseHistoryPruneCounts
     {
         get => _search.UseHistoryPruneCounts;
         set => _search.UseHistoryPruneCounts = value;
-    }
-
-    public bool UseReducedFutility
-    {
-        get => _search.UseReducedFutility;
-        set => _search.UseReducedFutility = value;
     }
 
     public bool UseNmpEvalR
@@ -985,28 +944,10 @@ public sealed class ChessEngine
         set => _search.UseNmpEvalR = value;
     }
 
-    public bool UseNmpBelowBetaGate
-    {
-        get => _search.UseNmpBelowBetaGate;
-        set => _search.UseNmpBelowBetaGate = value;
-    }
-
     public bool UseTtCutoffHistory
     {
         get => _search.UseTtCutoffHistory;
         set => _search.UseTtCutoffHistory = value;
-    }
-
-    public bool UseFailHighDamping
-    {
-        get => _search.UseFailHighDamping;
-        set => _search.UseFailHighDamping = value;
-    }
-
-    public bool UseFailHighDampingQs
-    {
-        get => _search.UseFailHighDampingQs;
-        set => _search.UseFailHighDampingQs = value;
     }
 
     public bool UseCutoffCountLmrAllNode
@@ -1028,12 +969,6 @@ public sealed class ChessEngine
     }
 
 
-
-    public int NmpGateMargin
-    {
-        get => _search.NmpGateMargin;
-        set => _search.NmpGateMargin = value;
-    }
 
     public bool UseQsContCorrection
     {
@@ -1069,21 +1004,6 @@ public sealed class ChessEngine
         get => _search.UsePriorFailLowBonus;
         set => _search.UsePriorFailLowBonus = value;
     }
-    public bool UseRfpTtMoveGuard
-    {
-        get => _search.UseRfpTtMoveGuard;
-        set => _search.UseRfpTtMoveGuard = value;
-    }
-    public bool UseLmpCountAllMoves
-    {
-        get => _search.UseLmpCountAllMoves;
-        set => _search.UseLmpCountAllMoves = value;
-    }
-    public bool UseDrawRandom
-    {
-        get => _search.UseDrawRandom;
-        set => _search.UseDrawRandom = value;
-    }
     public bool UseHindsightDepth
     {
         get => _search.UseHindsightDepth;
@@ -1094,6 +1014,12 @@ public sealed class ChessEngine
     {
         get => _search.UseCaptureSeePruneDeep;
         set => _search.UseCaptureSeePruneDeep = value;
+    }
+
+    public int CaptureSeeHistK
+    {
+        get => _search.CaptureSeeHistK;
+        set => _search.CaptureSeeHistK = value;
     }
 
     public bool UseSmpAspDiversify

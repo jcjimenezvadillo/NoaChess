@@ -35,7 +35,7 @@ public class QuiescenceTests
         // one of the entry node's quiet checks, and the PV hint (-1 = take the
         // window as received); reflection does not fill optional parameters,
         // so all four are explicit.
-        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply, false, -1, false, -1])!;
+        return (int)method.Invoke(search, [new Board(fen), -1_000, 1_000, ply, false, -1, -1])!;
     }
 
     private sealed class ConstantEvaluator(int value) : IPositionEvaluator

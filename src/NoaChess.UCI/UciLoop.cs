@@ -1041,12 +1041,12 @@ public sealed class UciLoop
             _engine.UseRepetitionStrictWhenWorse = _options.RepetitionStrictWhenWorse;
         if (changed == "NmpNonPvOnly")
             _engine.UseNmpNonPvOnly = _options.NmpNonPvOnly;
+        if (changed == "NmpCutNodeOnly")
+            _engine.UseNmpCutNodeOnly = _options.NmpCutNodeOnly;
         if (changed == "TtEvalRefine")
             _engine.UseTtEvalRefine = _options.TtEvalRefine;
         if (changed == "TtKeepMoveOnFailLow")
             _engine.UseTtKeepMoveOnFailLow = _options.TtKeepMoveOnFailLow;
-        if (changed == "TtMateReuse")
-            _engine.UseTtMateReuse = _options.TtMateReuse;
         if (changed == "RootScoreOrdering")
             _engine.UseRootScoreOrdering = _options.RootScoreOrdering;
         if (changed == "PickerCheckBonus")
@@ -1057,8 +1057,6 @@ public sealed class UciLoop
             _engine.UseNoDecayOnRelaunch = _options.NoDecayOnRelaunch;
         if (changed == "QsChecks")
             _engine.UseQsChecks = _options.QsChecks;
-        if (changed == "ProbCutAllowNull")
-            _engine.UseProbCutAllowNull = _options.ProbCutAllowNull;
         if (changed == "FutilityFailSoft")
             _engine.UseFutilityFailSoft = _options.FutilityFailSoft;
         if (changed == "HistoryPrune")
@@ -1075,32 +1073,18 @@ public sealed class UciLoop
             _engine.UseImprovingAboveBeta = _options.ImprovingAboveBeta;
         if (changed == "GoodCaptureSlack")
             _engine.UseGoodCaptureSlack = _options.GoodCaptureSlack;
-        if (changed == "QsEvasionPrune")
-            _engine.UseQsEvasionPrune = _options.QsEvasionPrune;
-        if (changed == "QsEvasionPruneExemptQsChecks")
-            _engine.UseQsEvasionPruneExemptQsChecks = _options.QsEvasionPruneExemptQsChecks;
         if (changed == "HistoryPruneCounts")
             _engine.UseHistoryPruneCounts = _options.HistoryPruneCounts;
-        if (changed == "ReducedFutility")
-            _engine.UseReducedFutility = _options.ReducedFutility;
         if (changed == "NmpEvalR")
             _engine.UseNmpEvalR = _options.NmpEvalR;
-        if (changed == "NmpBelowBetaGate")
-            _engine.UseNmpBelowBetaGate = _options.NmpBelowBetaGate;
         if (changed == "TtCutoffHistory")
             _engine.UseTtCutoffHistory = _options.TtCutoffHistory;
-        if (changed == "FailHighDamping")
-            _engine.UseFailHighDamping = _options.FailHighDamping;
-        if (changed == "FailHighDampingQs")
-            _engine.UseFailHighDampingQs = _options.FailHighDampingQs;
         if (changed == "CutoffCountLmrAllNode")
             _engine.UseCutoffCountLmrAllNode = _options.CutoffCountLmrAllNode;
         if (changed == "PvWindowEarly")
             _engine.UsePvWindowEarly = _options.PvWindowEarly;
         if (changed == "TtRule50Guard")
             _engine.UseTtRule50Guard = _options.TtRule50Guard;
-        if (changed == "NmpGateMargin")
-            _engine.NmpGateMargin = _options.NmpGateMargin;
         if (changed == "QsContCorrection")
             _engine.UseQsContCorrection = _options.QsContCorrection;
         if (changed == "SingularTight")
@@ -1112,18 +1096,14 @@ public sealed class UciLoop
             _engine.UseLmpAllDepths = _options.LmpAllDepths;
         if (changed == "PriorFailLowBonus")
             _engine.UsePriorFailLowBonus = _options.PriorFailLowBonus;
-        if (changed == "RfpTtMoveGuard")
-            _engine.UseRfpTtMoveGuard = _options.RfpTtMoveGuard;
-        if (changed == "LmpCountAllMoves")
-            _engine.UseLmpCountAllMoves = _options.LmpCountAllMoves;
-        if (changed == "DrawRandom")
-            _engine.UseDrawRandom = _options.DrawRandom;
         if (changed == "HindsightDepth")
             _engine.UseHindsightDepth = _options.HindsightDepth;
         if (changed == "QuietSeePrune")
             _engine.UseQuietSeePrune = _options.QuietSeePrune;
         if (changed == "CaptureSeePruneDeep")
             _engine.UseCaptureSeePruneDeep = _options.CaptureSeePruneDeep;
+        if (changed == "CaptureSeeHistK")
+            _engine.CaptureSeeHistK = _options.CaptureSeeHistK;
         if (changed == "SmpDiversify")
             _engine.UseSmpDiversify = _options.SmpDiversify;
         if (changed == "SmpAspDiversify")
@@ -1132,10 +1112,10 @@ public sealed class UciLoop
             _engine.UseSmpVoteAll = _options.SmpVoteAll;
         if (changed == "CutNodeLmr")
             _engine.UseCutNodeLmr = _options.CutNodeLmr;
+        if (changed == "CutNodeLmrTtPv")
+            _engine.UseCutNodeLmrTtPv = _options.CutNodeLmrTtPv;
         if (changed == "FailLowCorrection")
             _engine.UseFailLowCorrection = _options.FailLowCorrection;
-        if (changed == "MoveCountLmr")
-            _engine.UseMoveCountLmr = _options.MoveCountLmr;
         if (changed == "DynamicAspiration")
             _engine.UseDynamicAspiration = _options.DynamicAspiration;
         if (changed == "HistoryBonus")
@@ -1162,8 +1142,6 @@ public sealed class UciLoop
             _engine.ContemptCp = EffectiveContempt();
         if (changed == "CaptureLmr")
             _engine.UseCaptureLmr = _options.CaptureLmr;
-        if (changed == "NmpPackage")
-            _engine.UseNmpPackage = _options.NmpPackage;
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;

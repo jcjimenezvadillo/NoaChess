@@ -52,18 +52,16 @@ public sealed class UciOptions
     // The reference repetition rule only while the root is worse (see AlphaBetaSearch.UseRepetitionStrictWhenWorse).
     public bool RepetitionStrictWhenWorse { get; private set; } = true;
     public bool NmpNonPvOnly { get; private set; }
+    public bool NmpCutNodeOnly { get; private set; }
     public bool TtEvalRefine { get; private set; } = true;
     public bool TtKeepMoveOnFailLow { get; private set; } = true;
-    public bool TtMateReuse { get; private set; }
     public bool RootScoreOrdering { get; private set; }
     public bool LmpAllDepths { get; private set; } = true;
     public bool QuietSeePrune { get; private set; } = true;
     public bool PriorFailLowBonus { get; private set; }
-    public bool RfpTtMoveGuard { get; private set; }
-    public bool LmpCountAllMoves { get; private set; }
-    public bool DrawRandom { get; private set; }
     public bool HindsightDepth { get; private set; } = true;
     public bool CaptureSeePruneDeep { get; private set; }
+    public int CaptureSeeHistK { get; private set; } = 42;
     // Percent multiplier on the clock optimum (see TimeManager.FromClock).
     public int TimeScale { get; private set; } = 100;
     // Move picker magnitudes (see MovePicker.CheckBonus / ThreatEscapeWeight).
@@ -72,7 +70,6 @@ public sealed class UciOptions
     // Skip the between-search history halving on a ponderhit relaunch (see AlphaBetaSearch).
     public bool NoDecayOnRelaunch { get; private set; }
     public bool QsChecks { get; private set; } = true;
-    public bool ProbCutAllowNull { get; private set; }
     public bool FutilityFailSoft { get; private set; } = true;
     public bool HistoryPrune { get; private set; }
     public int HistoryPruneScale { get; private set; } = 20;
@@ -82,20 +79,13 @@ public sealed class UciOptions
     public bool SmallProbCutExact { get; private set; }
     public bool ImprovingAboveBeta { get; private set; } = true;
     public bool GoodCaptureSlack { get; private set; } = true;
-    public bool QsEvasionPrune { get; private set; }
-    public bool QsEvasionPruneExemptQsChecks { get; private set; }
     // Re-investigation of 2026-09-21 (see AlphaBetaSearch for each one).
     public bool HistoryPruneCounts { get; private set; }
-    public bool ReducedFutility { get; private set; }
     public bool NmpEvalR { get; private set; } = true;
-    public bool NmpBelowBetaGate { get; private set; }
     public bool TtCutoffHistory { get; private set; } = true;
-    public bool FailHighDamping { get; private set; }
-    public bool FailHighDampingQs { get; private set; }
     public bool CutoffCountLmrAllNode { get; private set; }
     public bool PvWindowEarly { get; private set; }
     public bool TtRule50Guard { get; private set; }
-    public int NmpGateMargin { get; private set; } = 0;
     public bool QsContCorrection { get; private set; }
     public bool SingularTight { get; private set; }
     public bool QsEntryKey { get; private set; }
@@ -114,8 +104,8 @@ public sealed class UciOptions
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
     public bool CutNodeLmr { get; private set; }
+    public bool CutNodeLmrTtPv { get; private set; }
     public bool FailLowCorrection { get; private set; }
-    public bool MoveCountLmr { get; private set; }
     public bool DynamicAspiration { get; private set; }
     public bool HistoryBonus { get; private set; }
     public bool CorrectionLmr { get; private set; }
@@ -149,7 +139,6 @@ public sealed class UciOptions
     public int WonBandMaxMen { get; private set; } = 8;
     public bool WonBandPromoGuard { get; private set; } = true;
     public bool CaptureLmr { get; private set; }
-    public bool NmpPackage { get; private set; }
     // Convert a pondered search in place on "ponderhit" instead of relaunching
     // it over the warm table. Affects nothing unless the GUI actually ponders.
     // MEASURED -23.7 [-41.2, -6.3] at 60+1 with ponder on both arms, H0 at 382
@@ -241,24 +230,21 @@ public sealed class UciOptions
         output.WriteLine("option name RepetitionAfterRoot type check default false");
         output.WriteLine("option name RepetitionStrictWhenWorse type check default true");
         output.WriteLine("option name NmpNonPvOnly type check default false");
+        output.WriteLine("option name NmpCutNodeOnly type check default false");
         output.WriteLine("option name TtEvalRefine type check default true");
         output.WriteLine("option name TtKeepMoveOnFailLow type check default true");
-        output.WriteLine("option name TtMateReuse type check default false");
         output.WriteLine("option name RootScoreOrdering type check default false");
         output.WriteLine("option name LmpAllDepths type check default true");
         output.WriteLine("option name QuietSeePrune type check default true");
         output.WriteLine("option name PriorFailLowBonus type check default false");
-        output.WriteLine("option name RfpTtMoveGuard type check default false");
-        output.WriteLine("option name LmpCountAllMoves type check default false");
-        output.WriteLine("option name DrawRandom type check default false");
         output.WriteLine("option name HindsightDepth type check default true");
         output.WriteLine("option name CaptureSeePruneDeep type check default false");
+        output.WriteLine("option name CaptureSeeHistK type spin default 42 min 0 max 1024");
         output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
         output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
         output.WriteLine("option name PickerThreatWeight type spin default 20 min 0 max 100");
         output.WriteLine("option name NoDecayOnRelaunch type check default false");
         output.WriteLine("option name QsChecks type check default true");
-        output.WriteLine("option name ProbCutAllowNull type check default false");
         output.WriteLine("option name FutilityFailSoft type check default true");
         output.WriteLine("option name HistoryPrune type check default false");
         output.WriteLine("option name HistoryPruneScale type spin default 20 min 1 max 8192");
@@ -267,19 +253,12 @@ public sealed class UciOptions
         output.WriteLine("option name SmallProbCutExact type check default false");
         output.WriteLine("option name ImprovingAboveBeta type check default true");
         output.WriteLine("option name GoodCaptureSlack type check default true");
-        output.WriteLine("option name QsEvasionPrune type check default false");
-        output.WriteLine("option name QsEvasionPruneExemptQsChecks type check default false");
         output.WriteLine("option name HistoryPruneCounts type check default false");
-        output.WriteLine("option name ReducedFutility type check default false");
         output.WriteLine("option name NmpEvalR type check default true");
-        output.WriteLine("option name NmpBelowBetaGate type check default false");
         output.WriteLine("option name TtCutoffHistory type check default true");
-        output.WriteLine("option name FailHighDamping type check default false");
-        output.WriteLine("option name FailHighDampingQs type check default false");
         output.WriteLine("option name CutoffCountLmrAllNode type check default false");
         output.WriteLine("option name PvWindowEarly type check default false");
         output.WriteLine("option name TtRule50Guard type check default false");
-        output.WriteLine("option name NmpGateMargin type spin default 0 min 0 max 1000");
         output.WriteLine("option name QsContCorrection type check default false");
         output.WriteLine("option name SingularTight type check default false");
         output.WriteLine("option name QsEntryKey type check default false");
@@ -289,8 +268,8 @@ public sealed class UciOptions
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
         output.WriteLine("option name CutNodeLmr type check default false");
+        output.WriteLine("option name CutNodeLmrTtPv type check default false");
         output.WriteLine("option name FailLowCorrection type check default false");
-        output.WriteLine("option name MoveCountLmr type check default false");
         output.WriteLine("option name DynamicAspiration type check default false");
         output.WriteLine("option name HistoryBonus type check default false");
         output.WriteLine("option name CorrectionLmr type check default false");
@@ -306,7 +285,6 @@ public sealed class UciOptions
         output.WriteLine("option name ContemptOwnRating type spin default 0 min 0 max 4000");
         output.WriteLine("option name UCI_Opponent type string default <empty>");
         output.WriteLine("option name CaptureLmr type check default false");
-        output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
         output.WriteLine("option name PonderContinue type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
@@ -422,15 +400,15 @@ public sealed class UciOptions
             case "nmpnonpvonly" when bool.TryParse(value, out bool nnp):
                 NmpNonPvOnly = nnp;
                 return "NmpNonPvOnly";
+            case "nmpcutnodeonly" when bool.TryParse(value, out bool ncn):
+                NmpCutNodeOnly = ncn;
+                return "NmpCutNodeOnly";
             case "ttevalrefine" when bool.TryParse(value, out bool ter):
                 TtEvalRefine = ter;
                 return "TtEvalRefine";
             case "ttkeepmoveonfaillow" when bool.TryParse(value, out bool tkm):
                 TtKeepMoveOnFailLow = tkm;
                 return "TtKeepMoveOnFailLow";
-            case "ttmatereuse" when bool.TryParse(value, out bool tmr):
-                TtMateReuse = tmr;
-                return "TtMateReuse";
             case "rootscoreordering" when bool.TryParse(value, out bool rso):
                 RootScoreOrdering = rso;
                 return "RootScoreOrdering";
@@ -449,9 +427,6 @@ public sealed class UciOptions
             case "qschecks" when bool.TryParse(value, out bool qsc):
                 QsChecks = qsc;
                 return "QsChecks";
-            case "probcutallownull" when bool.TryParse(value, out bool pcn):
-                ProbCutAllowNull = pcn;
-                return "ProbCutAllowNull";
             case "futilityfailsoft" when bool.TryParse(value, out bool ffs):
                 FutilityFailSoft = ffs;
                 return "FutilityFailSoft";
@@ -476,33 +451,15 @@ public sealed class UciOptions
             case "goodcaptureslack" when bool.TryParse(value, out bool gcs):
                 GoodCaptureSlack = gcs;
                 return "GoodCaptureSlack";
-            case "qsevasionprune" when bool.TryParse(value, out bool qep):
-                QsEvasionPrune = qep;
-                return "QsEvasionPrune";
-            case "qsevasionpruneexemptqschecks" when bool.TryParse(value, out bool qepx):
-                QsEvasionPruneExemptQsChecks = qepx;
-                return "QsEvasionPruneExemptQsChecks";
             case "historyprunecounts" when bool.TryParse(value, out bool ri0):
                 HistoryPruneCounts = ri0;
                 return "HistoryPruneCounts";
-            case "reducedfutility" when bool.TryParse(value, out bool ri1):
-                ReducedFutility = ri1;
-                return "ReducedFutility";
             case "nmpevalr" when bool.TryParse(value, out bool ri2):
                 NmpEvalR = ri2;
                 return "NmpEvalR";
-            case "nmpbelowbetagate" when bool.TryParse(value, out bool ri3):
-                NmpBelowBetaGate = ri3;
-                return "NmpBelowBetaGate";
             case "ttcutoffhistory" when bool.TryParse(value, out bool ri5):
                 TtCutoffHistory = ri5;
                 return "TtCutoffHistory";
-            case "failhighdamping" when bool.TryParse(value, out bool ri6):
-                FailHighDamping = ri6;
-                return "FailHighDamping";
-            case "failhighdampingqs" when bool.TryParse(value, out bool ri7):
-                FailHighDampingQs = ri7;
-                return "FailHighDampingQs";
             case "cutoffcountlmrallnode" when bool.TryParse(value, out bool ri8):
                 CutoffCountLmrAllNode = ri8;
                 return "CutoffCountLmrAllNode";
@@ -512,9 +469,6 @@ public sealed class UciOptions
             case "ttrule50guard" when bool.TryParse(value, out bool ri11):
                 TtRule50Guard = ri11;
                 return "TtRule50Guard";
-            case "nmpgatemargin" when int.TryParse(value, out int ngm):
-                NmpGateMargin = Math.Clamp(ngm, 0, 1000);
-                return "NmpGateMargin";
             case "qscontcorrection" when bool.TryParse(value, out bool qcc):
                 QsContCorrection = qcc;
                 return "QsContCorrection";
@@ -536,15 +490,6 @@ public sealed class UciOptions
             case "priorfaillowbonus" when bool.TryParse(value, out bool a0):
                 PriorFailLowBonus = a0;
                 return "PriorFailLowBonus";
-            case "rfpttmoveguard" when bool.TryParse(value, out bool a2):
-                RfpTtMoveGuard = a2;
-                return "RfpTtMoveGuard";
-            case "lmpcountallmoves" when bool.TryParse(value, out bool a3):
-                LmpCountAllMoves = a3;
-                return "LmpCountAllMoves";
-            case "drawrandom" when bool.TryParse(value, out bool a4):
-                DrawRandom = a4;
-                return "DrawRandom";
             case "hindsightdepth" when bool.TryParse(value, out bool b0):
                 HindsightDepth = b0;
                 return "HindsightDepth";
@@ -554,6 +499,9 @@ public sealed class UciOptions
             case "captureseeprunedeep" when bool.TryParse(value, out bool csp):
                 CaptureSeePruneDeep = csp;
                 return "CaptureSeePruneDeep";
+            case "captureseehistk" when int.TryParse(value, out int cshk):
+                CaptureSeeHistK = Math.Clamp(cshk, 0, 1024);
+                return "CaptureSeeHistK";
             case "smpdiversify" when bool.TryParse(value, out bool sdv):
                 SmpDiversify = sdv;
                 return "SmpDiversify";
@@ -566,12 +514,12 @@ public sealed class UciOptions
             case "cutnodelmr" when bool.TryParse(value, out bool cutLmr):
                 CutNodeLmr = cutLmr;
                 return "CutNodeLmr";
+            case "cutnodelmrttpv" when bool.TryParse(value, out bool cutLmrTtPv):
+                CutNodeLmrTtPv = cutLmrTtPv;
+                return "CutNodeLmrTtPv";
             case "faillowcorrection" when bool.TryParse(value, out bool flc):
                 FailLowCorrection = flc;
                 return "FailLowCorrection";
-            case "movecountlmr" when bool.TryParse(value, out bool mcl):
-                MoveCountLmr = mcl;
-                return "MoveCountLmr";
             case "dynamicaspiration" when bool.TryParse(value, out bool dyna):
                 DynamicAspiration = dyna;
                 return "DynamicAspiration";
@@ -633,9 +581,6 @@ public sealed class UciOptions
             case "capturelmr" when bool.TryParse(value, out bool clm):
                 CaptureLmr = clm;
                 return "CaptureLmr";
-            case "nmppackage" when bool.TryParse(value, out bool nmp):
-                NmpPackage = nmp;
-                return "NmpPackage";
             case "ponderinplace" when bool.TryParse(value, out bool pip):
                 PonderInPlace = pip;
                 return "PonderInPlace";

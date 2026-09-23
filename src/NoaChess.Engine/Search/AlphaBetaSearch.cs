@@ -463,6 +463,9 @@ public sealed class AlphaBetaSearch
     // parent line keeps refuting things, so the child skips NMP (the fail-high
     // is already cheap without a null probe) and its RFP margin leans on it.
     private readonly int[] _stackStatScore = new int[MaxPly + 2];
+    // The parent's move count when the move that reached each ply was made
+    // (reference (ss-1)->moveCount): 1 for its first move, legal moves only.
+    private readonly int[] _stackMoveCount = new int[MaxPly + 2];
 
     // statScore-derived thresholds. The reference values are in ITS history
     // units (tables gravity-capped at 14365/29952); ours accumulate depth^2
@@ -561,7 +564,8 @@ public sealed class AlphaBetaSearch
         Environment.GetEnvironmentVariable("NOA_SEARCH_STATS") == "1";
     private long _stMain, _stQs, _stTtHit, _stTtCut, _stTtServed, _stNullTry, _stNullCut,
                  _stCut, _stCutFirst, _stCutTt, _stFutility, _stLmp, _stSeePrune, _stLmr, _stLmrResearch,
-                 _stLoop, _stLmrReduced, _stIir;
+                 _stLoop, _stLmrReduced, _stIir, _stLmrTtPvCut,
+                 _stSgProbe, _stSgExt, _stSgMultiCut, _stSgNeg3, _stSgNeg2;
 
     // Share of the last completed root iteration spent on the move it chose.
     // Near 1.0 when every alternative was refuted at once, which is what a
@@ -785,12 +789,7 @@ public sealed class AlphaBetaSearch
     // (sprt_faillow.pgn). The extra learning class hurts here; stays inert.
     public bool UseFailLowCorrection;
 
-    // The reference's base-offset + moveCount LMR pair. Measured 2026-08-30:
-    // H0, -7.4 [-19.8, +4.9], LLR -3.15 over 1,400 fixed-node games
-    // (sprt_movecount.pgn). Stays inert - the running pattern: the
-    // reference's standalone LMR terms measure zero or negative on this
-    // engine's softer reduction curve; statScore was the exception.
-    public bool UseMoveCountLmr;
+    // MoveCountLmr: removed, see the LMR reduction site.
 
     // The reference's dynamic initial aspiration window (see the root loop).
     // Measured 2026-08-30: H0, -8.6 [-21.6, +4.4], LLR -3.10 over 1,251
@@ -809,24 +808,7 @@ public sealed class AlphaBetaSearch
     // reopening must re-tune those consumers as part of the arm. Stays inert.
     public bool UseHistoryBonus;
 
-    // The NMP PACKAGE - the first arm shaped the way the campaign's
-    // structural conclusion demands: a coherent subsystem, not a piece.
-    // Three parts that the tombstones say only work TOGETHER: (1) quiet
-    // CHECKING moves generated at the first quiescence ply (direct checks;
-    // discovered checks are a documented divergence), which is what keeps
-    // deep null probes tactically honest - measured here as WAC 249 vs 257
-    // when the deep R ran into our checkless quiescence; (2) the
-    // reference's null reduction R = 7 + depth/3 against our validated
-    // 3 + depth/4; (3) the reference entry - cutNode only, static eval
-    // clearing beta by the ported margin - whose solo measurement grew the
-    // tree 32.7% and whose tombstone says "part of a package, do not
-    // measure alone". Measured 2026-09-01 as the package: H0, -23.2
-    // [-41.4, -5.2], LLR -3.33 over 614 fixed-node games (sprt_nmppkg.pgn).
-    // The +67% fixed-depth node toll is not paid back - the reference
-    // affords this shape only inside its whole tree, and ours is at a
-    // measured local optimum. Ninth burial of the campaign; the package
-    // question is now CLOSED with a number, which is what it was worth.
-    public bool UseNmpPackage;
+    // NmpPackage: removed, see the null-move site.
 
     // Extend LMR eligibility to CAPTURES (see the LMR gate): the reference
     // reduces captures through the same pipeline and this engine never has -
@@ -838,6 +820,8 @@ public sealed class AlphaBetaSearch
     // engine's soft curve wants no more reduction than it has. The capture
     // statScore branch returns to documented dead code. Stays inert.
     public bool UseCaptureLmr;
+
+    // LmrChecks: removed, see the LMR gate.
 
     // The reference's PV handling for in-search tablebase LOSSES (see the
     // probe block): at a PV node a non-exact loss bound becomes a CEILING
@@ -1203,6 +1187,14 @@ public sealed class AlphaBetaSearch
     // the ttMove sub-term all present. Stays inert.
     public bool UseCutNodeLmr;
 
+    // Contingency arm of the term above, read only when UseCutNodeLmr is on:
+    // at a cut node the ttPv block takes the reference's full treatment
+    // (+929 - 3023, -885 on a stored score above alpha, -816 - 940 on a
+    // stored depth that reaches this one) instead of this engine's scaled
+    // block. The scaling exists only to keep the ttPv base from flooring our
+    // milder reductions, which a node that just took +4026 cannot suffer.
+    public bool UseCutNodeLmrTtPv;
+
     // 5C statScore in LMR, faithful formula at consumer scale. Measured
     // 2026-08-29: +20.9 [+7.2, +34.7], LLR +3.24, H1 over 1,099 fixed-node
     // games - on by default since 5.3.0.
@@ -1415,8 +1407,17 @@ public sealed class AlphaBetaSearch
     // Null move pruning only off the principal variation. The reference (and
     // every audited engine) never nulls at a PV node; this engine nulled
     // everywhere, so a null cutoff could end a PV node on a heuristic and hand
-    // the root a fail-high it then re-searched.
+    // the root a fail-high it then re-searched. Measured twice at 100,000
+    // fixed nodes: +1.0 over 4,267 games on 2026-09-08 (when it saved 5.6% of
+    // the tree), and, after NmpEvalR shipped in v5.9.13 and turned the option
+    // into a +4.1% node toll, flat again, +2.1 +/- 13.3 over 1,190 games on
+    // 2026-09-23. The PV-node probes carry about 72% of NmpEvalR's saving.
     public bool UseNmpNonPvOnly = false;
+    // NmpCutNodeOnly: the reference's own node condition, which is stricter
+    // than "off the PV" - it nulls only at EXPECTED CUT nodes, so the all
+    // nodes of a non-PV subtree keep their probes. Read with the shipped R
+    // and NmpEvalR, no eval gate (that family is closed at the site below).
+    public bool UseNmpCutNodeOnly = false;
 
     // A stored transposition score refines the static evaluation the pruning
     // reads when its bound points that way (reference step 5). Quiescence
@@ -1436,10 +1437,25 @@ public sealed class AlphaBetaSearch
     // 411 games - the largest single search gain this project has measured.
     public bool UseTtKeepMoveOnFailLow = true;
 
-    // Reuse a stored MATE score whenever the mate lands before the fifty-move
-    // counter can expire, instead of only at a zeroed counter. The mate
-    // distance is in the score, so the test is exact.
-    public bool UseTtMateReuse = false;
+    // No mate reuse (TtMateReuse): a stored MATE score was reused whenever
+    // the fifty-move counter plus the mate distance stayed within 100 plies,
+    // instead of only at a zeroed counter (see CanReuseTtScore). Removed
+    // 2026-09-22. It measured -3.0 +/- 10.2, LLR -2.95, H0 over 2,091
+    // fixed-node games (481-499-1111) on 2026-09-08, and the behaviour gate
+    // that was meant to give it a reason to read differently came out flat:
+    // over 30 middlegame forced mates (mate in 4 to 8, taken from the bot's
+    // own games, one thread, hash 64, no tablebases, depth 16) the median
+    // nodes to first report the final mate distance fell 3.2% with it on
+    // (1.8% to the first mate score of any distance), faster in 16 positions
+    // and slower in 12 on that metric (15 and 13 on the looser one), and one
+    // position lost the mate at that depth; the reported mate distance
+    // differed in 5 of the 30 (shorter in 3, longer in 1, absent in 1), so
+    // the gate's "distances must be identical" condition failed as well. The
+    // trees at a halfmove clock of 10, 30 and 60 were identical to the node,
+    // because the test only bites once clock plus distance passes 100.
+    // Nodes to complete depth 16 on this suite: 6.1% fewer (median), the
+    // opposite of the 60-position bench at depth 12, where it cost +6.2%
+    // (15,922,429 against 14,994,140 with everything off).
 
     // Order the root moves by the previous iteration's fail-soft scores
     // (best first, then by how close each came) instead of by the generic
@@ -1470,21 +1486,32 @@ public sealed class AlphaBetaSearch
     // did its job for the parent and earns butterfly and continuation history
     // (reference step 20, 'bonus for prior quiet countermove that caused the
     // fail low'); a capturing parent move earns capture history instead. The
-    // reference scales the bonus by depth, by the parent's statScore and by
-    // how far below the static eval the node landed; the move-count and the
-    // grandparent terms are dropped (no cheap source here).
+    // reference scales the bonus by depth, by the parent's statScore, by the
+    // parent's move count and by how far below this node's and the parent's
+    // static evals the node landed.
+    // First form measured 2026-09-08 at 100,000 nodes: -22.2 +/- 18.8, LLR
+    // -2.96, H0 over 565 games, bench +20% nodes. It deposited the
+    // reference-scale amounts into our depth^2 tables (a fail-low bonus 21x a
+    // cutoff's at depth 5, where the reference's is 1.4x) and dropped the
+    // move-count and parent-eval terms. Second form (2026-09-22): all five
+    // terms (move count from _stackMoveCount), the statScore divisor at
+    // 0.28x, and the amounts re-expressed as the reference's fail-low to
+    // cutoff ratios on our depth^2 currency.
     public bool UsePriorFailLowBonus = false;
     // LmrDeeperResearch: removed, see the HindsightReset tombstone below.
-    // RfpTtMoveGuard: reverse futility only when the table holds no move or a
-    // capturing one (reference step 8: !ttData.move || ttCapture).
-    public bool UseRfpTtMoveGuard = false;
-    // LmpCountAllMoves: the late-move-pruning count is the node's move count
-    // as the reference's is, captures included, not the quiets alone.
-    public bool UseLmpCountAllMoves = false;
-    // DrawRandom: draws by rule score 1 - (nodes & 2) instead of a flat zero
-    // (reference value_draw), so two draw lines never tie exactly and the
-    // search cannot settle on a repetition it never examined.
-    public bool UseDrawRandom = false;
+    // RfpTtMoveGuard: removed, see the reverse futility site.
+    // LmpCountAllMoves: removed, see the LmpCountsPruned tombstone below.
+    // No draw jitter (DrawRandom, reference value_draw): a draw scored
+    // 1 - (nodes & 2) instead of a flat zero, so two draw lines never tie
+    // exactly. Removed 2026-09-22. The first form jittered every draw,
+    // leaves included, and measured -0.1 over 3,522 games at 100,000 fixed
+    // nodes (785-786-1951, two runs pooled). The corrected form (jitter only
+    // at depth > 0 and at the upcoming-repetition raise, flat at the horizon
+    // and in quiescence, as the reference) was gated out before an SPRT: on
+    // the 60-position bench the draws it would flatten were 2.9% of the
+    // jittered returns (324 of 11,061; the raise cutoffs are 94% of them),
+    // and its bench differed from the first form's in 11 positions of 60
+    // with no best move changed. It was the measured feature again.
     // HindsightDepth (Reckless, Pawnocchio): a node reached through a move
     // reduced by two plies or more, whose static eval says the reduction
     // was undeserved (our eval plus the parent's is negative: the parent's
@@ -1530,14 +1557,29 @@ public sealed class AlphaBetaSearch
     // flag that some call site could forget to flip.
     private int DrawScore(int ply)
     {
-        int contempt = (ply & 1) == 0 ? -ContemptCp : ContemptCp;
-        return UseDrawRandom ? contempt + 1 - (int)(_nodes & 2) : contempt;
+        return (ply & 1) == 0 ? -ContemptCp : ContemptCp;
     }
 
     // SEE pruning of captures at every depth with a margin that grows with
-    // it (reference: see_ge(-157 * depth) in its units, 75 per ply here),
-    // instead of the flat one pawn at depth <= 2 only.
+    // it, instead of the flat one pawn at depth <= 2 only. Second form, the
+    // reference's logic: margin 85 * depth + captHist * CaptureSeeHistK / 1024
+    // (reference 177 per ply and 34 per 1024 of its capture history; x0.48,
+    // and the history term also by the rail ratio 10692 / 4096), so a
+    // capture the tables distrust is pruned harder and a sacrifice that has
+    // worked is spared. Guards: never with a loss already found
+    // (bestScore in the loss band), and the last-piece exemption (alpha below
+    // a draw and the mover is our only non-pawn, non-king piece). No |alpha|
+    // guard. A history negative enough to turn the margin below zero prunes
+    // captures that win less than that, as the reference does.
+    // CaptureSeeHistK measured at the site before the first games
+    // (2026-09-22, 60 bench positions at depth 11, 531k captures reaching the
+    // test with SEE < 0): |captHist| p50 203, p90 1530, p99 2836, so 42 moves
+    // the margin by 63 cp at p90 and 116 at p99; the term is live and 42
+    // stays. 88% of those values are positive, so it mostly spares.
+    // First form (75 per ply, no history term, |alpha| guard): -1.7 +/- 9.3,
+    // H0 over 2,610 fixed-node games, 2026-09-08.
     public bool UseCaptureSeePruneDeep = false;
+    public int CaptureSeeHistK = 42;
 
     // Continuation-keyed correction of the quiescence stand-pat. With the
     // stack written in quiescence the keys are real; off, the stand-pat is
@@ -1548,13 +1590,18 @@ public sealed class AlphaBetaSearch
     // over 718 games; without it the deterministic configuration is a tight zero.
     public bool UseQsContCorrection = false;
 
-    // Singular extension on the reference's terms: a lower depth gate (6
-    // instead of 8) and a margin of one centipawn per ply instead of two, so
-    // singularBeta sits half as far below the stored score and the extension
-    // fires on moves this engine's margin never called singular. The 5E
-    // rebuild measured the full package worse, but that was before the
-    // transposition move stopped being overwritten on fail-low (v5.8.0), and
-    // a singular test is only as good as the move it tests.
+    // Singular extension on the reference's terms, second form: depth gate
+    // 6 + ttPv instead of 8, the reference margin (59 + 66 * (ttPv && !PvNode))
+    // * depth / 63 at x0.48 (singularBeta is compared to a search value, so it
+    // is eval-valued), +1 on a singular hit, multi-cut (the verification fails
+    // high over beta without the TT move: return), and the negative extensions
+    // (-3 when the stored score is at or over beta, -2 at cut nodes). The TT
+    // move must be pseudo-legal and not a shuffle (reference is_shuffling).
+    // Left out on purpose: the whole-node depth++ and the double and triple
+    // tiers, which every losing 5E arm carried.
+    // First form (8 -> 6 gate and a margin of one centipawn per ply, +1 only,
+    // no pruning half): -0.3 over 3,091 games at 100,000 nodes, H0
+    // (2026-09-08), at +47% nodes on the depth-11 bench.
     public bool UseSingularTight = false;
 
     // Third deterministic shape for the quiescence correction key: every
@@ -1641,18 +1688,17 @@ public sealed class AlphaBetaSearch
     // ON since v5.9.12: fixed-node SPRT at 100,000 nodes against v5.9.11,
     // +10.2 +/- 8.2, LLR +2.96, H1 over 3,043 games (2026-09-22).
     public bool UseGoodCaptureSlack = true;
-    // QsEvasionPrune: in check in quiescence, once an evasion has returned
-    // something better than a loss, quiet evasions are skipped and captures
-    // must pass the quiescence SEE floor (reference qsearch step 6, whose
-    // block is live in check once bestValue leaves the loss band).
-    public bool UseQsEvasionPrune = false;
-    // Second shape: the node answering one of this engine's own first-ply
-    // quiescence quiet checks keeps every evasion (see the site).
-    public bool UseQsEvasionPruneExemptQsChecks = false;
+    // QsEvasionPrune: removed, see the quiescence move loop.
 
     // ---- Re-investigation of the features discarded on 2026-09-20/21
     //      (seven investigators and a judge, every diagnosis re-verified
     //      against the code that was actually measured). ----
+    //
+    // No LmpCountAllMoves (the LMP count over every searched move, captures
+    // included, as the reference's move count): measured 2026-09-08 at
+    // 100,000 nodes, H0, -6.0 +/- 11.9 over 1,446 games. With LmpCountsPruned
+    // below, both ways of counting more moves toward the same threshold lost;
+    // the reference's full count is their union. Removed 2026-09-22.
     //
     // LmpCountsPruned (quiets pruned by history or SEE counted toward the LMP
     // budget, as the reference's moveCount counts every legal move) measured
@@ -1664,14 +1710,7 @@ public sealed class AlphaBetaSearch
     // so that pruning stops being a swap (each pruned quiet let one more
     // later quiet through at an LMP-bound node) and becomes a saving.
     public bool UseHistoryPruneCounts = false;
-    // ReducedFutility: parent futility on the depth the move would be
-    // searched at, with its history, the reference's raw constants; the one
-    // valuable rung of the pruning ladder, measured alone (see the site).
-    public bool UseReducedFutility = false;
-    // Its second arm, the reference's own form with no depth gate and no
-    // floor on the reduced depth (ReducedFutilityUnclamped), measured -1.7
-    // +/- 12.6 over 1,203 games (LLR -1.62) against the first arm's +4.8 over
-    // 1,180, and was removed 2026-09-22.
+    // ReducedFutility: removed, see the quiet futility site.
     // NmpEvalR: the null reduction grows with how far the refined eval sits
     // above beta, min((eval - beta) / 81, 3) extra plies (168 x0.48 per ply,
     // capped because verification only exists from depth 14). The measured
@@ -1683,13 +1722,11 @@ public sealed class AlphaBetaSearch
     // ON since v5.9.13: fixed-node SPRT at 100,000 nodes against v5.9.12,
     // +14.4 +/- 11.1, LLR +2.96, H1 over 1,492 games (2026-09-22).
     public bool UseNmpEvalR = true;
-    // NmpBelowBetaGate: null probes only where the refined eval is at least
-    // beta - NmpGateMargin. The measured gate asked for the reference's raw
-    // +365 (about twice the reference's distance in our pawns) and starved
-    // the null move (-0.51 ply at equal nodes); this one gates only the band
-    // BELOW beta, the one the tombstone claims pays, so the claim is tested.
-    public bool UseNmpBelowBetaGate = false;
-    public int NmpGateMargin = 0;
+    // No NmpBelowBetaGate (null probes only where the refined eval is at
+    // least beta - 25, the band below beta gated alone, so the tombstone's
+    // claim that those probes pay was put to the test): -3.5 +/- 12.7 over
+    // 1,217 games (LLR -2.02) against v5.9.15, removed 2026-09-22. The null
+    // move entry gate is closed after three shapes (see the null-move site).
     // No TtCutoffNodeType (a shallow TT cutoff taken only when the node type
     // agrees with the bound's direction, the reference's cutNode test).
     // Measured twice at 100,000 fixed nodes and removed 2026-09-22: on the
@@ -1706,13 +1743,14 @@ public sealed class AlphaBetaSearch
     // ON since v5.9.16: fixed-node SPRT at 100,000 nodes against v5.9.14,
     // +16.6 +/- 12.2, LLR +3.00, H1 over 1,300 games (2026-09-22).
     public bool UseTtCutoffHistory = true;
-    // FailHighDamping: a fail-high score is pulled toward beta before it is
-    // stored and returned, (score * depth + beta) / (depth + 1), as the
-    // reference damps its fail-soft maxima; every lower bound in our table
-    // was more optimistic than the reference's. The quiescence half (stand-pat
-    // and the stored bound, 441/583 and 462/562 in 1024ths) is its own switch.
-    public bool UseFailHighDamping = false;
-    public bool UseFailHighDampingQs = false;
+    // No FailHighDamping. The reference pulls a non-decisive fail-high toward
+    // beta before storing and returning it, (score * depth + beta) /
+    // (depth + 1) in the main search and about halfway (441/583 at the
+    // stand-pat, 462/562 at the end, in 1024ths) in quiescence; this engine
+    // stores and returns the raw fail-soft maximum. Ported faithfully and
+    // measured at 100,000 fixed nodes, removed 2026-09-22: the main search
+    // alone flat, +1.2 +/- 9.7 over 2,017 games (LLR -1.53); with the
+    // quiescence half -8.7 +/- 18.3 over 606 (LLR -1.56).
     // CutoffCountLmrAllNode: the reference's cutoff counter kept faithfully
     // (reset two plies down at every node, SearchRoot clears plies 1 and 2,
     // counted only on a real fail-high) and read by one small term, +0.5 ply
@@ -1732,11 +1770,8 @@ public sealed class AlphaBetaSearch
     public bool UseTtRule50Guard = false;
     // CorrectionGravity and CorrectionWeightCap were measured and removed on
     // 2026-09-22; the numbers are at CorrectionHistory.Update.
-
-    // The ProbCut verification search may itself try a null move, as the
-    // reference's does (its child is an ordinary NonPV search); this engine
-    // forbade it, so every ProbCut child paid for a full reduced search.
-    public bool UseProbCutAllowNull = false;
+    // ProbCutAllowNull was measured and removed on 2026-09-22; the numbers
+    // are at the ProbCut verification search.
 
     // Quiet checking moves at the FIRST quiescence ply (reference qsearch
     // generates checks at depth 0). This engine only ever had them inside the
@@ -1945,7 +1980,8 @@ public sealed class AlphaBetaSearch
         if (SearchStats)
             _stMain = _stQs = _stTtHit = _stTtCut = _stTtServed = _stNullTry = _stNullCut
                 = _stCut = _stCutFirst = _stCutTt = _stFutility = _stLmp = _stSeePrune = _stLmr = _stLmrResearch
-                = _stLoop = _stLmrReduced = _stIir = 0;
+                = _stLoop = _stLmrReduced = _stIir = _stLmrTtPvCut
+                = _stSgProbe = _stSgExt = _stSgMultiCut = _stSgNeg3 = _stSgNeg2 = 0;
         _rootInTb = false;
         _rootLostInTb = false;
         _rootTbResolved = false;
@@ -2406,7 +2442,9 @@ public sealed class AlphaBetaSearch
                   + $" cuts={_stCut} firstMoveCut={(double)_stCutFirst / Math.Max(1, _stCut):F3}"
                   + $" ttMoveCut={(double)_stCutTt / Math.Max(1, _stCut):F3}"
                   + $" lmr={_stLmr} lmrReduced={_stLmrReduced} lmrResearch={(double)_stLmrResearch / Math.Max(1, _stLmrReduced):F3}"
-                  + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}");
+                  + $" lmrTtPvCut={_stLmrTtPvCut} lmrTtPvCutShare={(double)_stLmrTtPvCut / Math.Max(1, _stLmr):F4}"
+                  + $" futility={_stFutility} lmp={_stLmp} seePrune={_stSeePrune}"
+                  + $" singular={_stSgProbe} ext={_stSgExt} multiCut={_stSgMultiCut} neg3={_stSgNeg3} neg2={_stSgNeg2}");
             lastReportedMove = bestMove;
             lastReportedDepth = depth;
 
@@ -2928,6 +2966,7 @@ public sealed class AlphaBetaSearch
             _stackVictim[0] = move.IsCapture ? CaptureHistory.VictimIndex(board, move) : 6;
             _stackStatScore[0] = (move.IsCapture || move.IsPromotion ? 0
                 : 2 * _history.Get(board.SideToMove, move)) - StatScoreOffset;
+            _stackMoveCount[0] = i + 1;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
             _incremental?.CompleteThreatDelta(board);
@@ -3786,7 +3825,7 @@ public sealed class AlphaBetaSearch
 
         // ---- Horizon: switch to quiescence instead of a raw evaluation ----
         if (depth <= 0)
-            return Quiescence(board, alpha, beta, ply, genChecks: UseNmpPackage || UseQsChecks,
+            return Quiescence(board, alpha, beta, ply, genChecks: UseQsChecks,
                               pvHint: UsePvWindowEarly ? (pvWindowAtEntry ? 1 : 0) : -1);
 
         // Only now, past every early return above. Same board, so the same
@@ -3918,7 +3957,7 @@ public sealed class AlphaBetaSearch
         // this line - return without searching. Only at shallow depth and away
         // from mate scores, where the static eval is a trustworthy proxy.
         // An improving eval is trending up and can be trusted one depth-step
-        // sooner (reference: margin × (depth - improving)); the parent move's
+        // sooner (reference: margin x (depth - improving)); the parent move's
         // statScore leans on the margin - after a well-reputed parent move the
         // cut comes easier, after a maligned one it needs more headroom.
         // With PruneLossGuard, beta must also sit above the tablebase-LOSS
@@ -3927,10 +3966,16 @@ public sealed class AlphaBetaSearch
         // the switch because it is NOT node-identical with tablebases loaded:
         // the TbWinTieBreak root probe searches its children on a window at
         // -TbWin, where reverse futility used to fire (review, 2026-09-21).
+        // No table-move guard (RfpTtMoveGuard, reference step 8: reverse
+        // futility only when the table holds no move or a capturing one):
+        // -11.1 +/- 14.3 over 1,002 games at 100,000 nodes, H0 (2026-09-08).
+        // The reference pairs the guard with a margin a third the size of ours
+        // (x0.48) that runs to depth 18; ours asks 85 a ply up to depth 6 and
+        // cuts only the clear cases, so the guard only gave up sound cuts.
+        // Removed 2026-09-22.
         if (!inCheck && nonPv && depth <= 6
             && (UsePruneLossGuard ? beta > -TbScoreBound : beta > -MateBound) && beta < MateBound
             && excluded == Move.None
-            && (!UseRfpTtMoveGuard || ttMove == Move.None || ttMove.IsCapture || ttMove.IsPromotion)
             && pruningEval >= beta
             && pruningEval - 85 * (depth - (improving ? 1 : 0))
                - (ply > 0 ? _stackStatScore[ply - 1] : 0) / StatScoreRfpDiv >= beta)
@@ -3963,8 +4008,16 @@ public sealed class AlphaBetaSearch
         // nodes that clear it with the probe-everywhere entry kept elsewhere,
         // a flat 0.496 over 964. The below-beta probes earn their keep, and a
         // deeper probe where the eval is comfortable buys nothing at these
-        // node counts. The package shape (UseNmpPackage) keeps its own
-        // tombstone below.
+        // node counts. The third shape gated only the band below beta
+        // (eval >= beta - 25): -3.5 over 1,217, LLR -2.02, removed 2026-09-22.
+        // The reference's whole null-move subsystem as one package (quiet
+        // checks at the first quiescence ply, R = 7 + depth/3, and the
+        // cut-node entry gate) was measured twice and removed 2026-09-22: on
+        // 2026-09-01 with the raw gate H0, -23.2 [-41.4, -5.2], LLR -3.33
+        // over 614 games and +67% fixed-depth nodes; re-measured on the
+        // corrected x0.48 gate (6/23/175) against v5.9.16, flat, -0.3 +/-
+        // 13.1 over 1,119 games (LLR -1.19). The reference affords that shape
+        // only inside its whole tree; this one is at a measured local optimum.
         // PruneLossGuard also covers the reference's !is_loss(beta) here: no
         // null probe when beta is a mated or tablebase-lost score. Not
         // node-identical even without tablebases (mated betas occur in any
@@ -3972,18 +4025,8 @@ public sealed class AlphaBetaSearch
         if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
             && (!UsePruneLossGuard || beta > -TbScoreBound)
             && (!UseNmpNonPvOnly || nonPv)
+            && (!UseNmpCutNodeOnly || cutNode)
             && board.HasNonPawnMaterial(board.SideToMove)
-            // Package entry: cutNode only, eval clearing beta by the ported
-            // margin - the reference shape, affordable only with the deep R
-            // and the quiescence checks that ride the same flag. The margin
-            // is now x0.48 (13/47/365 -> 6/23/175): the raw constants asked
-            // for about twice the reference's distance in our pawns, the same
-            // defect the re-investigation of 2026-09-21 found in NmpEvalGate.
-            && (!UseNmpPackage
-                || (cutNode && staticEval != NoEval
-                    && staticEval >= beta - 6 * depth - 23 * (improving ? 1 : 0) + 175))
-            // NmpBelowBetaGate: no null probe far below beta (see the field).
-            && (!UseNmpBelowBetaGate || pruningEval >= beta - NmpGateMargin)
             && (ply >= _nmpMinPly || board.SideToMove != _nmpColor))
         {
             // Reduction: the previously validated shape (child depth
@@ -3995,10 +4038,10 @@ public sealed class AlphaBetaSearch
             // keeps its shallow null cutoffs tactically safe (measured here:
             // WAC 249-251/300 vs 257-259 with the old R, and verification
             // onset at 8 neither recovers the tactics nor keeps the nodes).
-            int r = UseNmpPackage ? 7 + depth / 3 : 3 + depth / 4;
+            int r = 3 + depth / 4;
             // NmpEvalR: the reference's eval-proportional term on our base R,
             // (eval - beta) / 168 in its units, 81 here, at most three plies.
-            if (UseNmpEvalR && !UseNmpPackage && pruningEval > beta)
+            if (UseNmpEvalR && pruningEval > beta)
                 r += Math.Min((pruningEval - beta) / 81, 3);
             // histstats instrument (armed only by the histstats command).
             int nmpBucket = -1;
@@ -4014,6 +4057,7 @@ public sealed class AlphaBetaSearch
             _stackVictim[ply] = 6;
             _stackReduction[ply] = 0;
             _stackStatScore[ply] = 0;
+            _stackMoveCount[ply] = 0;
             if (SearchStats) _stNullTry++;
             _incremental?.PushNull();
             board.MakeNullMove();
@@ -4153,11 +4197,18 @@ public sealed class AlphaBetaSearch
                 _stackVictim[ply] = probVictim;
                 _stackReduction[ply] = 0;
                 _stackStatScore[ply] = 0;
+                _stackMoveCount[ply] = 0;
 
                 int score = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
+                // No null move in the ProbCut child (ProbCutAllowNull): +0.7
+                // +/- 7.4 over 3,892 games at 100,000 nodes, H0 (2026-09-08),
+                // and 0.2% more nodes at depth 11. The reference's child cannot
+                // pass its own null entry, since its stand-pat already sits
+                // below its beta, so the probe was one it never makes.
+                // Removed 2026-09-22.
                 if (score >= probBeta)
                     score = -Negamax(board, probCutDepth, -probBeta, -probBeta + 1,
-                                     ply + 1, allowNull: UseProbCutAllowNull, cutNode: !cutNode);
+                                     ply + 1, allowNull: false, cutNode: !cutNode);
 
                 board.UnmakeMove();
                 _incremental?.Pop();
@@ -4217,8 +4268,10 @@ public sealed class AlphaBetaSearch
         //     `(59 + 66 * (ttPv && !PvNode)) * depth / 63`, which at depth 8 is
         //     7.5 against this engine's 16. Twice the margin puts singularBeta
         //     twice as far below the TT score, so `score < singularBeta` almost
-        //     never held and the extension almost never fired. Margins are ported
-        //     RAW - they are not eval terms and do not take the 0.48 scale.
+        //     never held and the extension almost never fired. The rebuild ported
+        //     that margin raw, which was wrong: singularBeta is compared to a
+        //     search value, so the margin is eval-valued and takes the 0.48
+        //     scale (UseSingularTight's second form carries it at x0.48).
         //   - MULTI-CUT was missing entirely. That is not an extension at all, it
         //     is pruning: when the verification search fails high over beta the
         //     whole subtree returns immediately. Very likely the larger half of
@@ -4271,23 +4324,61 @@ public sealed class AlphaBetaSearch
         // That is a statement about move ordering, not about extensions, so this
         // block gets re-measured after the killers and counter reform and not
         // before. The knobs to do it with are on branch bisect-5x.
-        if (depth >= (UseSingularTight ? 6 : 8) && excluded == Move.None && ttMove != Move.None
+        //
+        // UseSingularTight brings back the pruning half on its own terms (see
+        // the field): multi-cut and the -3/-2 reductions, at the x0.48 margin,
+        // with the TT move preserved on fail-low and the cutNode labels fixed.
+        // Gate >= 6 keeps the TT move's child depth >= 2 even at -3. The
+        // pseudo-legality guard is new: the reference runs this block only
+        // for a TT move that reached its move loop, and multi-cut returns on
+        // the verification's word, so a colliding non-move must not get here.
+        bool sg = UseSingularTight;
+        if (depth >= (sg ? 6 + (ttPv ? 1 : 0) : 8) && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
-            && CanReuseTtScore(entry.Score, board.HalfmoveClock))
+            && CanReuseTtScore(entry.Score, board.HalfmoveClock)
+            && (!sg || (MoveGenerator.IsPseudoLegal(board, ttMove) && !IsShuffling(board, ttMove, ply))))
         {
             int ttScore = FromTT(entry.Score, ply);
             // Decisive (mate or tablebase) stored scores are not singular
             // material: the reference tests !is_decisive here too.
             if (Math.Abs(ttScore) < TbScoreBound)
             {
-                int singularBeta = ttScore - (UseSingularTight ? depth : 2 * depth);
+                // Reference margin (59 + 66 * (ttPv && !PvNode)) * depth / 63, x0.48:
+                // singularBeta is compared to a search value, so it is eval-valued.
+                int singularBeta = sg ? ttScore - (28 + (ttPv && nonPv ? 32 : 0)) * depth / 63
+                                      : ttScore - 2 * depth;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
                                     ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
                     return 0;
+                if (SearchStats && sg) _stSgProbe++;
 
                 if (score < singularBeta)
+                {
                     singularExtension = 1;
+                    if (SearchStats && sg) _stSgExt++;
+                }
+                else if (sg && score >= beta && Math.Abs(score) < TbScoreBound)
+                {
+                    // Multi-cut: without the TT move the node still fails high,
+                    // so more than one move refutes it. Return the soft bound.
+                    if (SearchStats) _stSgMultiCut++;
+                    if (nmpFailBucket >= 0) RecordNmpAfterFail(nmpFailBucket, nmpFailNodes0);
+                    return score;
+                }
+                // Negative extensions: other moves reach singularBeta, so the
+                // TT move is not singular, but no multi-cut was taken; it is
+                // searched shallower in favour of the rest.
+                else if (sg && ttScore >= beta)
+                {
+                    singularExtension = -3;
+                    if (SearchStats) _stSgNeg3++;
+                }
+                else if (sg && cutNode)
+                {
+                    singularExtension = -2;
+                    if (SearchStats) _stSgNeg2++;
+                }
             }
         }
 
@@ -4334,9 +4425,18 @@ public sealed class AlphaBetaSearch
         Move bestMove = Move.None;
         int bestScore = -Infinity;
         int searched = 0;
+        // The reference's moveCount: every move that reaches the pruning
+        // tests counts, pruned or searched (searched counts only the made
+        // ones). Counted before the ladder; a move the lazy legality test
+        // rejects is uncounted again, so searched moves and moves in check
+        // (where the whole ladder is off) are exact. A move the ladder prunes
+        // is counted without ever being made, so outside check the count can
+        // still include a rare pseudo-legal move that was illegal.
+        // Read by PriorFailLowBonus (via _stackMoveCount) and by
+        // ReducedFutilityRefDepth's reduced depth.
+        int moveCount = 0;
         int quietsSearched = 0;
         int quietsPruned = 0;    // removed by HistoryPrune (HistoryPruneCounts)
-        int alphaBeforeCut = alpha; // the alpha a fail-high broke through (FailHighDamping)
         bool skipQuiets = false; // pruning ladder: LMP at every depth
         int stage = 0; // 0 = only TT move in the list, 1 = captures appended, 2 = quiets appended
         // Direct-check masks for the futility exemption, built on first use.
@@ -4397,6 +4497,7 @@ public sealed class AlphaBetaSearch
                 continue; // The generators re-emit the TT move; already served.
             if (move == excluded)
                 continue; // Singular verification searches everything BUT this.
+            moveCount++;
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
             // NOTE for whoever ports the reference's lmrDepth-scaled pruning
@@ -4462,9 +4563,12 @@ public sealed class AlphaBetaSearch
                     // by the capture's own reputation (reference 177 * depth +
                     // captHist * 34 / 1024 in its material units; x0.48 here).
                     // The stalemate-sacrifice exemption: never prune away our
-                    // last piece when a draw still beats alpha.
+                    // last piece when a draw still beats alpha. A king move is
+                    // never that piece (the king is outside the count, so it
+                    // used to pass for the last piece beside a lone minor).
                     int margin = 85 * depth + captHist * 16 / 1024;
                     bool lastPiece = board.PieceTypeAt(move.From) != PieceType.Pawn
+                        && board.PieceTypeAt(move.From) != PieceType.King
                         && Bitboard.PopCount(board.Occupancy(stm)
                             & ~board.Pieces(stm, PieceType.Pawn)
                             & ~board.Pieces(stm, PieceType.King)) == 1;
@@ -4482,6 +4586,7 @@ public sealed class AlphaBetaSearch
                     // first write and caught in review before its measurement
                     // (2026-09-21).
                     bool lastPieceQ = board.PieceTypeAt(move.From) != PieceType.Pawn
+                        && board.PieceTypeAt(move.From) != PieceType.King
                         && Bitboard.PopCount(board.Occupancy(stm)
                             & ~board.Pieces(stm, PieceType.Pawn)
                             & ~board.Pieces(stm, PieceType.King)) == 1;
@@ -4556,7 +4661,7 @@ public sealed class AlphaBetaSearch
                 // through (re-investigation of 2026-09-21: HistoryPrune moved
                 // paired depth by 0.000).
                 if ((depth <= 3 || UseLmpAllDepths)
-                    && (UseLmpCountAllMoves ? searched : quietsSearched + quietsPruned) >= lmpThreshold)
+                    && quietsSearched + quietsPruned >= lmpThreshold)
                 {
                     if (SearchStats) _stLmp++;
                     continue;
@@ -4623,27 +4728,32 @@ public sealed class AlphaBetaSearch
                 // margins stay (39 + 127 for the always-absent alpha-raiser at
                 // a non-PV node, 119 per ply, 90 when the eval already beats
                 // alpha). Depth-gated at 8 and floored at -1 in this first arm.
-                int futilityValue;
-                bool futile;
-                if (UseReducedFutility)
-                {
-                    int fCont = prevPiece >= 0
-                        ? _contHist[0].Get(prevPiece, prevTo,
-                            ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(move.From)), move.To)
-                        : 0;
-                    int fHist = fCont + 69 * _history.Get(stm, move) / 32;
-                    int fR = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)]
-                             + LmrScale + (improving ? 0 : LmrScale) + (ttCapture ? 1079 : 0);
-                    int fLmrDepth = depth - 1 - fR / LmrScale + fHist / 1024;
-                    futilityValue = staticEval + 166 + 119 * Math.Max(fLmrDepth, -1)
-                                    + 90 * (staticEval > alpha ? 1 : 0);
-                    futile = depth <= 8 && fLmrDepth < 12 && futilityValue <= alpha;
-                }
-                else
-                {
-                    futilityValue = staticEval + 100 * depth;
-                    futile = depth <= 4 && futilityValue <= alpha;
-                }
+                // ReducedFutilityRefDepth swaps only the reduced depth for the
+                // reference's pre-adjuster one: its own log-product table on
+                // the legal move count, no non-PV ply, no capture-TT-move term,
+                // 0.385x more when not improving, +929 at a ttPv node. With
+                // history 0 the low-depth margins come back to about the
+                // base's level: depth 1 off a ttPv node is 166 against the
+                // first arm's 47, depth 3 at the 6th move not improving 166
+                // against 47, depth 4 at the 9th improving 285 against 166.
+                // The margins stay raw by this project's futility rule (x0.48
+                // hid the WAC.001 mate); read in pawns they are about 2.08x
+                // the reference's width, the wide side, so a x0.48 arm would
+                // prune harder still.
+                // No ReducedFutility (the reference's step-14 quiet futility
+                // on the depth the move would really be searched at, with its
+                // history, against our flat staticEval + 100 * depth at depth
+                // <= 4). Three forms measured at 100,000 fixed nodes and the
+                // line removed 2026-09-22: the clamped arm a slow positive,
+                // +4.8 +/- 13.1 over 1,180 games that never closed; the
+                // reference's own unclamped arm -1.7 +/- 12.6 over 1,203; and
+                // the reference's pre-adjuster reduced depth (its log-product
+                // table on the move count, 0.385x when not improving, +982,
+                // +929 at ttPv) H0, -12.7 +/- 15.2 over 792 games, LLR -2.95.
+                // Inside a package with CutNodeLmr and the quiescence evasion
+                // prune the three slow positives read -5.0 over 741 together.
+                int futilityValue = staticEval + 100 * depth;
+                bool futile = depth <= 4 && futilityValue <= alpha;
                 if (futile)
                 {
                     // The exemption is decided FIRST, so the fail-soft
@@ -4679,8 +4789,9 @@ public sealed class AlphaBetaSearch
                         // first form exempted every direct check at depth <= 4
                         // and measured -5.7 over 1,220 games at +16.9% nodes:
                         // an exempt check is never LMR-reduced here (the LMR
-                        // gate skips moves that give check), so each one at
-                        // depth 2-4 cost a full subtree. Now only at depth <= 2,
+                        // gate skips moves that give check unless LmrChecks is
+                        // on), so each one at depth 2-4 cost a full subtree.
+                        // Now only at depth <= 2,
                         // where the child is at most one ply, and only a check
                         // that does not hang material (SEE >= 0).
                         exempt = (checkMask & toBit) != 0 && depth <= 2
@@ -4708,7 +4819,7 @@ public sealed class AlphaBetaSearch
                 }
             }
 
-            // ---- Shallow capture pruning (non-PV, not in check) ----
+            // ---- Shallow capture pruning (not in check) ----
             if (!UsePruningLadder && move.IsCapture && !move.IsPromotion && searched > 0 && !inCheck
                 && (!UsePruneLossGuard || bestScore > -TbScoreBound))
             {
@@ -4716,8 +4827,7 @@ public sealed class AlphaBetaSearch
                 // material will not recover the loss in the couple of plies
                 // left; skip it.
                 if (UseCaptureSeePruneDeep
-                    ? Math.Abs(alpha) < TbScoreBound
-                      && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 75 * depth)
+                    ? CaptureSeePrunes(board, move, stm, depth, alpha, bestScore)
                     : depth <= 2
                       && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
                 {
@@ -4765,6 +4875,7 @@ public sealed class AlphaBetaSearch
             _stackMove[ply] = move;
             _stackVictim[ply] = victimIdx;
             _stackStatScore[ply] = moveHistory - StatScoreOffset;
+            _stackMoveCount[ply] = moveCount;
             _incremental?.PushMove(board, move);
             board.MakeMove(move);
             _tt.Prefetch(board.ZobristKey);
@@ -4775,6 +4886,7 @@ public sealed class AlphaBetaSearch
             {
                 board.UnmakeMove();
                 _incremental?.Pop();
+                moveCount--;
                 continue;
             }
             _incremental?.CompleteThreatDelta(board);
@@ -4804,12 +4916,25 @@ public sealed class AlphaBetaSearch
                 // and check evasions always get full depth. The trigger
                 // thresholds come from the active profile (Bullet reduces
                 // sooner); board.IsInCheck() here means "the move gives check".
+                // No LmrChecks. The reference has no gives-check exclusion
+                // in its LMR step, and letting late checking moves be reduced
+                // (direct and discovered alike, evasions still excluded) was
+                // measured at 100,000 fixed nodes on 2026-09-22 and removed:
+                // -3.6 +/- 12.7 over 1,199 games, LLR -2.05, cut. About 2% of
+                // the reduced moves were checks and the bench lost 2.0% of its
+                // nodes, so the saving is real and the play is worse: this
+                // engine's checking moves earn their full depth.
                 int reduction = 0;
                 if ((isQuiet || (UseCaptureLmr && move.IsCapture && !move.IsPromotion))
                     && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
                     if (SearchStats) _stLmr++;
+                    // Population of the CutNodeLmrTtPv arm: the reduced moves
+                    // whose node is both ttPv and an expected cut node. Read
+                    // as a share of every reduced move, it says whether that
+                    // arm is worth a match at all.
+                    if (SearchStats && ttPv && cutNode) _stLmrTtPvCut++;
                     // Everything below is in 1024ths. Every adjuster here is a
                     // whole number of plies, so the single truncation at the
                     // end reproduces the previous per-term integer arithmetic
@@ -4864,17 +4989,17 @@ public sealed class AlphaBetaSearch
                              * (UseHistoryBonus ? PackagedStatScoreScale : 1568) / 4096;
                     }
 
-                    // The reference's base-offset + moveCount pair, ported AS A
-                    // PAIR (never existed here; the classic-era cut was a
-                    // different binary term). r += 697 - moveCount*65 shifts
-                    // reduction from late moves toward early ones: +567 at move
-                    // 2, roughly neutral at move 10, -600 at move 20. Porting
-                    // the subtraction alone would bias the whole curve toward
-                    // less reduction, the direction the old measurements
-                    // punished in proportion. Plies scale: no unit conversion.
-                    // Measured 2026-08-30: H0, -7.4 over 1,400 games; stays off.
-                    if (UseMoveCountLmr)
-                        r += 697 - (searched + 1) * 65;
+                    // No base-offset + moveCount LMR pair (the reference's
+                    // r += base - moveCount * 65, which moves reduction from
+                    // the late moves toward the early ones). Measured twice at
+                    // 100,000 fixed nodes and removed 2026-09-22: with the
+                    // reference's own base H0, -7.4 [-19.8, +4.9] over 1,400
+                    // games, a form that behind this engine's LMR gate (quiets
+                    // from the fifth move) was net LESS reduction and cost
+                    // +14.7% nodes at depth 12; with the base recalibrated
+                    // node-neutral (1347, inside 0.4% at depth 12), -7.9 +/-
+                    // 16.1 over 757 games, LLR -1.92, cut. The redistribution
+                    // itself does not pay here.
 
                     // cutNode term, REOPENED 2026-08-29. Rejected twice pre-IIR
                     // (-4.0 at 4026, -7.1 at 1536) with "no IIR, noisy cut-node
@@ -4915,7 +5040,7 @@ public sealed class AlphaBetaSearch
                     // NO cutNode reduction term. The reference's largest LMR
                     // adjuster (r += 4026 at cut nodes) was measured at two
                     // magnitudes and rejected both times: 4026 (~3.9 plies) at
-                    // −4.0 ±10.8 H0, 1536 (~1.5 plies) at −7.1 ±12.5 H0 - losing
+                    // -4.0 +/- 10.8 H0, 1536 (~1.5 plies) at -7.1 +/- 12.5 H0 - losing
                     // ~5 Elo regardless of strength, the two intervals overlapping.
                     // Most likely our cut-node classification is noisier than the
                     // reference's (no IIR, thinner node-type discipline), so the
@@ -4927,20 +5052,41 @@ public sealed class AlphaBetaSearch
                     // that was on a previous search's principal variation is worth
                     // searching more carefully). Reference removes 3023 + 1004*PV
                     // + 885*(ttValue>alpha) + 816*(ttDepth>=depth) [+940*cutNode].
-                    // Scaled ×0.34 so the base is ~1 ply instead of ~3: at 3 plies
+                    // Scaled x0.34 so the base is ~1 ply instead of ~3: at 3 plies
                     // it would floor our milder reductions to zero at every ttPv
                     // node and the conditionals would stop modulating. The cutNode
                     // sub-term is dropped - our cut-node signal is too noisy to
                     // trust (see above). Conditionals gated on ttHit so ttValue and
                     // ttDepth are real.
+                    //
+                    // CutNodeLmrTtPv, the contingency arm of the cutNode term
+                    // above and read only with it: at a cut node the flooring
+                    // that the scaling defends against cannot happen, because
+                    // the same move just took +4026 there, so the reference's
+                    // full ttPv treatment applies unscaled (+929 from its step
+                    // 14, then its whole step 17 block; the PV sub-term is zero
+                    // by construction, a cut node is never a PV node).
                     if (ttPv)
                     {
-                        r -= 1024 + (nonPv ? 0 : 340);
-                        if (ttHit)
+                        if (UseCutNodeLmr && UseCutNodeLmrTtPv && cutNode)
                         {
-                            if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
-                                r -= 300;
-                            if (entry.Depth >= depth) r -= 277;
+                            r += 929 - 3023;
+                            if (ttHit)
+                            {
+                                if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
+                                    r -= 885;
+                                if (entry.Depth >= depth) r -= 816 + 940;
+                            }
+                        }
+                        else
+                        {
+                            r -= 1024 + (nonPv ? 0 : 340);
+                            if (ttHit)
+                            {
+                                if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
+                                    r -= 300;
+                                if (entry.Depth >= depth) r -= 277;
+                            }
                         }
                     }
 
@@ -5015,7 +5161,6 @@ public sealed class AlphaBetaSearch
 
                 if (score > alpha)
                 {
-                    alphaBeforeCut = alpha;
                     alpha = score;
 
                     if (alpha >= beta)
@@ -5182,14 +5327,6 @@ public sealed class AlphaBetaSearch
         if (tbCeiling != Infinity && bestScore > tbCeiling)
             bestScore = tbCeiling;
 
-        // FailHighDamping (reference: bestValue = (bestValue * depth + beta) /
-        // (depth + 1) on a non-decisive fail-high). The damped score is both
-        // stored and returned, so every lower bound in the table is as
-        // conservative as the reference's instead of the raw fail-soft maximum.
-        if (UseFailHighDamping && bestScore >= beta && Math.Abs(bestScore) < TbScoreBound
-            && Math.Abs(alphaBeforeCut) < TbScoreBound)
-            bestScore = (bestScore * depth + beta) / (depth + 1);
-
         // Every move may have been SEE-pruned except the first; bestMove is
         // then still valid (the first move is never pruned).
 
@@ -5241,8 +5378,10 @@ public sealed class AlphaBetaSearch
         // the move that led here refuted its parent's hopes: a quiet one
         // earns butterfly and continuation history for the side that played
         // it, a capture earns capture history. Scaled by depth, by the
-        // parent's statScore and by how far under the static eval the node
-        // landed; clamped at zero so a well-reputed parent move gets nothing.
+        // parent's statScore, by the parent's move count and by how far
+        // under both static evals the node landed; clamped at zero so a
+        // well-reputed parent move gets nothing. Excluded-move searches stay
+        // out, as they do from fail-low correction learning above.
         if (UsePriorFailLowBonus && excluded == Move.None && bestScore <= originalAlpha
             && ply >= 1 && _stackPiece[ply - 1] >= 0 && _stackMove[ply - 1] != Move.None)
         {
@@ -5250,25 +5389,38 @@ public sealed class AlphaBetaSearch
             Color them = Board.OppositeColor(stm);
             if (_stackVictim[ply - 1] == 6 && !parentMove.IsPromotion)
             {
-                int scale = -241 + Math.Min(59 * depth, 420)
-                    - _stackStatScore[ply - 1] / 350
-                    + (!inCheck && bestScore <= staticEval - 51 ? 142 : 0);
+                // The reference's statScore carries no offset; its divisor
+                // 98 goes x0.28 here (a divisor on our 0.28x history, as
+                // StatScoreRfpDiv does).
+                int rawStat = _stackStatScore[ply - 1] + StatScoreOffset;
+                int scale = -241 + Math.Min(59 * depth, 420) - rawStat / 27
+                    + (_stackMoveCount[ply - 1] > 9 ? 186 : 0)
+                    + (!inCheck && bestScore <= staticEval - 51 ? 142 : 0)
+                    + (_stackEval[ply - 1] != NoEval && bestScore <= -_stackEval[ply - 1] - 33 ? 159 : 0);
                 if (scale > 0)
                 {
-                    int statBonus = Math.Min(133 * depth - 81, 1487);
-                    _history.Add(them, parentMove, (int)((long)statBonus * scale * 215 / 32768));
+                    // Re-expressed in this engine's depth^2 currency: the
+                    // reference's fail-low to cutoff ratios, capped where its
+                    // min(150d - 85, 1337) caps.
+                    int d2 = Math.Min(depth * depth, 100);
+                    _history.Add(them, parentMove, d2 * scale / 100);
                     if (ply >= 2 && _stackPiece[ply - 2] >= 0)
                         _contHist[0].Add(_stackPiece[ply - 2], _stackTo[ply - 2],
-                                         _stackPiece[ply - 1], _stackTo[ply - 1],
-                                         (int)((long)statBonus * scale * 263 / 16384) / 8);
+                                         _stackPiece[ply - 1], _stackTo[ply - 1], d2 * scale / 36);
                 }
             }
-            else if (_stackVictim[ply - 1] != 6)
+            else
             {
-                // The reference gives a flat 892 (of 10692) here; the same
-                // rail ratio in this table's 4096 range.
+                // The reference's flat 892 is 2.0x/0.9x/0.43x its capture
+                // cutoff bonus at D = 3/6/12: about 5*D against our D^2.
+                // The branch above already excluded promotions, so this is
+                // exactly (capture) or (quiet promotion); a plain quiet can
+                // never reach it. A quiet promotion lands in victim slot 6,
+                // the slot CaptureHistory keeps for "none" - the same table
+                // and slot the cutoff path sends it to, so a promotion that
+                // causes a fail-low is learned like one that causes a cutoff.
                 _captureHistory.AddBonus(_stackPiece[ply - 1], _stackTo[ply - 1], _stackVictim[ply - 1],
-                                         892 * 4096 / 10692);
+                                         5 * (depth + 1));
             }
         }
 
@@ -5322,14 +5474,12 @@ public sealed class AlphaBetaSearch
     // own measured block. The TT probe/store at quiescence depth is also left
     // out: measured in the 5E campaign, depth-0 entries flooded the clusters
     // and evicted main-search entries (d15 nodes ROSE 1.35M -> 1.75M, nps -11%).
-    // answersQsCheck: this node was reached by one of the quiet checks the
-    // entry node appended (QsChecks), read by QsEvasionPruneExemptQsChecks.
     // pvHint (PvWindowEarly): 1 or 0 when the caller knows whether the window
     // it passes was a PV window before its own draw-rule narrowing; -1 means
     // take the window as received.
     private int Quiescence(Board board, int alpha, int beta, int ply,
                            bool genChecks = false, int entryPly = -1,
-                           bool answersQsCheck = false, int pvHint = -1)
+                           int pvHint = -1)
     {
         bool pvAtEntry = pvHint >= 0 ? pvHint == 1 : beta - alpha != 1;
         // The ply at which quiescence was entered from the main search; the
@@ -5489,13 +5639,7 @@ public sealed class AlphaBetaSearch
             }
 
             if (bestScore >= beta)
-            {
-                // FailHighDampingQs: the stand-pat cutoff returns a value
-                // pulled toward beta (reference: 441/583 in 1024ths).
-                if (UseFailHighDampingQs && Math.Abs(bestScore) < TbScoreBound)
-                    return (441 * bestScore + 583 * beta) / 1024;
                 return bestScore;
-            }
             if (bestScore > alpha)
                 alpha = bestScore;
             futilityBase = bestScore + QsFutilityMargin;
@@ -5518,13 +5662,8 @@ public sealed class AlphaBetaSearch
         // the sorted captures so they run last; discovered checks are a
         // documented divergence from the reference's generator. The scratch
         // list is the child ply's, borrowed strictly BEFORE any recursion.
-        // qsCheckStart marks where the appended quiet checks begin, so their
-        // children know they answer one (the list is already sorted, and
-        // nothing is appended after them).
-        int qsCheckStart = int.MaxValue;
         if (genChecks && !inCheck && ply + 1 < MaxPly)
         {
-            qsCheckStart = moves.Count;
             MoveList quiets = _moveLists[ply + 1];
             quiets.Clear();
             MoveGenerator.AppendQuietMoves(board, quiets);
@@ -5579,18 +5718,6 @@ public sealed class AlphaBetaSearch
             // write inferred it from "one ply below the entry, reached by a
             // non-capture", which also caught checking evasions of an entry
             // node that was itself in check (review find, 2026-09-21).
-            if (UseQsEvasionPrune && inCheck && bestScore > -TbScoreBound
-                && !(UseQsEvasionPruneExemptQsChecks && answersQsCheck))
-            {
-                bool captureStage = move.IsCapture
-                    || move.Flag is MoveFlag.PromoQueen or MoveFlag.PromoQueenCapture;
-                if (!captureStage)
-                    continue;
-                if (move.IsCapture && !move.IsPromotion
-                    && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: QsSeeThreshold))
-                    continue;
-            }
-
             // Nothing is pruned while in check: any of these may be the only
             // legal move, and pruning it could turn a save or a draw into a
             // reported mate.
@@ -5672,8 +5799,7 @@ public sealed class AlphaBetaSearch
             _incremental?.CompleteThreatDelta(board);
 
             moveCount++;
-            int score = -Quiescence(board, -beta, -alpha, ply + 1, entryPly: entryPly,
-                                    answersQsCheck: i >= qsCheckStart);
+            int score = -Quiescence(board, -beta, -alpha, ply + 1, entryPly: entryPly);
             board.UnmakeMove();
             _incremental?.Pop();
 
@@ -5731,11 +5857,6 @@ public sealed class AlphaBetaSearch
         // here is relative to this ply and the store would need the root
         // distance folded in, which is what ToTT does but only for scores this
         // node actually searched for.
-        //
-        // FailHighDampingQs: a non-decisive fail-high is pulled toward beta
-        // before it is stored and returned (reference: 462/562 in 1024ths).
-        if (UseFailHighDampingQs && bestScore > beta && Math.Abs(bestScore) < TbScoreBound)
-            bestScore = (462 * bestScore + 562 * beta) / 1024;
         _tt.Store(board.ZobristKey, 0, ToTT(bestScore, ply), rawEval,
                   bestScore >= beta ? BoundType.LowerBound : BoundType.UpperBound,
                   bestMove, ttPv);
@@ -5804,10 +5925,6 @@ public sealed class AlphaBetaSearch
         return score;
     }
 
-    // Noa's Zobrist key deliberately omits the halfmove clock. A decisive TT
-    // score learned immediately after a zeroing move is therefore unsafe in
-    // the same placement with a live rule-50 counter. Keep its move for
-    // ordering, but conservatively refuse its bound until the counter resets.
     // Does the move give check with the moved piece itself? The picker's own
     // direct-check test, without its per-node context: one attack lookup from
     // the destination over the occupancy AFTER the move (the mover leaving
@@ -5835,26 +5952,51 @@ public sealed class AlphaBetaSearch
         return (attacks & king) != 0;
     }
 
-    private bool CanReuseTtScore(int score, int halfmoveClock)
-        => CanReuseTtScore(score, halfmoveClock, UseTtMateReuse);
-
-    private static bool CanReuseTtScore(int score, int halfmoveClock, bool mateReuse)
+    // CaptureSeePruneDeep's test (see the field): does this capture lose more
+    // than a margin grown by depth and eased by its capture history? A
+    // negative margin cannot go through LosesAtLeast, whose early exit on
+    // victim >= attacker only holds for a threshold of zero or more, so it
+    // asks the full exchange whether the capture wins at least -margin.
+    private bool CaptureSeePrunes(Board board, Move move, Color stm, int depth, int alpha, int bestScore)
     {
-        if (halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound))
-            return true;
+        if (bestScore <= -TbScoreBound)
+            return false;
+        PieceType mover = board.PieceTypeAt(move.From);
+        if (alpha < 0 && mover != PieceType.Pawn && mover != PieceType.King
+            && Bitboard.PopCount(board.Occupancy(stm)
+                & ~board.Pieces(stm, PieceType.Pawn)
+                & ~board.Pieces(stm, PieceType.King)) == 1)
+            return false;
+        int captHist = _captureHistory.Get(ContinuationHistory.PieceIndex(stm, mover), move.To,
+                                           CaptureHistory.VictimIndex(board, move));
+        int margin = 85 * depth + captHist * CaptureSeeHistK / 1024;
+        return margin >= 0
+            ? StaticExchangeEvaluator.LosesAtLeast(board, move, margin)
+            : StaticExchangeEvaluator.Evaluate(board, move) < -margin;
+    }
 
-        // A stored mate score is node-relative, so MateScore - |score| is the
-        // number of plies from this node to the mate. The line cannot be cut
-        // short by the fifty-move rule if it ends before the counter reaches
-        // 100 even with no zeroing move on the way (mate on the hundredth
-        // half-move still wins). Tablebase scores stay clock-zero only: their
-        // distance is not in the score.
-        if (mateReuse)
-        {
-            int magnitude = Math.Abs(score);
-            return magnitude > MateBound && halfmoveClock + (MateScore - magnitude) <= 100;
-        }
-        return false;
+    // Noa's Zobrist key deliberately omits the halfmove clock. A decisive TT
+    // score learned immediately after a zeroing move is therefore unsafe in
+    // the same placement with a live rule-50 counter. Keep its move for
+    // ordering, but conservatively refuse its bound until the counter resets.
+    // The mate-distance relaxation of this test (TtMateReuse) was measured
+    // and removed; see its tombstone in the option list.
+    private static bool CanReuseTtScore(int score, int halfmoveClock)
+        => halfmoveClock == 0 || (score > -TbScoreBound && score < TbScoreBound);
+
+    // Reference is_shuffling: a quiet move that walks a piece back along the
+    // path it came, deep in a line without progress (fifty-move clock >= 10,
+    // ply >= 20, no null move in the last six plies; the null writes Move.None).
+    // Six, not five: after a null at ply p the node at p + k is k - 1 plies
+    // from it, and the reference needs at least six.
+    private bool IsShuffling(Board board, Move move, int ply)
+    {
+        if (move.IsCapture || move.IsPromotion || board.HalfmoveClock < 10 || ply < 20)
+            return false;
+        for (int i = 1; i <= 6; i++)
+            if (_stackMove[ply - i] == Move.None)
+                return false;
+        return move.From == _stackMove[ply - 2].To && _stackMove[ply - 2].From == _stackMove[ply - 4].To;
     }
 
 }
