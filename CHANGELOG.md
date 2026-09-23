@@ -32,6 +32,15 @@ the root restricted to game-theoretically optimal moves regardless of the clock,
 flagged game still ended in the draw the tables call it. What this fixes is the search staying
 truthfully anchored to that draw instead of playing the rest of the game convinced it was losing.
 
+**Gauntlet (2026-09-23).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.9.2:
+**57.7% over 313 games, 3364 CCRL +/- 40**, the highest of the series (previous best v5.8.2's 3353,
+the two bands overlap). Secondary read: the fixed-node SPRT for `TbDrawProbeAlways` closed flat at
+2000 games (388-388-1228, [0.500], LLR ~0) - no measurable aggregate cost or gain, consistent with a
+fix for a narrow, tablebase-only blind spot rather than a general search change. It does not revise
+the judgment-based decision to ship the option on: the defect it corrects was real and verified
+directly against the tables, and a flat SPRT over ordinary games was the expected outcome, not a
+reason to reconsider.
+
 ## 2026-09-23 (v5.9.18) - three fidelity fixes ship on judgment, not on Elo
 
 **`PruneLossGuard`, `LosingCaptureOrder`, `SmallProbCutExact` and `PvWindowEarly` ON.** None of the
