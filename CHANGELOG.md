@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## 2026-09-23 (v5.9.18) - three fidelity fixes ship on judgment, not on Elo
+
+**`PruneLossGuard`, `LosingCaptureOrder`, `SmallProbCutExact` and `PvWindowEarly` ON.** None of the
+four closed an SPRT; all four measured flat and all four correct a real defect the port had against
+the reference, found and reviewed during the campaign that closed on 2026-09-22/23. None is a bet on
+a new heuristic - each is the code doing what it already claimed to do. Shipped under the standing
+rule that a tie can enter on judgment when its cost is measured zero (or better) and it corrects
+behaviour rather than gambling on it.
+
+`PruneLossGuard` + `LosingCaptureOrder` + `SmallProbCutExact` (the fidelity trio, measured together):
+flat, +1.2 +/- 10.1 over 1,213 games against v5.9.15, and **-1.42% bench nodes** on the shipping
+v5.9.17 build (5,193,384 against 5,268,200 at depth 11, 60 positions) - cheaper, not costlier, for
+the same strength. `PvWindowEarly` (the PV/non-PV decision taken from the window as the node
+received it, before the upcoming-repetition raise or the mate-distance clamp can narrow it): flat,
++4.9 +/- 12.4 over 1,207 games against v5.9.15, and a measured cost of 3 nodes on 5,268,200 - well
+inside timing noise, not a real change. Node-identical check against the manually-flagged v5.9.17
+build (all four options set true by hand): both give exactly 5,193,386 nodes over the 60-position
+bench at depth 11.
+
+The other 12 options closed as ties this campaign (see the 2026-09-23 entry below) stay off: none
+corrects a known defect, and several (`HistoryPrune`, `CaptureSeePruneDeep`, `CutoffCountLmrAllNode`,
+`NmpCutNodeOnly`) showed their point estimate shrink toward zero as more games accumulated - the
+signature of noise regressing to the mean, an argument against more measurement rather than for it.
+461 tests.
+
 ## 2026-09-23 (v5.9.17) - fqco5911 embedded: a real, small data step, and why it is small
 
 **`fqco5911` replaces `fqco592` as the embedded net.** Same recipe, a larger corpus (datascale2 +

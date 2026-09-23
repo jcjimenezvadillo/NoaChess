@@ -3,7 +3,9 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.17, 2026-09-23).** The embedded net is `fqco5911` (entry below): fqco592's
+**Current state (v5.9.18, 2026-09-23).** The embedded net is `fqco5911` (entry below), unchanged from
+v5.9.17; v5.9.18 shipped three search fidelity fixes on judgment (see CHANGELOG.md), no net change.
+fqco5911 is fqco592's
 recipe over a larger corpus, warm-started from `fqco592.pt.partial`. Architecture is HalfKAv2_hm
 with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
 training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
