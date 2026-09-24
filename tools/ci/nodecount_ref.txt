@@ -1,6 +1,8 @@
-127104
+127139
 
-# Regenerated 2026-09-22 against the 5.9.16 tree (GoodCaptureSlack,
+# Regenerated 2026-09-24 against the 5.9.20 tree (127139; the shipped 5.9.19 binary gives the same
+# 127139, so the 127104 of 5.9.16 had gone stale at 5.9.17/5.9.18 without being regenerated; the net swap
+# of 5.9.20 cannot move it). Before that, 2026-09-22 against the 5.9.16 tree (GoodCaptureSlack,
 # NmpEvalR, TtNoPvCutoff, FutilityFailSoft, ImprovingAboveBeta,
 # CheckExemptFutility and TtCutoffHistory on by default; 5.9.15 gave 140411,
 # 5.9.14 141122, 5.9.13 141262, 5.9.12 126949), with the published Release binary and UseNNUE=false forced by the
