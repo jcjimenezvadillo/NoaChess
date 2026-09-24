@@ -3,10 +3,10 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.18, 2026-09-23).** The embedded net is `fqco5911` (entry below), unchanged from
-v5.9.17; v5.9.18 shipped three search fidelity fixes on judgment (see CHANGELOG.md), no net change.
-fqco5911 is fqco592's
-recipe over a larger corpus, warm-started from `fqco592.pt.partial`. Architecture is HalfKAv2_hm
+**Current state (v5.9.20, 2026-09-24).** The embedded net is `fqco5912` (entry below): fqco592's
+weights re-annealed over 14 epochs of a real cosine on fqco5911's corpus. Before it, fqco5911 (v5.9.17)
+was fqco592's recipe over a larger corpus, warm-started from `fqco592.pt.partial`; v5.9.18 and
+v5.9.19 changed search only (see CHANGELOG.md). Architecture is HalfKAv2_hm
 with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
 training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
 CCRL: **3321 +/- 45** (v5.9.2 gauntlet, measured field labels, 52.1% over 240 games); nothing from
@@ -26,6 +26,37 @@ another `--epochs 7` run at this learning rate. `--max-records 120000000` in `Tr
 dead code on the streaming path (`train_streaming` returns before it is read) and should not be
 copied forward as if it limited anything - every run described here consumed its entire corpus,
 every epoch.
+
+---
+
+## fqco5912 ships as v5.9.20 (2026-09-24): the schedule experiment, a real anneal
+
+The experiment the "Read this before training another generation" note above asked for. One axis
+moved against fqco5911: the learning-rate schedule. Same warm start (`fqco592.pt.partial`), same
+corpus (263 files, 1,219,446,812 records), same hyperparameters (batch 16384, lambda 0.735 to 0.7,
+reference-style loss, factorized, coarse lane, QAT at QA 255) - but a fresh 14-epoch cosine from lr
+1.371433e-4 (the original 60-epoch schedule evaluated at epoch 46) down to `eta_min` 1e-5, in place
+of 7 epochs at the floor (4.287769e-05).
+
+The run was terminated from outside at epoch 11 of 14 (no Python traceback in its log; epoch 10 saved,
+validation 0.005560) and resumed from the epoch-10 checkpoint at the learning rate the cosine had
+reached there (3.3935e-05), 4 epochs left, lambda 0.710 to 0.7. That is the documented continuation
+recipe: it reproduces the remaining schedule closely but not exactly, since the optimizer state
+restarts. Final checkpoint validation 0.005540 (fqco592: 0.005860 at its own selection; the
+validation split leaks a little, see the fqco5911 entry, so the loss reads optimistic and the SPRT is
+the judge). Exported 2026-09-24 19:27, 5,820,956 bytes, sha256 starting 7a326447140c10e0 (fqco5911:
+cfd9e654...); embedded and `EvalFile` loads verified identical in play. Architecture and file size
+unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592, the same 5.9.19 binary on both sides (fqco5912
+listed first, 8moves_v3, elo0=0 elo1=10 alpha=beta=0.05): 119-72-286 [0.549] over 477 games, +34.3
++/- 19.7 Elo, LOS 100%, LLR 2.95, H1.** It closed early, so the point estimate is likely inflated by
+the stopping rule; fqco5911, a data step of the same recipe on 1.35x the corpus, read +7.8 +/- 6.0
+over 5,401 games. **Mechanism finding:** the reading supports the hypothesis of the 2026-09-23
+investigation - the learning-rate schedule, not the data volume, was the lever behind the project's
+large NNUE gains, and a real wider anneal on the same data pays several times what the data step
+did. Still to come: a longer measurement against fqco5911 and a gauntlet. A cold 60-epoch anneal
+remains the other untested form of the same idea.
 
 ---
 

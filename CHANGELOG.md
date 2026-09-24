@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## 2026-09-24 (v5.9.20) - fqco5912 embedded: a real learning-rate anneal is worth far more than another data step
+
+**`fqco5912` embedded.** This is the schedule experiment the 2026-09-23 investigation named as the
+strongest bet for the next net. That investigation found that the project's two largest NNUE wins,
+gen9 (+18) and fqcohuman3 (+21.6), were the tail of ONE 60-epoch cosine anneal (`lr0=1e-3`) on an
+unchanged corpus, while `fqco592` and `fqco5911` each trained 7 epochs at a tiny learning-rate range
+and measured almost nothing. `fqco5912` gives the same warm-started weights (fqco592's checkpoint)
+a REAL, wider cosine: lr 1.371433e-4 (the original 60-epoch schedule evaluated at epoch 46) carried
+down to `eta_min` 1e-5 over 14 epochs. Same corpus as fqco5911 (263 files, 1,219,446,812 records:
+datascale2 + datascale4 + datascale5 + selfplay-gen8 + 17 elite WDL shards), otherwise identical
+hyperparameters: batch 16384, lambda 0.735 to 0.7, reference-style loss, factorized, coarse lane, QAT
+at QA 255. Only the schedule moved against fqco5911's recipe.
+
+**The run was interrupted and resumed.** It was terminated from outside at epoch 11 of 14 (no Python
+traceback in its log; epoch 10 had been saved, validation 0.005560). It was resumed from the epoch-10
+checkpoint with the learning rate the cosine had reached there (3.3935e-05), 4 epochs left, lambda
+0.710 to 0.7 - the documented continuation recipe, which reproduces the remaining schedule closely
+but not exactly, because the optimizer state restarts. Final checkpoint validation loss 0.005540
+(fqco592: 0.005860 at its own selection); the validation split leaks a little (see the 2026-09-23
+note), so the printed loss reads optimistic and the SPRT is the judge. Exported 2026-09-24 19:27:
+`models\nnue\fqco5912.noannue`, 5,820,956 bytes (unchanged architecture), sha256 starting
+7a326447140c10e0, differing from fqco5911 (cfd9e654...). Embedded and `EvalFile` loads verified
+identical in play.
+
+**Measured at 100,000 fixed nodes against fqco592** (cutechess, the same 5.9.19 binary on both sides,
+only `EvalFile` differing, fqco5912 listed first, 8moves_v3 book, elo0=0 elo1=10 alpha=beta=0.05):
+119-72-286 [0.549] over 477 games, **+34.3 +/- 19.7 Elo, LOS 100%, LLR 2.95, H1**. H1 closed early,
+at 477 games, so the point estimate is likely inflated by the stopping rule. For scale, fqco5911 (a
+data step, same recipe, 1.35x the corpus) read +7.8 +/- 6.0 over 5,401 games. The reading supports the
+hypothesis that the learning-rate schedule, not the data volume, was the lever; a longer measurement
+against fqco5911 and a gauntlet are still to come.
+
+**CI reference.** `tools/ci/nodecount_ref.txt` was regenerated from 127104 to 127139: the shipped
+5.9.19 binary already gave 127139 (the reference had gone stale at 5.9.17/5.9.18 without being
+regenerated), and a net swap cannot move a classical-evaluator count. Search code is untouched in
+this release; only the embedded net and the version string changed. 461 tests (128 Core + 333 Engine).
+
+**Deployment.** Published (Windows + Mac). The Windows bot binary is copied but the bot is NOT
+running: a clean-machine Windows test (bot alone, 24 threads) is planned for 2026-09-25 onwards, and
+the Mac bot is stopped for it. Gauntlet for the CCRL number: pending (previous best of the series:
+3364 for v5.9.19).
+
 ## 2026-09-23 (v5.9.19) - a tablebase draw was invisible to almost the whole search
 
 **`TbDrawProbeAlways` ON.** Found reviewing two real bot games the user flagged as playing without
