@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.20";
+    public const string Version = "5.9.21";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -63,9 +63,27 @@ public sealed class ChessEngine
     // of this codebase with the worst history of tablebase-adjacent bugs, but
     // the exact stuck code path was not isolated; this bounds the damage
     // instead of chasing a repro that did not reproduce outside the game.
+    //
+    // Quarantine is NOT forever any more (2026-09-25): a quarantined helper
+    // that finally returns rejoins the pool at the next search. Most helpers
+    // that miss the deadline are not hung, they are slow - the Windows bot's
+    // tablebases lived on a mechanical disk, the tables are memory-mapped, and
+    // a helper deep in tablebase territory page-faults on every probe while
+    // the stop check only runs every StopCheckInterval nodes. Eleven of 24
+    // helpers were quarantined at once in one game and the engine played the
+    // rest of it on 13 threads; the parked helpers were all back within
+    // minutes. A helper that really never returns is still never awaited.
     private const int HelperWatchdogMs = 3000;
     private bool[] _helperQuarantined = [];
     private bool[] _workerFinished = [];
+    private long[] _quarantinedAt = [];
+    // Bumped by every RebuildPool. A thread from an older pool that returns
+    // from a stale search after the arrays were replaced exits instead of
+    // indexing (or parking on) the new pool's slots.
+    private int _poolGeneration;
+    // Tests only (set by reflection): runs on a helper between its search and
+    // publishing the result, to simulate a helper that comes back late.
+    private static Action<int>? s_helperReturnHook;
     // Orders "the watchdog quarantines this slot" against "this slot signals
     // _done" (2026-09-14): a helper quarantined after the timeout used to
     // signal the countdown of a LATER search when it finally returned, and a
@@ -202,21 +220,26 @@ public sealed class ChessEngine
         // Wake the parked workers. Everything they read was written above, and
         // the semaphore release is the barrier that publishes it. _done counts
         // them back in after the main worker decides. Quarantined helpers
-        // (see the watchdog below) are permanently stuck in a previous call
-        // and will never park on _go again - skip them, both in the release
-        // and in the count _done waits for, or every future move would pay
-        // the same watchdog timeout for a thread that is never coming back.
+        // (see the watchdog below) are still inside a previous call - skip
+        // them, both in the release and in the count _done waits for, or this
+        // move would pay the watchdog timeout again. Under the gate: a helper
+        // rejoining concurrently must not flip its flag between the count and
+        // the release, or a released-but-uncounted helper would signal a
+        // countdown already at zero.
         int activeHelpers = 0;
-        for (int i = 0; i < n - 1; i++)
+        lock (_quarantineGate)
         {
-            _workerFinished[i] = _helperQuarantined[i];
-            if (!_helperQuarantined[i])
-                activeHelpers++;
+            for (int i = 0; i < n - 1; i++)
+            {
+                _workerFinished[i] = _helperQuarantined[i];
+                if (!_helperQuarantined[i])
+                    activeHelpers++;
+            }
+            _done!.Reset(activeHelpers);
+            for (int i = 1; i < n; i++)
+                if (!_helperQuarantined[i - 1])
+                    _go[i - 1].Release();
         }
-        _done!.Reset(activeHelpers);
-        for (int i = 1; i < n; i++)
-            if (!_helperQuarantined[i - 1])
-                _go[i - 1].Release();
 
         // Couple the pool to the main worker's time manager: its instability
         // factor averages root best-move changes over ALL workers (peer sum /
@@ -256,8 +279,9 @@ public sealed class ChessEngine
         // Bounded, not unbounded: every helper checks the cancellation token
         // every StopCheckInterval nodes, so in the overwhelming majority of
         // searches this returns in well under a millisecond of the deadline.
-        // A helper that is not back within HelperWatchdogMs is not slow, it is
-        // stuck - and is quarantined forever rather than awaited again.
+        // A helper that is not back within HelperWatchdogMs is quarantined: not
+        // awaited, not used, its late result discarded, until it returns on
+        // its own and rejoins (see WorkerLoop).
         linked.Cancel();
         if (!_done.Wait(HelperWatchdogMs))
         {
@@ -268,9 +292,10 @@ public sealed class ChessEngine
                     if (_helperQuarantined[i] || _workerFinished[i])
                         continue;
                     _helperQuarantined[i] = true;
+                    _quarantinedAt[i] = Environment.TickCount64;
                     Diagnostic?.Invoke(
                         $"helper thread {i + 1} did not honour cancellation within "
-                      + $"{HelperWatchdogMs} ms - quarantined for the rest of this process");
+                      + $"{HelperWatchdogMs} ms - quarantined until it returns");
                 }
             }
         }
@@ -410,8 +435,13 @@ public sealed class ChessEngine
         _poolShutdown = false;
         _go = new SemaphoreSlim[need];
         _pool = new Thread[need];
-        _helperQuarantined = new bool[need];
-        _workerFinished = new bool[need];
+        lock (_quarantineGate)
+        {
+            _poolGeneration++;
+            _helperQuarantined = new bool[need];
+            _workerFinished = new bool[need];
+            _quarantinedAt = new long[need];
+        }
         // Seeded at 1 only so the countdown is valid before the first search;
         // every search resets it to the live worker count.
         _done = new CountdownEvent(1);
@@ -445,11 +475,11 @@ public sealed class ChessEngine
             go.Release();
         for (int i = 0; i < _pool.Length; i++)
         {
-            // A quarantined thread is permanently stuck inside a stale
-            // FindBestMove call and will never reach the park loop to see
-            // _poolShutdown - joining it would just trade one unbounded wait
-            // for another (e.g. the GUI changing "Threads" would freeze here
-            // instead of at the next move).
+            // A quarantined thread is still inside a stale FindBestMove call
+            // and may never come back - joining it would just trade one
+            // unbounded wait for another (e.g. the GUI changing "Threads"
+            // would freeze here instead of at the next move). If it does come
+            // back, the generation check in WorkerLoop makes it exit.
             if (i < _helperQuarantined.Length && _helperQuarantined[i])
                 continue;
             _pool[i].Join();
@@ -468,15 +498,17 @@ public sealed class ChessEngine
     // searchers (new game, new evaluator) needs no new threads.
     private void WorkerLoop(int index)
     {
+        int generation = Volatile.Read(ref _poolGeneration);
         while (true)
         {
             _go[index].Wait();
             if (_poolShutdown)
                 return;
 
+            SearchResult result;
             try
             {
-                _workerResults[index + 1] = _helpers[index].FindBestMove(
+                result = _helpers[index].FindBestMove(
                     _workerBoards[index + 1], _workerLimits, _workerToken, null, newSearch: false);
             }
             catch
@@ -484,23 +516,39 @@ public sealed class ChessEngine
                 // A helper that throws must not take the search down with it:
                 // the main worker's line is what gets played. Report an empty
                 // result, which the vote skips.
-                _workerResults[index + 1] = new SearchResult(Move.None, 0, 0);
+                result = new SearchResult(Move.None, 0, 0);
             }
-            finally
+            s_helperReturnHook?.Invoke(index);
+
+            // MUST run on every path (the catch above swallows everything). A
+            // missed signal used to hang the engine forever on the next
+            // _done.Wait() - _done.Wait() is bounded now. Under the gate: a
+            // slot the watchdog has quarantined does not signal - its
+            // countdown belongs to a search that stopped waiting for it - and
+            // does not publish its result either: _workerResults is reused by
+            // every search, so a late result from an OLD position written into
+            // it could win the vote of the search running now. It rejoins
+            // instead, and the next search counts and wakes it again.
+            long lateMs = -1;
+            lock (_quarantineGate)
             {
-                // MUST run on every path. A missed signal used to hang the
-                // engine forever on the next _done.Wait() - _done.Wait() is
-                // bounded now. Under the gate: a slot the watchdog has already
-                // quarantined never signals again - its countdown belongs to a
-                // search that stopped waiting for it, and the next search has
-                // reset the count without it (see _quarantineGate).
-                lock (_quarantineGate)
+                if (generation != _poolGeneration)
+                    return;
+                _workerFinished[index] = true;
+                if (_helperQuarantined[index])
                 {
-                    _workerFinished[index] = true;
-                    if (!_helperQuarantined[index])
-                        _done!.Signal();
+                    _helperQuarantined[index] = false;
+                    lateMs = Environment.TickCount64 - _quarantinedAt[index];
+                }
+                else
+                {
+                    _workerResults[index + 1] = result;
+                    _done!.Signal();
                 }
             }
+            if (lateMs >= 0)
+                Diagnostic?.Invoke(
+                    $"helper thread {index + 1} returned {HelperWatchdogMs + lateMs} ms after the stop and rejoined the pool");
         }
     }
 
