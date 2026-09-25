@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## 2026-09-25 (v5.9.21) - a helper that misses the stop is no longer lost for the rest of the game
+
+**Found on the Windows bot.** 2026-09-25 was the first day of a clean-machine test of the Windows
+host (Ryzen, `Threads` 24) against the older Mac, and Task Manager showed the machine at 17-35% CPU
+while the bot played. Measured: a freshly started engine used 24 busy threads, about 26 cores, 83%
+of the machine; in endgames it fell to 0.1-2 cores, its threads in Wait/PageIn and Wait/Executive,
+and nps collapsed from the usual ~1M to 38k. The cause sat in the host: the bot's Syzygy tables
+(151 GB, 6-man) lived on a mechanical disk, and the engine memory-maps the table files, so every
+probe inside the search page-faulted on that disk and 24 threads issuing random reads saturated it.
+A search helper only checks the stop every 2048 nodes, so helpers deep in tablebase territory could
+not honour a stop in time.
+
+**The engine defect that turned a slow disk into a permanent loss of threads.** Since v5.9.3 a
+helper that does not return within 3000 ms of the stop is quarantined (the watchdog added after the
+74-minute freeze), and that quarantine was FOREVER: the helper stayed out of the pool for the rest of
+the process. In one game (11:26) eleven helpers were quarantined at once and the engine played the
+rest of the game on 13 of its 24 threads; per-thread CPU confirmed those eleven parked from that
+moment while the others kept running. Over the day 30 groups of cancellation/quarantine events
+appeared, almost all with tablebase hits in the last search; overnight, with nothing else running,
+there had been only 2 (the extra disk load of an investigation running in parallel that morning made
+it much worse).
+
+**The fix** (`src/NoaChess.Engine/ChessEngine.cs`: `WorkerLoop`, `FindBestMoveParallel`,
+`RebuildPool`). A quarantined helper that finally returns now REJOINS the pool, and the next search
+counts it and wakes it. Its late result, computed on an OLD position, is discarded instead of being
+written into `_workerResults`, the array every search reuses and votes from. Before, a late helper
+could write a stale move into the array of whatever search was running when it came back, and the
+vote only admits helpers at least as deep as the main worker, which a long-running stale search
+could be. The count, reset and release of each search now happen under the same lock as quarantine
+and rejoin, so a helper rejoining concurrently cannot be released without being counted (the v5.9.4
+crash class: a signal on a countdown already at zero). A pool generation makes a thread from a
+replaced pool (`Threads` changed) exit instead of indexing the new arrays. New diagnostic: "helper
+thread N returned X ms after the stop and rejoined the pool". A helper that truly never returns is
+still never awaited.
+
+**Verified.** New test `HelperQuarantineTests`: a helper held back 4.5 s after the first search is
+quarantined, returns during a second search on a position where no move of the first is legal,
+rejoins, and the third search runs with it, paying no watchdog wait. Single-thread search is
+untouched: CI node count 127139, unchanged. The net is unchanged (`fqco5912`). 462 tests
+(128 Core + 334 Engine).
+
+**Shipped on judgment, no SPRT.** A robustness fix: a verified defect corrected, zero cost at one
+thread, and the multi-thread path only changes when a helper is late.
+
+**Deployment.** Host configuration on the Windows bot, not code: the WDL tables (68.2 GB, the ones
+every probe inside the search reads) and the DTZ tables up to 5 men were copied to the SSD, and
+`SyzygyPath` lists the SSD folder first and the mechanical disk second (the engine takes each file
+from the first folder that has it; `;`-separated folders were already supported). Only the 6-man
+DTZ files, read once per move at the root, still come from the mechanical disk. Published
+(Windows + Mac). The Mac bot is stopped for the Windows test (binary copied, not started); the
+Windows bot restarts with 5.9.21 at the end of its game in progress. Gauntlet: not run for this
+version.
+
 ## 2026-09-24 (v5.9.20) - fqco5912 embedded: a real learning-rate anneal is worth far more than another data step
 
 **`fqco5912` embedded.** This is the schedule experiment the 2026-09-23 investigation named as the
