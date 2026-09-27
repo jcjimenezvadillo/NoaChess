@@ -34,9 +34,6 @@ public static class Syzygy
 
     public static string CurrentPath { get; private set; } = "";
 
-    // Counts probes that actually hit a table; used by the UCI "info" line.
-    public static long Hits;
-
     // Move lists for the capture recursion in Search, one per recursion level
     // and per thread. Search used to allocate a fresh 3 KB MoveList on every
     // call, and it is called at every clock-zero node of a probed endgame, so
@@ -66,7 +63,6 @@ public static class Syzygy
         DtzByKey.Clear();
         Cardinality = 0;
         CurrentPath = paths ?? "";
-        Hits = 0;
 
         if (string.IsNullOrWhiteSpace(paths) || paths == "<empty>")
             return;
@@ -175,7 +171,6 @@ public static class Syzygy
         if (state == ProbeState.Fail)
             return false;
         score = v;
-        Hits++;
         return true;
     }
 
@@ -198,7 +193,6 @@ public static class Syzygy
         if (state == ProbeState.ZeroingBestMove)
         {
             dtz = DtzBeforeZeroing(wdl);
-            Hits++;
             return true;
         }
 
@@ -210,7 +204,6 @@ public static class Syzygy
         {
             int cursed = wdl is WdlScore.BlessedLoss or WdlScore.CursedWin ? 1 : 0;
             dtz = (value + 100 * cursed) * Sign((int)wdl);
-            Hits++;
             return true;
         }
 
@@ -258,7 +251,6 @@ public static class Syzygy
         }
 
         dtz = minDtz == 0xFFFF ? -1 : minDtz;
-        Hits++;
         return true;
     }
 
@@ -556,6 +548,14 @@ public static class Syzygy
         }
 
         int value = entry.DecompressPairs(d, idx);
+        if (value < 0)
+        {
+            // The walk left the table's arrays (see DecompressPairs): bad
+            // data, not a position the tables lack. Fail the probe rather
+            // than trust a value read from nowhere.
+            state = ProbeState.Fail;
+            return 0;
+        }
         state = ProbeState.Ok;
         return isWdl ? value - 2 : MapDtzScore(entry, d, value, wdl);
     }

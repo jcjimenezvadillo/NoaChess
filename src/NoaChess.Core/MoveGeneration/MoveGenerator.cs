@@ -315,7 +315,7 @@ public static class MoveGenerator
                 CastlingRights right = us == Color.White
                     ? CastlingRights.WhiteKingSide : CastlingRights.BlackKingSide;
                 return to == kingSq + 2
-                    && board.CastlingRights.HasFlag(right)
+                    && (board.CastlingRights & right) != 0
                     && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq + 3)
                     && !Bitboard.IsSet(occupied, kingSq + 1) && !Bitboard.IsSet(occupied, kingSq + 2)
                     && !board.IsSquareAttacked(kingSq + 1, them)
@@ -325,7 +325,7 @@ public static class MoveGenerator
             CastlingRights qRight = us == Color.White
                 ? CastlingRights.WhiteQueenSide : CastlingRights.BlackQueenSide;
             return to == kingSq - 2
-                && board.CastlingRights.HasFlag(qRight)
+                && (board.CastlingRights & qRight) != 0
                 && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq - 4)
                 && !Bitboard.IsSet(occupied, kingSq - 1) && !Bitboard.IsSet(occupied, kingSq - 2)
                 && !Bitboard.IsSet(occupied, kingSq - 3)
@@ -532,6 +532,12 @@ public static class MoveGenerator
             list.Add(new Move(from, to, baseFlag + i));
     }
 
+    // Rights are tested with a plain bit test, not Enum.HasFlag. The JIT
+    // turns HasFlag into the same test in Release, but a Debug build boxes the
+    // enum on every call, and this runs at every node that generates quiets:
+    // the allocation probe measured 429 KB of boxed CastlingRights in a
+    // depth-14 Debug search (audit 2026-09-07). Same answer, no dependency on
+    // the optimiser.
     private static void GenerateCastlingMoves(Board board, MoveList list, Color us)
     {
         // Castling conditions:
@@ -553,7 +559,7 @@ public static class MoveGenerator
         CastlingRights queenSide = us == Color.White ? CastlingRights.WhiteQueenSide : CastlingRights.BlackQueenSide;
 
         // Short castle: f1/g1 (or f8/g8) free and not attacked.
-        if (board.CastlingRights.HasFlag(kingSide)
+        if ((board.CastlingRights & kingSide) != 0
             && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq + 3) &&
             !Bitboard.IsSet(occupied, kingSq + 1) && !Bitboard.IsSet(occupied, kingSq + 2) &&
             !board.IsSquareAttacked(kingSq + 1, them) && !board.IsSquareAttacked(kingSq + 2, them))
@@ -563,7 +569,7 @@ public static class MoveGenerator
 
         // Long castle: b1/c1/d1 free; c1 and d1 not attacked (b1 may be
         // attacked: the king does not pass through it, only the rook does).
-        if (board.CastlingRights.HasFlag(queenSide)
+        if ((board.CastlingRights & queenSide) != 0
             && Bitboard.IsSet(board.Pieces(us, PieceType.Rook), kingSq - 4) &&
             !Bitboard.IsSet(occupied, kingSq - 1) && !Bitboard.IsSet(occupied, kingSq - 2) &&
             !Bitboard.IsSet(occupied, kingSq - 3) &&

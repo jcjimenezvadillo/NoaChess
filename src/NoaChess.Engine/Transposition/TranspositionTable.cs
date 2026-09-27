@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using NoaChess.Core;
 
 namespace NoaChess.Engine.Transposition;
@@ -100,6 +101,20 @@ public sealed class TranspositionTable
     // An entry's age in generations, respecting the 5-bit wrap-around.
     private int RelativeAge(in TTEntry entry)
         => (GenerationCycle + _generation - entry.Generation) % GenerationCycle;
+
+    // Brings the cluster for 'key' into L1 ahead of the probe that will read
+    // it. The search calls this the instant a move is made, hundreds of cycles
+    // before the child node actually probes.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public unsafe void Prefetch(ulong key)
+    {
+        if (!Sse.IsSupported)
+            return;
+        int baseIdx = (int)(key & _clusterMask) * ClusterSize;
+        Sse.Prefetch0(Unsafe.AsPointer(ref Unsafe.AddByteOffset(
+            ref Unsafe.As<ulong, byte>(ref MemoryMarshal.GetArrayDataReference(_buffer)),
+            _byteBase + baseIdx * EntryBytes)));
+    }
 
     // Looks up a position. Returns true (and the entry) when any slot of the
     // position's cluster holds it. A hit also refreshes the entry's

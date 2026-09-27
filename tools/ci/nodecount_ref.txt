@@ -1,9 +1,17 @@
-258577
+127139
 
-# Generated 2026-08-30 against the 5.3.0 tree (statScore on by default),
-# UseNNUE=false: the number is tied to the SEARCH plus the classical
-# evaluator only, never to a network (the embedded net is gitignored, so a
-# CI checkout builds a network-free binary; the check forces the classical
-# path so local and CI totals agree). When the search or the classical
-# evaluator changes, regenerate by hand with tools/ci/check_nodecount.ps1
-# and note in the commit which source produced it. Never automatically.
+# Regenerated 2026-09-24 against the 5.9.20 tree (127139; the shipped 5.9.19 binary gives the same
+# 127139, so the 127104 of 5.9.16 had gone stale at 5.9.17/5.9.18 without being regenerated; the net swap
+# of 5.9.20 cannot move it). Before that, 2026-09-22 against the 5.9.16 tree (GoodCaptureSlack,
+# NmpEvalR, TtNoPvCutoff, FutilityFailSoft, ImprovingAboveBeta,
+# CheckExemptFutility and TtCutoffHistory on by default; 5.9.15 gave 140411,
+# 5.9.14 141122, 5.9.13 141262, 5.9.12 126949), with the published Release binary and UseNNUE=false forced by the
+# check. The previous number (258577, generated 2026-08-30 against 5.3.0) had
+# not been regenerated since, so the check had failed on every release after
+# 5.3.0; v5.9.11 gives 133561. The number is tied to the SEARCH plus the
+# classical evaluator only, never to a network (the embedded net is
+# gitignored, so a CI checkout builds a network-free binary; the check forces
+# the classical path so local and CI totals agree). When the search or the
+# classical evaluator changes, regenerate by hand with
+# tools/ci/check_nodecount.ps1 and note in the commit which source produced
+# it. Never automatically.

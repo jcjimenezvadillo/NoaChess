@@ -13,8 +13,12 @@ namespace NoaChess.Engine.Search;
 //   anchors its clock at "go ponder", so the pondering time counts toward the
 //   budget and a long successful ponder answers almost instantly instead of
 //   spending the whole optimum again over the warm TT.
+// - MinEasyDepth: the easy-move and obvious-move cuts may not fire below this
+//   depth. Set on a ponderhit relaunch (PonderContinue) to one past the depth
+//   the ponder reached, so the relaunch always adds an iteration of its own
+//   over the warm table instead of stopping at depth 12 on a settled move.
 public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long SoftTimeMs, long MaxNodes,
-                                           long ElapsedOffsetMs = 0)
+                                           long ElapsedOffsetMs = 0, int MinEasyDepth = 0)
 {
     // Sentinel used when depth is not itself a limit. The old value (64)
     // made "go infinite", pondering, clock and node searches stop on their

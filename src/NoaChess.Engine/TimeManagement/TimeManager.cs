@@ -22,7 +22,8 @@ namespace NoaChess.Engine.TimeManagement;
 public static class TimeManager
 {
     public static SearchLimits FromClock(long remainingMs, long incrementMs, int moveOverheadMs,
-                                         int? movesToGo = null, int gamePly = 0)
+                                         int? movesToGo = null, int gamePly = 0,
+                                         int timeScalePercent = 100)
     {
         long time = Math.Max(1, remainingMs);
 
@@ -98,10 +99,75 @@ public static class TimeManager
         // Bound the target by inc + clock/16 and the hard deadline by
         // inc + clock/4: every move stays affordable, and near-exhausted
         // clocks stabilize around the increment instead of flagging.
+        // TimeScale (audit 2026-09-08): a plain multiplier on the optimum so
+        // the bot's measured under-spend can be priced. Over 483 bot games at
+        // 60+1, 60+2, 180+1 and 180+2 (2026-09-01 to 09-07) the engine ended
+        // with a median 1.5x to 1.96x the opponent's clock and had spent about
+        // 84% of what they spent, which at the measured ~65 Elo per doubling
+        // of time is worth roughly 15 Elo left on the table - IF the hard
+        // deadline keeps the forfeit count at zero, which is what the SPRT at
+        // the deployment control decides. The maximum is never scaled: it is
+        // the safety rail and stays bounded by the clock as before.
+        // The percent may exceed 100 by the clock-lead ratio as well (UciLoop).
+        // Applied BEFORE the sustainability guard (moved 2026-09-08, from a
+        // bot game that reached 0:12 against 3:52): the guard is the brake
+        // that keeps every move affordable, and a scaled optimum has to obey
+        // it like any other.
+        if (timeScalePercent != 100)
+            optimum = Math.Max(1, optimum * timeScalePercent / 100);
+
         if (movesToGo is null or <= 0)
         {
             long sustainableOptimum = incrementMs + time / 16;
             long sustainableMaximum = Math.Max(1, incrementMs + time / 4 - moveOverheadMs);
+
+            // A genuine clock lead (timeScalePercent > 100, from ClockLead in
+            // UciLoop) widened `optimum` a few lines up, and this guard then
+            // clawed nearly all of it back: both bounds only ever looked at
+            // OUR OWN clock, so a 20x lead and an even clock produced almost
+            // the same ceiling (measured 2026-09-15 in a real 25+5 game: the
+            // ratio was capped to 2x by ClockLead, then this guard alone cut
+            // that already-capped target by roughly a third). The guard's job
+            // is "stay affordable relative to what is actually on the clock",
+            // and a real lead makes more affordable, not less, so widen it by
+            // the same ratio ClockLead already computed. A deficit
+            // (timeScalePercent < 100, from ClockDeficitBrake) is left alone
+            // on purpose: tightening this guard further on top of the brake
+            // buys no safety margin worth measuring, since the guard already
+            // bounds `optimum` from above regardless.
+            if (timeScalePercent > 100)
+            {
+                sustainableOptimum = sustainableOptimum * timeScalePercent / 100;
+                sustainableMaximum = sustainableMaximum * timeScalePercent / 100;
+            }
+
+            optimum = Math.Min(optimum, sustainableOptimum);
+            maximum = Math.Min(maximum, sustainableMaximum);
+        }
+        else
+        {
+            // Sustainability guard for "x moves in y seconds" (added
+            // 2026-09-18, audit find): the block above only ever applied to
+            // sudden death, so raising ClockLead's cap to 6x today (UciLoop)
+            // had nothing bounding a persistent lead's repeated spend here -
+            // classical/movestogo has its own maxScale reaching 6.3x with no
+            // equivalent brake. Unlike sudden death, this format already has
+            // a precise, GUI-reported "moves remaining" (mtg), so the bound
+            // is phrased in that unit instead of borrowing sudden death's
+            // assumed-infinite-game fixed fractions (clock/16, clock/4):
+            // optimum cannot exceed roughly 2 average per-move shares,
+            // maximum roughly 4 - the same 4x optimum:maximum ratio the
+            // sudden-death guard uses, just denominated in mtg. A genuine
+            // lead can still meaningfully widen the budget; it just cannot
+            // spend a double-digit fraction of the whole remaining clock on
+            // one move the way an unbounded 6.3x scale otherwise could.
+            long sustainableOptimum = incrementMs + time * 2 / mtg;
+            long sustainableMaximum = Math.Max(1, incrementMs + time * 4 / mtg - moveOverheadMs);
+            if (timeScalePercent > 100)
+            {
+                sustainableOptimum = sustainableOptimum * timeScalePercent / 100;
+                sustainableMaximum = sustainableMaximum * timeScalePercent / 100;
+            }
             optimum = Math.Min(optimum, sustainableOptimum);
             maximum = Math.Min(maximum, sustainableMaximum);
         }

@@ -3,6 +3,182 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
+**Current state (v5.9.20, 2026-09-24).** The embedded net is `fqco5912` (entry below): fqco592's
+weights re-annealed over 14 epochs of a real cosine on fqco5911's corpus. Before it, fqco5911 (v5.9.17)
+was fqco592's recipe over a larger corpus, warm-started from `fqco592.pt.partial`; v5.9.18 and
+v5.9.19 changed search only (see CHANGELOG.md). Architecture is HalfKAv2_hm
+with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
+training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
+CCRL: **3321 +/- 45** (v5.9.2 gauntlet, measured field labels, 52.1% over 240 games); nothing from
+v5.9.3 onward has been regauntleted (a clock-based gauntlet needs the box free). 461 tests.
+
+**Read this before training another generation the same way.** The investigation that explains
+`fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
+gen9's +18 and fqcohuman3's +21.6 - were not data steps at all: both were the tail of a 60-epoch
+cosine anneal (`lr0=1e-3, T_max=60`) on an unchanged 190-file corpus, split across crash-resumed
+segments. `fqco592` and `fqco5911` are the only two nets ever trained as 7 epochs of tail polish at
+the floor of that same finished schedule (`--lr 4.287769e-05`, evaluated: it is the reference
+schedule at epoch 53 of 60, to nine figures) - and they are exactly the two that measured almost
+nothing. The recipe `dump_args.py` reads off a champion checkpoint is a **resume stub**, not a
+recipe: copying it forward again is the most expensive mistake available. The next generation needs
+either a cold 60-epoch anneal or a real re-entry point in the schedule (not its last 12%), not
+another `--epochs 7` run at this learning rate. `--max-records 120000000` in `Train-Fqco5911.ps1` is
+dead code on the streaming path (`train_streaming` returns before it is read) and should not be
+copied forward as if it limited anything - every run described here consumed its entire corpus,
+every epoch.
+
+---
+
+## fqco5912 ships as v5.9.20 (2026-09-24): the schedule experiment, a real anneal
+
+The experiment the "Read this before training another generation" note above asked for. One axis
+moved against fqco5911: the learning-rate schedule. Same warm start (`fqco592.pt.partial`), same
+corpus (263 files, 1,219,446,812 records), same hyperparameters (batch 16384, lambda 0.735 to 0.7,
+reference-style loss, factorized, coarse lane, QAT at QA 255) - but a fresh 14-epoch cosine from lr
+1.371433e-4 (the original 60-epoch schedule evaluated at epoch 46) down to `eta_min` 1e-5, in place
+of 7 epochs at the floor (4.287769e-05).
+
+The run was terminated from outside at epoch 11 of 14 (no Python traceback in its log; epoch 10 saved,
+validation 0.005560) and resumed from the epoch-10 checkpoint at the learning rate the cosine had
+reached there (3.3935e-05), 4 epochs left, lambda 0.710 to 0.7. That is the documented continuation
+recipe: it reproduces the remaining schedule closely but not exactly, since the optimizer state
+restarts. Final checkpoint validation 0.005540 (fqco592: 0.005860 at its own selection; the
+validation split leaks a little, see the fqco5911 entry, so the loss reads optimistic and the SPRT is
+the judge). Exported 2026-09-24 19:27, 5,820,956 bytes, sha256 starting 7a326447140c10e0 (fqco5911:
+cfd9e654...); embedded and `EvalFile` loads verified identical in play. Architecture and file size
+unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592, the same 5.9.19 binary on both sides (fqco5912
+listed first, 8moves_v3, elo0=0 elo1=10 alpha=beta=0.05): 119-72-286 [0.549] over 477 games, +34.3
++/- 19.7 Elo, LOS 100%, LLR 2.95, H1.** It closed early, so the point estimate is likely inflated by
+the stopping rule; fqco5911, a data step of the same recipe on 1.35x the corpus, read +7.8 +/- 6.0
+over 5,401 games. **Mechanism finding:** the reading supports the hypothesis of the 2026-09-23
+investigation - the learning-rate schedule, not the data volume, was the lever behind the project's
+large NNUE gains, and a real wider anneal on the same data pays several times what the data step
+did. Still to come: a longer measurement against fqco5911 and a gauntlet. A cold 60-epoch anneal
+remains the other untested form of the same idea.
+
+---
+
+## fqco5911 ships as v5.9.17 (2026-09-23): a data step, measured small and real
+
+fqco592's exact recipe (7 epochs, batch 16384, lr 4.287769e-05, lambda 0.735 to 0.7, the reference
+loss with exponent 2.5, 240/145 input and output constants, weight decay 1e-05, 128/32/32 widths, one
+output bucket, factorized, coarse lane, QAT at QA 255, seed 1, 5% validation), warm-started from
+`fqco592.pt.partial`, on a larger corpus: datascale2 (600,006,650) + datascale4 (298,082,565) +
+datascale5 (297,839,853, 6,000 nodes, root diversity on, teacher fqco592, completed 2026-09-22) +
+selfplay-gen8 (6,823,196) + the 17 elite WDL shards (16,694,548, teacher fqco592) - 263 files,
+1,219,446,812 records, against fqco592's 904,912,411 (a 1.3475x, 0.43 doublings). Best epoch 6 of 7,
+val 0.005543. Export report against its own teacher labels: pearson 0.9470, slope 0.817, RMS 114.0
+cp, sign agreement 90.2% - the slope and RMS are unremarkable on this architecture (fqcohuman3 reads
+0.811 on the same file) and explain none of the result below. Export verified bit-exact against the
+engine's own probe (`--nnueprobe`, value 57 both sides). Architecture and file size unchanged
+(5,820,956 bytes), so a net swap changes no node counts and costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592: +7.8 +/- 6.0 Elo, LOS 99.4%, LLR 2.96, H1 over
+5,401 games** (1,199-1,078-3,124, draw ratio 57.8%; the point estimate held inside [+4.1, +8.0] from
+game 800 onward, so the run was topped up past the SPRT bounds for precision rather than stopped
+early). At the project's own data-scale curve (+82 Elo per doubling at 4.3M-20M, +26 at 20M-324M,
+NNUE_HISTORY.md, 2026-08-01/09), 0.43 doublings measured here gives about **+11.6 Elo per doubling**
+at this corpus size - the expected shape of diminishing returns, not a broken step. See CHANGELOG.md,
+2026-09-23, for the full investigation into why this generation's gain is small and what it costs to
+recover more: in short, the schedule collapsed from 60 epochs to 7 while the corpus grew, and that
+axis - not data volume - is where the missing Elo most likely is.
+
+Two defects found and fixed while investigating this run, not yet acted on beyond documenting them:
+the validation split is a per-file tail cut, and 5.48% of one shard's tail is found verbatim inside
+1.64% of the training corpus (a real, small leak in every validation number on record); and no
+training log exists for this run (`Lanzar-Train-Fqco5911.bat` redirects nothing), so its epoch-by-
+epoch loss curve is lost. `NNUE_HISTORY.md` previously called datascale2 "924M, human-seeded, the
+fixed base" (2026-09-17 entry below); the shard headers give 600,006,650 records in 121 files - the
+924M figure was wrong and is left uncorrected below as originally published, per this file's own
+convention for stale historical numbers.
+
+---
+
+## fqco592 ships as v5.9.10 (2026-09-17): the same recipe on the datascale4 corpus
+
+One axis moved: the data. Everything else is fqcohuman3's, pulled from the champion checkpoint with
+`dump_args.py` on 2026-09-16 rather than typed from memory - 7 epochs, batch 16384, lr 4.287769e-05,
+lambda 0.735 at the start and 0.7 at the end, the reference loss with exponent 2.5 and the 240/145
+input and output constants, weight decay 1e-05 (none on the transformer), 128/32/32 widths, one
+output bucket, factorized, coarse lane, no fine threats, QAT at QA 255, 120M records per epoch,
+chunk 8192, 64 buffered chunks, 4 prefetch workers, seed 1, 5% validation. Warm-started from
+`fqcohuman3.pt.partial` the way fqcohuman3 started from fqcohuman2's.
+
+Data: datascale2 (924M, human-seeded, the fixed base) + datascale4 + selfplay-gen8. datascale4 is
+the corpus the previous champion generated: 298,082,565 positions at 6,000 nodes, teacher v5.9.2
+with fqcohuman3, four arms (bulk 43.3% from random openings, mid 35.2% from a human middlegame book,
+open 20.1% from a human opening book, hard 1.4% from the bot's own judged losses - the hard arm's
+book was small and came up short of its 2% target), 62 shards, audited before training with the same
+check that caught datascale3 labelled by the classical evaluator: every arm's manifest names
+fqcohuman3 as the evaluator. W/D/L 28.5/42.7/28.8.
+
+Measured against fqcohuman3 in the same v5.9.8 binary through `EvalFile`, 60+1 with ponder:
+13-13-81, 0.500 over 107 games, stopped by decision. Not a verdict either way. The net ships because
+the wheel's rule is that a corpus is labelled by the best net available when it starts, and
+datascale5 started on this one. The v5.9.10 binary embeds it (resource hash c633...48a7 matches the
+exported file).
+
+> **Note on the CCRL numbers below.** On 2026-09-09 the project measured, rather than assumed, the
+> rating of its own CCRL reference field (a 1,680-game round-robin) and found it had been
+> systematically mislabeled: every gauntlet performance published before that date (fq60's 3271,
+> fq594's 3317, fqmix's 3342, fqwd0's 3242, and so on) was solved against ratings that read roughly
+> 30-34 points too high, uniformly, so no promotion decision changes but the absolute figures are
+> not directly comparable to anything from v5.9.0 onward. Those older figures are left as originally
+> published below rather than restated; the first numbers on the corrected scale are fqcohuman's
+> 3276 (v5.9.0/v5.9.1) and 3321 (v5.9.2). See CHANGELOG.md, 2026-09-09.
+
+---
+
+## The complete fqcohuman ships as v5.9.2 (2026-09-11): +21.6 Elo over the epoch-14 net
+
+The two stages that died young (below) are finished: 39 + 14 + 7 = 60 epochs, trained under new
+loader guards on a machine that reads memory back wrong (see below). Validation loss over the final
+seven epochs: 0.005825, 0.005820, 0.005814, 0.005826, 0.005816, **0.005804**, 0.005804 - the shipped
+checkpoint is epoch 6 of this stage, the best of the whole series (the epoch-14 net that shipped in
+v5.9.0 was 0.005860). Against that shipped net, at fixed nodes: **+21.6 +/- 14.6 Elo, LOS 99.8%,
+LLR 2.98, H1 over 983 games**. Export verified bit-exact against the engine's own probe. Bench
+7,793,209 nodes at depth 12. Gauntlet, single-threaded, field 2, measured labels: **52.1% over 240
+games, 3321 +/- 45 CCRL**, against v5.9.0/v5.9.1's 3276, v5.8.7's 3286 and v5.8.6's 3296 on the same
+measured labels. Internally this final checkpoint is referred to as `fqcohuman3`; it was the embedded
+net until `fqco592` replaced it in v5.9.10 (see "Current state" above).
+
+**The training loader now survives a machine that reads memory back wrong.** Four training runs died
+in two days with three different faces: an impossible permutation index, two CUDA device-side
+asserts from an index kernel, and a coarse-feature chunk whose offsets were not monotonic in memory
+although they are on disk. The fourth was reproduced outside the trainer - the same chunk order
+replayed on the CPU, one thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values
+are all below 144 on disk, and the same chunk read back correctly a moment later - and then confirmed
+by a plain memory-pattern test in a third process. That points at hardware (the box carries eight
+non-ECC modules from two different kits); a memory test is the next step and it stops the corpus
+generation, so it is the user's call. Two guards keep a run alive and record the evidence instead of
+dying: a chunk that cannot be read is logged with its file and row range and skipped, and every batch
+is range-checked on the host before the GPU sees it, a failing batch written to disk whole and
+skipped.
+
+## fqcohuman ships as v5.9.0 (2026-09-10): +11.5 Elo, an interrupted training run
+
+**+11.5 +/- 9.2 Elo, LOS 99.3%, LLR 2.97, H1 over 2,627 fixed-node games against fqhuman**, the net
+shipping since v5.4.0, draw ratio 52.3%. Same HalfKA schema, same 128-wide transformer, same
+factorized and quantization-aware recipe as every net since fq60, trained further on the same corpus
+with the coarse threat lane and the human opening arms together for the first time (the recipe
+`fqcoarse` announced below, on the fqhuman corpus). A net swap changes no node counts, so the
+fixed-node verdict carries to the clock as is.
+
+**It survived two crashes to get here.** The original run died at epoch 39 of 60 when the machine
+rebooted, and the trainer had no way to continue one; `--init-from` (a warm start from a checkpoint)
+was added for exactly that. The continuation then died at epoch 17 of 21 on a real defect in the
+streaming loader, which sized its shuffle permutation from a row counter instead of from the array it
+was about to index; fixed to warn instead of abort. The net that shipped is the checkpoint from
+epoch 14 of that continuation, 53 of the 60 planned epochs, validation loss 0.005860 - the best of
+the series at the time. The remaining seven epochs trained afterward and shipped as the complete
+fqcohuman / `fqcohuman3` in v5.9.2, above.
+
+Bench 8,193,088 nodes at depth 12. 443 tests. Gauntlet (shared with v5.9.1, identical search and
+net): single-threaded, field 2, measured labels: **46.2% over 240 games, 3276 +/- 44 CCRL**, against
+v5.8.7's 3286 and v5.8.6's 3296.
+
 ---
 
 ## fqcoarse (2026-09-05): the coarse threat features win their attribution
@@ -20,6 +196,37 @@ against fqhuman. `fqcohuman` (this recipe plus the human corpus segments, the tw
 together for the first time) is training; every one of the champion's 190 shards already has its
 coarse companion, so no data generation was needed.
 
+## The headroom guard that cried wolf (2026-09-02)
+
+After 40 hours of training, `fqhuman` failed the exporter's accumulator headroom check by three units: worst int16 lane 32,770 against the 32,767 limit. The first instinct - tighten the clipping, or worse, retrain - would have been wrong both ways, because **the guard's bound was loose, not the net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over the whole feature table, freely mixing combinations the schema cannot produce. Two exact properties tighten it:
+
+1. A feature index is `bucket * 704 + plane * 64 + square`, and one accumulator belongs to one perspective whose king square fixes ONE bucket - rows from different king buckets never share an accumulator.
+2. Inside a bucket the layout is plane-major over 64 squares, and a square holds at most one piece, so at most one plane can be active per square.
+
+| bound | fqhuman | verdict |
+|---|---|---|
+| global tail (the old guard) | 32,770 | false positive |
+| per king bucket | 31,052 | passes |
+| per bucket and per square (now) | 30,995 | passes |
+| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
+
+The control that justifies trusting the change: re-exporting the shipping champion under the new guard produces a **byte-identical** file, so the fix touches only the check, never the payload. The lesson generalizes the negative-control rule: **a guard that aborts is also a measurement, and its bound must be interrogated for reachability before it is obeyed.** Asked against the corpus, this one overstated reality by 2.4x. The limit itself was never raised - a silent int16 accumulator overflow does not error, it just plays worse, which is exactly why the guard exists.
+
+## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
+
+**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
+fq594.** The champion recipe verbatim; the single variable is the corpus,
+extended ~594M -> ~924M by adding the human game segments from datascale2
+(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
+closes the provenance-bug debt: the human datagen had silently never run,
+so every earlier belief about human seeding was untested. The honest
+confounder, recorded as ever: volume also rose, like every corpus decision
+in the series. Fourth consecutive net promotion by the same protocol
+(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
+fixed-node SPRTs whose verdicts carry to the clock by construction. It
+shipped as v5.4.0; the SMP investigation and transposition-table fixes
+from the same release are search-side, not NNUE, and are documented in
+CHANGELOG.md.
 
 ## 2026-08-31 - the coarse-threat pipeline closes end to end; fqhuman in flight
 
@@ -621,14 +828,14 @@ the measuring instrument.
 (`--nodes`), not the generational loop itself. gen2-gen4 all used 14000-node
 labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
 jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
-positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
+positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 +/-16.6, LOS 100%**. The
 network was starved of DATA and label depth was never the binding constraint.
 
 Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
 absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engine
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
-NNUE off) ≈ 3020-3035 CCRL.
+NNUE off) ~ 3020-3035 CCRL.
 
 **NEWEST AT THE TOP.** The table used to run in ascending order, and what gets
 consulted is always the latest net, never the first.
@@ -676,9 +883,9 @@ mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
 (2862-3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
-overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
-gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
-and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
+overall; ML performance rating ~ 3050 CCRL** against a field averaging 3043.
+gen5 beats every opponent <=3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
+and loses to >=3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
 This is the first CCRL number for the NNUE line. Note it lands only ~+15 over the
 classical estimate (~3035), NOT the +42 the internal SPRT chain suggested - the
 expected shrink of self-play gains against a diverse external field. It is the
@@ -693,7 +900,7 @@ The gen6 dataset is included in the gen7 combined training set.
 **gen7 (2026-07-29, v3.2.0):** 28000 nodes, embedded and promoted as a
 **marginal** generation - the vs-gen5 SPRT is parity (76.2% LOS), not a formal
 H1. Its own gauntlet (240 games, 60+0.6, single-thread, field 2862-3281)
-placed it at **57.9%, ~3080 ±40 CCRL**, up from gen5's 51.0%/~3050 but inside
+placed it at **57.9%, ~3080 +/-40 CCRL**, up from gen5's 51.0%/~3050 but inside
 combined gauntlet noise. The honest read at the time: the human-opening
 seeding this generation shipped with did not itself buy strength over gen5 -
 the value was the data pipeline and pinning the NNUE-over-classical delta at
@@ -708,7 +915,7 @@ openings after all. See [README](README.md) for the full correction.
 Notes:
 - gen2's SPRT log was later removed in a cleanup; its +1.9 (H1) is on record from
   the run, not a file.
-- gen5's +34 is the deeper-labels payoff (14000→20000 nodes). Its absolute CCRL
+- gen5's +34 is the deeper-labels payoff (14000->20000 nodes). Its absolute CCRL
   placement (~3050) comes from the field gauntlet; the internal-vs-classical step
   is skipped for gen5 because the gauntlet is the more direct placement.
 
@@ -720,14 +927,14 @@ measurements all said no:
 1. **SPRT vs gen7** at 60+1, `Threads=1`, ponder off: stopped at **H0** after 198
    games (59W 95D 41L, 53.8%). No evidence of the +50 Elo the bounds asked for.
 2. **Real games on the bot**, same binary, only the net swapped: the avoidable
-   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p≈0.017), and the
+   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p~0.017), and the
    score fell from 80.5% to 75.8% against opposition only 58 Elo stronger. See
    [[bot-version-timeline-aug2026]] in the session memory for the exact cutoffs.
 3. **Gauntlet** vs the 12-engine field: started, then abandoned once the first
    two measurements agreed. No number recorded.
 
 **The cause is the training schedule, not the data.** The loss curve never
-flattened - validation loss fell 0.008005 → 0.005993 across the six epochs and
+flattened - validation loss fell 0.008005 -> 0.005993 across the six epochs and
 **the largest single drop was the last one** (-0.00065, against -0.00005 for the
 first), with every epoch marked as a new best. `CosineAnnealingLR` is built with
 `T_max=args.epochs`, so the learning rate hit its 7.63e-05 floor exactly when the
@@ -784,8 +991,8 @@ further - see [README](README.md) and [CHANGELOG](CHANGELOG.md).
 **Status as of v4.3.1 (2026-08-05): still gen7, and now measured with the
 current engine.** A field gauntlet of **v4.3.1 + gen7** scored **59.7% over 165
 games** against the same 12 CCRL engines (average 3043), for a performance of
-**~3110 ±45**. Applying one formula to all three runs for once: gen5 3050, gen7
-3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside ±45,
+**~3110 +/-45**. Applying one formula to all three runs for once: gen5 3050, gen7
+3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside +/-45,
 so the correction histories and the 4.3.x fixes are **not measurably visible
 here** - what the run establishes is a band, roughly **3070-3155**, with the
 crossover against the field around 3150 (50.0% against Rubichess 3150, 60.7%
@@ -810,7 +1017,7 @@ ponder off, no tablebases for anyone. Per-opponent performances land between
 3052 and 3215, so no single pairing is dragging the figure.
 
 **This does NOT measure gen9's +18.** The previous full reading was ~3110 for
-v4.3.1+gen7, and a 600-game gauntlet resolves roughly ±20. gen9 (+18 by SPRT)
+v4.3.1+gen7, and a 600-game gauntlet resolves roughly +/-20. gen9 (+18 by SPRT)
 plus the v4.4.0 search work (~+7 by node and nps measurement) should land near
 3135; 3114 is inside the band either way. The honest statement is that the
 engine sits around **3100-3150** and that nothing regressed - the gauntlet
@@ -830,7 +1037,7 @@ hyperparameters, differing in one flag each, and both **lost**:
 | variant | difference | result |
 |---|---|---|
 | `ds1w512` | `--ft-out 512` instead of 128 | **-76** at 10+0.1, **-93** at 60+0.6 |
-| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 ±25.3, H0** at 435 games |
+| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 +/-25.3, H0** at 435 games |
 
 The b8 result is clean - checkpoint metadata confirms 60 epochs, batch 16384,
 lambda 0.85, ft_out 128, l1_out 32 and the same 70 shards for both, with
@@ -855,48 +1062,6 @@ Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
 
-## The headroom guard that cried wolf (2026-09-02)
-
-After 40 hours of training, `fqhuman` failed the exporter's accumulator
-headroom check by three units: worst int16 lane 32,770 against the 32,767
-limit. The first instinct - tighten the clipping, or worse, retrain - would
-have been wrong both ways, because **the guard's bound was loose, not the
-net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over
-the whole feature table, freely mixing combinations the schema cannot
-produce. Two exact properties tighten it:
-
-1. A feature index is `bucket * 704 + plane * 64 + square`, and one
-   accumulator belongs to one perspective whose king square fixes ONE
-   bucket - rows from different king buckets never share an accumulator.
-2. Inside a bucket the layout is plane-major over 64 squares, and a square
-   holds at most one piece, so at most one plane can be active per square.
-
-| bound | fqhuman | verdict |
-|---|---|---|
-| global tail (the old guard) | 32,770 | false positive |
-| per king bucket | 31,052 | passes |
-| per bucket and per square (now) | 30,995 | passes |
-| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
-
-The control that justifies trusting the change: re-exporting the shipping
-champion under the new guard produces a **byte-identical** file, so the fix
-touches only the check, never the payload. The lesson generalizes the
-negative-control rule: **a guard that aborts is also a measurement, and its
-bound must be interrogated for reachability before it is obeyed.** Asked
-against the corpus, this one overstated reality by 2.4x. The limit itself
-was never raised - a silent int16 accumulator overflow does not error, it
-just plays worse, which is exactly why the guard exists.
-
-## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
-
-**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
-fq594.** The champion recipe verbatim; the single variable is the corpus,
-extended ~594M -> ~924M by adding the human game segments from datascale2
-(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
-closes the provenance-bug debt: the human datagen had silently never run,
-so every earlier belief about human seeding was untested. The honest
-confounder, recorded as ever: volume also rose, like every corpus decision
-in the series. Fourth consecutive net promotion by the same protocol
-(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
-fixed-node SPRTs whose verdicts carry to the clock by construction.
+**The headroom guard and fqhuman's promotion (v5.4.0, 2026-09-02) are documented earlier in this
+file, right after the fqcoarse entry, in their correct chronological place.**
 

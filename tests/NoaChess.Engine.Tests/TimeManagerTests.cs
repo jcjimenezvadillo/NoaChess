@@ -105,6 +105,43 @@ public class TimeManagerTests
     }
 
     [Fact]
+    public void SustainabilityGuard_WidensWithAGenuineClockLead()
+    {
+        // Real game 2026-09-15 (lichess 3VOX5n7V, move 44): NoaBot held
+        // 10:27 against an opponent down to 0:29, a 21.6x lead ClockLead caps
+        // to 2x (timeScalePercent 200). Before this fix the guard only ever
+        // looked at OUR OWN clock, so it clawed the already-scaled optimum
+        // back down from ~79s to ~44s - barely more than the unscaled ~39s -
+        // which is why the bot kept playing at a normal pace despite a huge
+        // lead. The guard must scale with a genuine lead instead.
+        SearchLimits noLead = TimeManager.FromClock(remainingMs: 627_000, incrementMs: 5_000,
+            moveOverheadMs: 100, movesToGo: null, gamePly: 87, timeScalePercent: 100);
+        SearchLimits lead = TimeManager.FromClock(remainingMs: 627_000, incrementMs: 5_000,
+            moveOverheadMs: 100, movesToGo: null, gamePly: 87, timeScalePercent: 200);
+
+        Assert.True(lead.SoftTimeMs > noLead.SoftTimeMs * 1.8,
+            $"noLead={noLead.SoftTimeMs} lead={lead.SoftTimeMs}");
+    }
+
+    [Fact]
+    public void SustainabilityGuard_UnaffectedByAClockDeficit()
+    {
+        // ClockDeficitBrake shrinks `optimum` via timeScalePercent < 100; the
+        // guard ceiling itself must stay exactly as it was - only the widening
+        // path (a genuine lead) touches it. Same death-spiral clock as
+        // SustainabilityGuard_TimeTroubleSpendStaysNearTheIncrement, both
+        // ends of the scale must respect the identical unscaled ceiling.
+        long ceiling = 1_000 + 5_000 / 16;
+        SearchLimits noScale = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
+            moveOverheadMs: 30, movesToGo: null, gamePly: 100, timeScalePercent: 100);
+        SearchLimits deficit = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
+            moveOverheadMs: 30, movesToGo: null, gamePly: 100, timeScalePercent: 50);
+
+        Assert.True(noScale.SoftTimeMs <= ceiling, $"soft={noScale.SoftTimeMs}");
+        Assert.True(deficit.SoftTimeMs <= ceiling, $"soft={deficit.SoftTimeMs}");
+    }
+
+    [Fact]
     public void MovesToGo_TightensBudgetForTheNextControl()
     {
         // With only two moves to the next control the clock must be split over

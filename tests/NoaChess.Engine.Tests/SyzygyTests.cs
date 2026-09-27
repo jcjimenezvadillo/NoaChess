@@ -310,6 +310,13 @@ public class SyzygyScoreTests
         Assert.True(InvokePrivate<bool>("CanReuseTtScore", storedWin, 0));
         Assert.False(InvokePrivate<bool>("CanReuseTtScore", storedWin, 1));
         Assert.True(InvokePrivate<bool>("CanReuseTtScore", 500, 99));
+
+        // A decisive score is refused at a live fifty-move counter whatever
+        // its distance: the mate-distance relaxation (TtMateReuse) was
+        // measured and removed on 2026-09-22.
+        int mateIn5 = AlphaBetaSearch.MateScore - 5;
+        Assert.False(InvokePrivate<bool>("CanReuseTtScore", mateIn5, 1));
+        Assert.True(InvokePrivate<bool>("CanReuseTtScore", mateIn5, 0));
     }
 
     private static T InvokePrivate<T>(string name, params object[] arguments)
