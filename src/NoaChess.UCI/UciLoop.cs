@@ -84,6 +84,9 @@ public sealed class UciLoop
     // opponent's clock, in percent (125 = a quarter more).
     private const long PonderContinueLeadPercent = 125;
     private Move _ponderMove = Move.None;
+    // The ponder search's own PV, kept with _ponderMove: when the pondered move
+    // is the one played, its second move is the reply to ponder on next.
+    private Move[] _ponderPv = [];
 
     // The best move the search has reported so far, kept for the one case that
     // needs it: an exception mid-search (2026-09-10). The handler used to answer
@@ -1260,6 +1263,7 @@ public sealed class UciLoop
         {
             _ponderMove = Move.None;
             _ponderDepth = 0;
+            _ponderPv = [];
         }
 
         // "go ponder": think on the opponent's time. The search runs without
@@ -1444,6 +1448,7 @@ public sealed class UciLoop
             {
                 _ponderDepth = p.Depth;
                 _ponderMove = p.BestMove;
+                _ponderPv = p.Pv;
             }
             long ms = Math.Max(1, stopwatch.ElapsedMilliseconds);
             long nps = p.NodesSearched * 1000 / ms;
@@ -1525,11 +1530,26 @@ public sealed class UciLoop
         Move ponderHint = lastPv.Length >= 2 && lastPv[0] == result.BestMove
             ? lastPv[1]
             : Move.None;
+        // The move played is not the head of the last printed PV in about one
+        // move in ten: the Lazy SMP vote chose another worker's move, or the
+        // pondered move was kept over a shallow relaunch. The first legal reply
+        // used there predicted almost nothing (ponder hit 1.7% against 50.7%,
+        // measured 2026-09-25 over 959 bot moves). The pondered PV when its move
+        // is the one played, then the reply the shared table stores after the
+        // move played, as the reference does; any legal reply only last.
+        if (ponderHint == Move.None && fromPonderhit
+            && _ponderPv.Length >= 2 && _ponderPv[0] == result.BestMove)
+        {
+            ponderHint = _ponderPv[1];
+        }
         if (ponderHint == Move.None)
         {
             _board.MakeMove(result.BestMove);
             var replies = MoveGenerator.GenerateLegalMoves(_board);
-            if (replies.Count > 0)
+            Move tableReply = _engine.TableMove(_board);
+            if (tableReply != Move.None && replies.Contains(tableReply))
+                ponderHint = tableReply;
+            else if (replies.Count > 0)
                 ponderHint = replies[0];
             _board.UnmakeMove();
         }

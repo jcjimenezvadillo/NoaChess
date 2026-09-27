@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.21";
+    public const string Version = "5.9.22";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -152,6 +152,11 @@ public sealed class ChessEngine
     // exactly as it does for any other search.
     public bool ApplyPonderhitClock(SearchLimits limits) =>
         _search.ApplyClockLimits(limits);
+
+    // The move the shared transposition table stores for this position, or
+    // Move.None. Not validated: the caller checks it against the legal moves.
+    public Move TableMove(Board board) =>
+        _search.Tt.Probe(board.ZobristKey, out var entry) ? entry.BestMove : Move.None;
 
     // Lazy SMP search: main worker (this thread) plus Threads-1 helpers on
     // dedicated threads, all sharing one transposition table. The main worker
