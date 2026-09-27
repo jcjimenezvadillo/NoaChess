@@ -4,6 +4,7 @@ using NoaChess.Engine;
 using NoaChess.Engine.Profiles;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
+using NoaChess.Engine.Transposition;
 using NoaChess.UCI.Options;
 
 namespace NoaChess.UCI;
@@ -28,8 +29,10 @@ public sealed class UciLoop
 
     private readonly TextReader _input;
     private TextWriter _output;
-    private readonly ChessEngine _engine = new();
     private readonly UciOptions _options = new();
+    // Created in the constructor, after the large-pages switch is set, so the
+    // first table is already allocated the way the options say.
+    private readonly ChessEngine _engine;
 
     // Optional UCI traffic log ("Debug Log File"): every stdin line ("<<"),
     // every stdout line (">>") and the stdin EOF, timestamped. It is never
@@ -115,6 +118,8 @@ public sealed class UciLoop
         // write so it keeps reading stdin no matter what.
         _queuedOutput = new QueuedWriter(output, this);
         _output = _queuedOutput;
+        TranspositionTable.LargePagesAllowed = _options.LargePages;
+        _engine = new ChessEngine();
         _engine.Diagnostic += message => _output.WriteLine("info string " + message);
     }
 
@@ -998,8 +1003,13 @@ public sealed class UciLoop
         string? changed = _options.Set(name, value);
 
         // Options that require engine-side action.
-        if (changed == "Hash")
+        if (changed is "Hash" or "LargePages")
+        {
+            TranspositionTable.LargePagesAllowed = _options.LargePages;
             _engine.ResizeHash(_options.Hash);
+            _output.WriteLine($"info string Hash {_engine.HashSizeMb} MB in " +
+                              (_engine.HashInLargePages ? "large pages" : "normal pages"));
+        }
         if (changed == "Threads")
             _engine.Threads = _options.Threads;
         if (changed == "Profile")

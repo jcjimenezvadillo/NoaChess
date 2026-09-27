@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.22";
+    public const string Version = "5.9.23";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -138,9 +138,22 @@ public sealed class ChessEngine
                                      CancellationToken cancellation = default,
                                      IProgress<SearchProgress>? progress = null,
                                      MoveList? excludedRootMoves = null)
-        => _threads <= 1
-            ? _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves)
-            : FindBestMoveParallel(board, limits, cancellation, progress);
+    {
+        Volatile.Write(ref _searchInFlight, true);
+        try
+        {
+            return _threads <= 1
+                ? _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves)
+                : FindBestMoveParallel(board, limits, cancellation, progress);
+        }
+        finally
+        {
+            Volatile.Write(ref _searchInFlight, false);
+        }
+    }
+
+    // True between the start and the end of FindBestMove; read by ResizeHash.
+    private bool _searchInFlight;
 
     // Hands a running "go ponder" search its real clock instead of stopping it
     // and starting again (see AlphaBetaSearch.ApplyClockLimits). Returns false
@@ -314,6 +327,14 @@ public sealed class ChessEngine
         SearchResult chosen = limits.MaxDepth != SearchLimits.DepthUnlimited
             ? results[0]
             : VoteBestResult(results);
+
+        // Logged so the bot's logs can say how often, and where, the vote
+        // overrules the main thread (the 2026-09-27 review could not compare
+        // the two hosts because nothing recorded it).
+        if (chosen.BestMove != results[0].BestMove && results[0].BestMove != Move.None)
+            Diagnostic?.Invoke(
+                $"vote chose {chosen.BestMove} (depth {chosen.Depth}, score {chosen.Score}) over the "
+              + $"main thread's {results[0].BestMove} (depth {results[0].Depth}, score {results[0].Score})");
 
         return chosen with { NodesSearched = totalNodes };
     }
@@ -661,8 +682,22 @@ public sealed class ChessEngine
         _helpersStale = true; // rebuild helpers fresh (empty history) next search
     }
 
-    // Reallocates the transposition table ("setoption name Hash value N").
-    public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
+    // Reallocates the transposition table ("setoption name Hash value N", or
+    // the large-pages switch). The old block is released at once unless a
+    // worker may still be reading it: a search in flight (a GUI resizing
+    // mid-search) or a helper quarantined for missing a stop, which keeps
+    // searching until it notices. Then it lives as long as the table.
+    public void ResizeHash(int sizeMb)
+    {
+        bool readerOut = Volatile.Read(ref _searchInFlight);
+        lock (_quarantineGate)
+            readerOut |= Array.IndexOf(_helperQuarantined, true) >= 0;
+        _search.ResizeTT(sizeMb, releaseOld: !readerOut);
+    }
+
+    // Whether the transposition table currently sits in large pages.
+    public bool HashInLargePages => _search.Tt.UsesLargePages;
+    public int HashSizeMb => _search.Tt.SizeMb;
 
     // Syzygy probing settings, driven by the UCI options of the same name.
     public int SyzygyProbeLimit { set => _search.SyzygyProbeLimit = value; }

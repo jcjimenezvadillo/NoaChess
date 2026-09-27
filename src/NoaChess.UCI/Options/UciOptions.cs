@@ -14,6 +14,9 @@ namespace NoaChess.UCI.Options;
 public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
+    // Transposition table in large pages when the OS grants them (Windows,
+    // "Lock pages in memory"); falls back to normal pages silently.
+    public bool LargePages { get; private set; } = true;
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
@@ -205,6 +208,7 @@ public sealed class UciOptions
     public void Print(TextWriter output)
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
+        output.WriteLine("option name LargePages type check default true");
         output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
@@ -306,6 +310,10 @@ public sealed class UciOptions
             case "hash" when int.TryParse(value, out int hash):
                 Hash = Math.Clamp(hash, 1, 1024);
                 return "Hash";
+
+            case "largepages" when bool.TryParse(value, out bool largePages):
+                LargePages = largePages;
+                return "LargePages";
 
             case "threads" when int.TryParse(value, out int threads):
                 Threads = Math.Clamp(threads, 1, 32); // Lazy SMP parallel search.

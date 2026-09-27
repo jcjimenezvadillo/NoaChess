@@ -1933,7 +1933,7 @@ public sealed class AlphaBetaSearch
     internal void NewSearchTt() => _tt.NewSearch();
 
     // Reallocates the transposition table ("setoption name Hash value N").
-    public void ResizeTT(int sizeMb) => _tt.Resize(sizeMb);
+    public void ResizeTT(int sizeMb, bool releaseOld = true) => _tt.Resize(sizeMb, releaseOld);
 
     // Swaps the evaluator (Classical <-> NNUE). Never call during a search.
     public void SetEvaluator(IPositionEvaluator evaluator)
