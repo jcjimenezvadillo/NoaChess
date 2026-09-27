@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## 2026-09-27 (v5.9.22) - the ponder move no longer comes from the first legal reply
+
+**Found reviewing the bot's games.** After a search, the UCI loop sends `bestmove X ponder Y`, and Y
+is the reply the engine thinks about on the opponent's time. Y was the second move of the last
+printed PV, but only when the move played is the head of that PV. About one move in ten it is not:
+the Lazy SMP vote picked another worker's move, or the pondered move was kept over a shallow
+relaunch ("keeping the pondered move"). In that case Y came from the first legal reply in
+generation order, which has nothing to do with the position: over 959 bot moves on 2026-09-25 the
+ponder hit rate on those moves was 1.7%, against 50.7% on the rest. The full review of the Windows
+test (203 games, 2026-09-25 to 2026-09-27) counted 791 of 7,342 normal searches (10.8%) and 427 of
+6,722 ponderhit searches (6.4%) where the move played was not the head of the last PV.
+
+**The fix** (`src/NoaChess.UCI/UciLoop.cs`, `src/NoaChess.Engine/ChessEngine.cs`). When the move
+played is not the head of the last PV, the hint now comes, in order, from: the pondered search's own
+PV when its first move is the one played (the kept pondered move); the move the shared transposition
+table stores for the position after the move played, validated against the legal replies (the
+reference engine does the same); any legal reply only as the last resort. New
+`ChessEngine.TableMove(Board)`.
+
+**Verified.** New test `PonderFromTableTests`: after a search on three positions, the table move of
+the child position is legal and equals the PV's second move. The search itself is untouched: CI
+node count 127139, unchanged. The net is unchanged (`fqco5912`). 465 tests (128 Core + 337 Engine).
+Shipped on judgment, no SPRT: cutechess runs with ponder off, so no match can measure it, and the
+fix only changes which reply is pondered.
+
+**Host configuration on both bots, not code: the opening book.** With `selection: "weighted_random"`,
+lichess-bot calls `weighted_choice` with no minimum, so `min_weight` and `normalization` did
+nothing, and the bot kept picking branches under 15% of the node weight. Judged with an independent
+engine over 527 book exits, those choices cost about 0.2 pawns per game at the book exit. Both
+`config.yml` files now use `selection: "uniform_random"`, `normalization: "sum"` and `min_weight: 20`:
+every choice under 20% of the node weight is dropped, and the main nodes keep 2-3 moves (1.e4/1.d4;
+1...c5/1...e5 against 1.e4; 1...Nf6/1...d5 against 1.d4), so there is still variety.
+
+**Deployment.** Published (Windows + Mac). The Mac bot restarts with 5.9.22 and the new book. The
+Windows bot stays stopped while the full review of its test games finishes; its binary is copied.
+Gauntlet not run for this version.
+
 ## 2026-09-25 (v5.9.21) - a helper that misses the stop is no longer lost for the rest of the game
 
 **Found on the Windows bot.** 2026-09-25 was the first day of a clean-machine test of the Windows
