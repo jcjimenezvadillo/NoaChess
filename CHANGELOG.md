@@ -1,5 +1,61 @@
 # CHANGELOG
 
+## 2026-09-27 (v5.9.23) - large pages for the table, and tablebase reads without a shared counter
+
+**Where these came from.** A full review of the Windows bot's clean-machine test (203 games, every
+engine move judged by an independent engine, candidate errors re-judged at depth 24-30) found no
+blunder and no Windows-specific evaluation defect: the same net loses the same per move at the
+same depth on both hosts, and the Ryzen simply does not turn its extra cores into depth (the main
+thread 28% slower with 24 threads busy, Lazy SMP turning 2.8x the raw nodes into 1.2-1.6x faster
+time to depth). A separate read-only diagnosis of the SMP code, with each hypothesis checked by
+skeptics, named the two memory-side defects below. Both keep the search node-identical.
+
+**Large pages for the transposition table** (`Transposition/TableMemory.cs`, new `LargePages`
+option, default on). A 1 GB table in 4 KB pages spans 262,144 pages, far beyond what the TLB
+covers, so nearly every probe (a random access by construction) also paid a page walk. With the
+option on and "Lock pages in memory" granted to the account, the table is committed in 2 MB pages
+(VirtualAlloc with MEM_LARGE_PAGES after enabling the privilege in the process token), as the
+reference engine does; otherwise it falls back silently to the pinned array used before. The engine
+reports which one it got: `info string Hash N MB in large pages` or `in normal pages`. **Measured on
+the Ryzen, one thread, Hash 1024, depth 16, 20 positions from the bot's games, 3 rounds with the arms
+alternated: +8.6% speed (1.081-1.086 per round), identical node counts.** Not yet measured at 24
+threads. A table replaced while a worker might still read it (a search in flight, or a helper
+quarantined for missing a stop) is kept alive until the table itself goes.
+
+**Syzygy tables read through one pointer** (`Tablebases/SyzygyTable.cs`). Every byte went through
+the view accessor's `ReadByte`, which acquires and releases the view's SafeHandle: two interlocked
+operations on one counter shared by every thread probing that table. Under Lazy SMP in
+tablebase-dense endgames that cache line bounced between all the workers, and the main thread's
+speed fell to about 6% of normal at 24 threads on the Windows bot (22% on the Mac with 5). The base
+address is now acquired once when the table is mapped; reads stay bounds-checked and throw on a bad
+offset as before, and the mapping is still released at once when the tables are reloaded (a test
+deletes a table file right after). **Measured at one thread on 12 tablebase-dense positions from the
+bot's games, bot SyzygyPath, depth 9, warm pages: 3.27x faster, with identical nodes, tbhits and
+best moves on every position.** The multi-thread gain, where the contention was, is expected to be
+larger; not yet measured.
+
+**Diagnostic.** `info string vote chose X (depth D, score S) over the main thread's Y (...)` when the
+Lazy SMP vote overrules the main thread, so the bot logs record how often and where it happens
+(the review could not compare the two hosts for lack of it).
+
+**Verified.** New test `TableMemoryTests` (store, probe, resize keeping the old block, clear, in
+both modes; node-identical search with large pages allowed). CI node count 127139, unchanged.
+Net unchanged (`fqco5912`). 468 tests (128 Core + 340 Engine). Shipped on judgment, no SPRT: both
+changes are node-identical speed fixes.
+
+**Also from the review, and deliberately NOT done.** Narrowing the "keeping the pondered move" rule
+looked worth 0.62 points per 100 games with the judge at depth 20, but the verification at depth 24
+and beyond put its cost at zero (depth 20 and 22 agreed on which move was better in only 117 of 262
+firings), so the rule stays. Choosing the repetition rule from the previous search score was
+refuted on the catalogued cases. Still open, each needing an SPRT: blocking the easy and obvious
+cuts when the relaunch disagrees with the ponder, a fallingEval condition on the obvious-move cut,
+the vote in lost positions, and training aimed at the net's blind spots (opposite-coloured-bishop
+endings with passed pawns, same-coloured bishop endings, king attacks).
+
+**Deployment.** Published (Windows + Mac). The Windows bot restarts with 5.9.23 and the Mac bot is
+stopped, by the user's call. Thread-count and SMP scaling measurements are scheduled for after a
+memory change on the Windows host (the RAM runs at DDR4-2133 without its XMP profile).
+
 ## 2026-09-27 (v5.9.22) - the ponder move no longer comes from the first legal reply
 
 **Found reviewing the bot's games.** After a search, the UCI loop sends `bestmove X ponder Y`, and Y
