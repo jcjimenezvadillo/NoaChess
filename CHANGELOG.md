@@ -56,6 +56,43 @@ endings with passed pawns, same-coloured bishop endings, king attacks).
 stopped, by the user's call. Thread-count and SMP scaling measurements are scheduled for after a
 memory change on the Windows host (the RAM runs at DDR4-2133 without its XMP profile).
 
+**Measured afterwards (2026-09-28/29, Windows host with its memory now at DDR4-2933).** The Windows
+host lost its four slower modules and runs the remaining four at 2933 (3200, the kit's rating,
+does not boot with four dual-rank modules on this CPU; AMD's official figure is 2666). Six and a
+half hours of full load afterwards showed no hardware error, crash or disconnect.
+- **Deployment SPRT against 5.9.22** (60+1, ponder on, 4 threads, Hash 1024, the bot's tablebases,
+  new engine first, [0, 10]): **+18.5 +/- 27.2 after 154 games (23-14-119 after 156), LOS 90.9%,
+  LLR 0.70**. Stopped unfinished to free the machine for the measurements below; not concluded.
+- **Gauntlet** on field 2, single-threaded, the same field as v5.3.0 to v5.9.19: **58.1% over 240
+  games, 3368 CCRL +/- 46**, against v5.9.19's 3364 +/- 40: a tie, as expected, since the gauntlet
+  runs one thread with a small table and no tablebases, where neither fix has much to act on. No
+  time forfeit, crash or illegal move.
+- **Large pages at 24 threads:** main-thread speed **+8.0% (95% CI 5.4-10.7)** at 4 s per move,
+  +10.6% at a fixed depth; the same size as at one thread (+8.9%, CI 8.4-9.4, 40 of 40 searches
+  node-identical). Time to a fixed depth is too noisy at 24 threads to show it.
+- **Syzygy reader at 8 and 24 threads**, 12 tablebase-dense positions at 5 s per move, warm pages:
+  the old reader was **about 26-35x slower at 8 threads and 80-110x slower at 24** (main thread
+  9.1k nps against 713k at 24 threads), which cost 4-5 plies of depth (9.5 against 14.5 at 24
+  threads) and late answers of up to 1.4 s past the move's time. The cost of the shared counter grew
+  with the thread count: 3x at one thread, about 30x at 8, 50-110x at 24. Every multi-thread bot
+  running 5.9.22 or earlier was crippled in tablebase endgames.
+- **Thread scaling against the reference engine on the same machine** (30 bot positions, 8 s per
+  move, time to depth against each engine's own single thread): NoaChess 1.49x / 1.87x / 2.23x /
+  2.28x / 2.28x at 4 / 8 / 16 / 24 / 32 threads; the reference 1.58x / 2.31x / 2.76x / 2.57x /
+  2.20x. The reference/NoaChess ratio is 1.24 (CI 0.98-1.55) at 16 threads, 1.13 at 24 and 0.96 at
+  32, and per-thread speed falls identically in both (0.81 / 0.65 / 0.56 of one thread at 16 / 24
+  / 32): the ceiling is the machine (16 cores, SMT beyond them), not a NoaChess SMP defect. Depth
+  reached in 8 s does not differ between 16, 24 and 32 threads for either engine.
+- **SmpDiversify** (the helper depth-skip pattern): 16-20% faster time to depth at 8 and 16 threads,
+  neutral at 24, 12% slower at 32; depth in 8 s unchanged at every count. It stays off for the
+  24-thread bot; at 16 threads it is a candidate for an SPRT.
+- **MoveOverhead on the Windows bot: 200 -> 100** (host configuration). Over 315 games at 24
+  threads no move was ever charged more than (clock - 1 s) and there was no time loss; with 5.9.23
+  the worst overrun past the engine's own hard limit fell from +1.13 s to +336 ms, almost all of
+  the earlier ones in tablebase endgames. Modelled flag rate 0.18 -> 0.19 per 1000 games for about
+  1-2% more budget per move; to be revisited if the thread count rises or after 100 games if any
+  move overruns by more than 300 ms or ends under 1 s.
+
 ## 2026-09-27 (v5.9.22) - the ponder move no longer comes from the first legal reply
 
 **Found reviewing the bot's games.** After a search, the UCI loop sends `bestmove X ponder Y`, and Y
