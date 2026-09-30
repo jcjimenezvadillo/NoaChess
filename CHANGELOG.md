@@ -1,5 +1,61 @@
 # CHANGELOG
 
+## 2026-10-01 (v5.9.24) - tablebase endgames faster under Lazy SMP, and the review's rules that did not pass
+
+**Three node-identical changes for the multi-thread bot**, the remaining items of the SMP diagnosis
+of 2026-09-28:
+- **A per-worker memo of the in-search WDL probe** (`ProbeWdlCached` in `AlphaBetaSearch`): a
+  direct-mapped table of 4,096 position keys and results. The same tablebase position is probed
+  again and again - on every table miss, and every time a WIN is skipped under the fifty-move gate,
+  which stores nothing - and each probe walks the compressed file. A WDL result depends only on the
+  position, so the memo returns exactly what the probe would; it is cleared when the tables are
+  reloaded (`Syzygy.Generation`). **Measured at one thread on 20 tablebase-dense positions from the
+  bot's games, bot SyzygyPath, depth 10: 1.51x faster, with identical nodes, tbhits and best moves.**
+- **The root tablebase ranking computed once per pool search** (`RootTablebaseMemo`,
+  `FilterRootMovesShared`): every worker used to rank the root by DTZ on its own, so 28 identical
+  rankings per move at 29 threads, all walking the same files at once. The first worker to get there
+  ranks and stores the result; the others apply it as a set over their own root list, which every
+  worker generates identically. A single-thread search ranks alone, as before.
+- **The helper pool built off the clock** (`ChessEngine.PrepareSearchThreads`, called at
+  `ucinewgame` and at `isready` when no search is running): the first search of every game used to
+  rebuild the helpers inside its own budget, a median 41 ms to reach depth 1 at 24 threads against
+  1 ms on later moves.
+
+**Measured together at 24 threads**, 12 tablebase-dense positions, fixed depth 13, two rounds, the
+two binaries run alternately twice: **5.9.24 took 58.7 and 69.5 s against 104.4 and 106.3 s for
+5.9.23, 1.64x faster.** CI node count 127139, unchanged; net unchanged (`fqco5912`); 469 tests
+(128 Core + 341 Engine), with a new `RootFiltering_IsSharedAcrossThePool` (two tablebase roots in a
+row on a 4-thread pool, each keeping only winning moves).
+
+**The review's three rules measured by SPRT, none adopted** (same binary on both sides, the rule on
+against off, new side first, [0, 10]):
+- `ObviousFallingGuard` (no obvious-move cut while the evaluation is falling), 60+1 with ponder, one
+  thread: **-6.4 +/- 21.8 after 274 games**, LLR -0.92; stopped trending down.
+- `PonderDisagreeBlock` (when the relaunch disagrees with the pondered move, no easy or obvious cut
+  before passing the ponder's depth), same conditions: **-5.1 +/- 22.6 after 276 games**, LLR -0.76;
+  stopped trending down.
+- `VoteLostGuard` (the main thread's move stands when it already scores -300 or worse), 60+1 without
+  ponder: 48 games at 4 threads (+17.4 +/- 41.6), then at 8 threads **H0: -4.2 +/- 10.7 after 751
+  games** (LLR -3.07); with the 326 games of an interrupted first run, 1,077 games at essentially zero.
+All three were removed from the code rather than left switched off.
+
+**The Windows bot's host, and an open problem.** Recurring whole-machine freezes, a few times a day:
+on 2026-09-29 at 08:33-08:35 the bot's helper threads failed to honour the stop 89 times, returning
+up to 33 s late, and the bot lost a game on time; the VoteLostGuard SPRT lost 11 games to engines
+that stopped responding, in three bursts that hit all the games in progress at once, some at the
+first move out of the book with all 32 pieces on the board. Windows logs nothing, the tablebases are
+not involved, and the disks are set never to power down. The engine binaries lived on a mechanical
+disk, so the bot's engine now runs from the SSD as a first experiment. Also on the host: the bot's
+launcher no longer kills every NoaChess process on the machine by name (it took down an SPRT's
+engines), `Threads` 29 (the engine at about 90% of the machine, at the user's request) with
+`MoveOverhead` back to 200 as the timing analysis required above 24 threads, and a fixed 16 GB page
+file on the SSD (the machine had none, so it could not write a crash dump).
+
+**Deployment.** Published (Windows + Mac). The Windows bot restarts with 5.9.24, its engine on the
+SSD; the Mac bot is stopped with 5.9.24 in place, by the user's call. Gauntlet not run for this
+version (5.9.23's 3368 CCRL stands: the gauntlet runs one thread without tablebases, where nothing
+of this acts).
+
 ## 2026-09-27 (v5.9.23) - large pages for the table, and tablebase reads without a shared counter
 
 **Where these came from.** A full review of the Windows bot's clean-machine test (203 games, every
