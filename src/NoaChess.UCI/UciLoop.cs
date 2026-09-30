@@ -347,6 +347,11 @@ public sealed class UciLoop
                         if (_options.EvalFile.Length == 0)
                             TryLoadEmbeddedNnue();
                     }
+                    // With no search running, build the helper pool now so
+                    // the first "go" does not pay for it (after the net has
+                    // loaded, so the helpers clone the right evaluator).
+                    if (_searchTask is null or { IsCompleted: true })
+                        _engine.PrepareSearchThreads();
                     _output.WriteLine("readyok");
                     break;
 
@@ -450,6 +455,7 @@ public sealed class UciLoop
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
                     _engine.NewGame(); // Clear TT/heuristics from the previous game.
+                    _engine.PrepareSearchThreads(); // fresh helpers, off the clock
                     break;
 
                 case "position":

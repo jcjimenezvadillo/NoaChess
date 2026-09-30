@@ -34,6 +34,10 @@ public static class Syzygy
 
     public static string CurrentPath { get; private set; } = "";
 
+    // Bumped by every Init, so anything that memoises probe results (the
+    // search's per-worker WDL cache) can tell that the tables changed.
+    public static int Generation { get; private set; }
+
     // Move lists for the capture recursion in Search, one per recursion level
     // and per thread. Search used to allocate a fresh 3 KB MoveList on every
     // call, and it is called at every clock-zero node of a probed endgame, so
@@ -63,6 +67,7 @@ public static class Syzygy
         DtzByKey.Clear();
         Cardinality = 0;
         CurrentPath = paths ?? "";
+        Generation++;
 
         if (string.IsNullOrWhiteSpace(paths) || paths == "<empty>")
             return;

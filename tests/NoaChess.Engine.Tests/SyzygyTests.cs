@@ -197,6 +197,28 @@ public class SyzygyIntegrationTests
             "TB filtering must not turn several legal moves into the forced-move early return");
     }
 
+    // A Lazy SMP pool ranks the tablebase root once and shares it (see
+    // RootTablebaseMemo). Whichever worker ranks, every search of the pool
+    // must still keep the winning moves and drop the stalemating ones, on two
+    // different positions in a row (the second search must not reuse the
+    // first one's ranking).
+    [SyzygyFact]
+    public void RootFiltering_IsSharedAcrossThePool()
+    {
+        EnsureInit();
+        var engine = new ChessEngine { SyzygyProbeLimit = 7, Threads = 4 };
+        foreach (string fen in new[] { "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", "k7/8/1QK5/8/8/8/8/8 w - - 0 1" })
+        {
+            var board = new Board(fen);
+            var result = engine.FindBestMove(board, SearchLimits.Time(300));
+            board.MakeMove(result.BestMove);
+            Assert.True(Syzygy.ProbeWdl(board, out WdlScore child));
+            Assert.Equal(WdlScore.Loss, child);
+            board.UnmakeMove();
+        }
+        Assert.True(engine.TbHits > 0);
+    }
+
     [SyzygyFact]
     public void RootFiltering_FallsBackToWdlWhenDtzIsMissing()
     {

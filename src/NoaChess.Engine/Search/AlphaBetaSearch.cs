@@ -2114,7 +2114,7 @@ public sealed class AlphaBetaSearch
             && System.Numerics.BitOperations.PopCount(board.AllOccupancy)
                <= Math.Min(SyzygyProbeLimit, Tablebases.Syzygy.Cardinality))
         {
-            FilterRootMovesByTablebase(board);
+            FilterRootMovesShared(board);
 
             // A decisive tablebase root needs a fraction of the clock, not all
             // of it. Every surviving move is already game-theoretically optimal
@@ -3269,6 +3269,90 @@ public sealed class AlphaBetaSearch
         return bestScore;
     }
 
+    // Per-worker memo of the in-search WDL probe: position key -> result,
+    // direct-mapped. The same tablebase position is probed again and again -
+    // on every TT miss, and every time a WIN is skipped under the fifty-move
+    // gate (it stores nothing in the table) - and each probe walks the
+    // compressed file. A WDL result depends only on the position, so the memo
+    // returns exactly what the probe would: same results, same nodes. Cleared
+    // when the tables are reloaded (Syzygy.Generation).
+    private const int WdlCacheSize = 4096; // power of two
+    private readonly ulong[] _wdlCacheKeys = new ulong[WdlCacheSize];
+    private readonly sbyte[] _wdlCacheValues = new sbyte[WdlCacheSize]; // 0 empty, 1 no answer, 10 + WDL
+    private int _wdlCacheGeneration = -1;
+
+    private bool ProbeWdlCached(Board board, out Tablebases.WdlScore wdl)
+    {
+        int generation = Tablebases.Syzygy.Generation;
+        if (generation != _wdlCacheGeneration)
+        {
+            Array.Clear(_wdlCacheValues);
+            _wdlCacheGeneration = generation;
+        }
+
+        ulong key = board.ZobristKey;
+        int slot = (int)(key & (WdlCacheSize - 1));
+        sbyte cached = _wdlCacheValues[slot];
+        if (cached != 0 && _wdlCacheKeys[slot] == key)
+        {
+            wdl = cached == 1 ? default : (Tablebases.WdlScore)(cached - 10);
+            return cached != 1;
+        }
+
+        bool ok = Tablebases.Syzygy.ProbeWdl(board, out wdl);
+        _wdlCacheKeys[slot] = key;
+        _wdlCacheValues[slot] = ok ? (sbyte)(10 + (int)wdl) : (sbyte)1;
+        return ok;
+    }
+
+    // Set by ChessEngine for a Lazy SMP search: the pool's shared root ranking
+    // and the serial of the current search (0 = not a pool search, rank alone).
+    internal RootTablebaseMemo? RootTbMemo;
+    internal int SearchSerial;
+
+    // The root tablebase filter, run once per pool search: the first worker
+    // ranks and stores the result, the others apply it. Every worker generates
+    // the same root list, so the stored result is exactly what each would have
+    // computed; it is applied as a set over the worker's own list regardless.
+    private void FilterRootMovesShared(Board board)
+    {
+        RootTablebaseMemo? memo = RootTbMemo;
+        if (memo is null || SearchSerial == 0)
+        {
+            FilterRootMovesByTablebase(board);
+            return;
+        }
+
+        lock (memo)
+        {
+            if (memo.Serial == SearchSerial)
+            {
+                int kept = 0;
+                for (int i = 0; i < _rootMoves.Count; i++)
+                    if (Array.IndexOf(memo.RootMoves, _rootMoves[i]) >= 0)
+                        _rootMoves.Swap(kept++, i);
+                _rootMoves.Truncate(kept);
+                _rootLostInTb = memo.LostInTb;
+                _rootTbResolved = memo.TbResolved;
+                _rootInTb = memo.InTb;
+                TbHits += memo.TbHits;
+                return;
+            }
+
+            long hitsBefore = TbHits;
+            FilterRootMovesByTablebase(board);
+            var stored = new Move[_rootMoves.Count];
+            for (int i = 0; i < stored.Length; i++)
+                stored[i] = _rootMoves[i];
+            memo.RootMoves = stored;
+            memo.LostInTb = _rootLostInTb;
+            memo.TbResolved = _rootTbResolved;
+            memo.InTb = _rootInTb;
+            memo.TbHits = TbHits - hitsBefore;
+            memo.Serial = SearchSerial;
+        }
+    }
+
     // Restricts _rootMoves to the tablebase-optimal ones. DTZ is expressed from
     // the ROOT position: a move that zeroes the counter has distance 1, while a
     // reversible move adds one ply to the child's DTZ. The rank then separates
@@ -3807,7 +3891,7 @@ public sealed class AlphaBetaSearch
             && (tbClockOk || UseTbDrawProbeAlways) && ply > 0
             && excluded == Move.None)
         {
-            if (Tablebases.Syzygy.ProbeWdl(board, out var wdlScore))
+            if (ProbeWdlCached(board, out var wdlScore))
             {
                 // With the option on and the clock gate the only reason this
                 // node was reached, a WIN cannot be trusted yet: skip it and

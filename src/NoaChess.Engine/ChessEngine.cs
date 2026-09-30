@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.23";
+    public const string Version = "5.9.24";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -142,9 +142,12 @@ public sealed class ChessEngine
         Volatile.Write(ref _searchInFlight, true);
         try
         {
-            return _threads <= 1
-                ? _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves)
-                : FindBestMoveParallel(board, limits, cancellation, progress);
+            if (_threads <= 1)
+            {
+                _search.SearchSerial = 0; // alone: rank the tablebase root directly
+                return _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves);
+            }
+            return FindBestMoveParallel(board, limits, cancellation, progress);
         }
         finally
         {
@@ -154,6 +157,10 @@ public sealed class ChessEngine
 
     // True between the start and the end of FindBestMove; read by ResizeHash.
     private bool _searchInFlight;
+
+    // The pool's shared root tablebase ranking and the serial of its search.
+    private readonly RootTablebaseMemo _rootTbMemo = new();
+    private int _searchSerial;
 
     // Hands a running "go ponder" search its real clock instead of stopping it
     // and starting again (see AlphaBetaSearch.ApplyClockLimits). Returns false
@@ -181,6 +188,14 @@ public sealed class ChessEngine
     {
         EnsureHelpers();
         int n = _threads;
+
+        // One root tablebase ranking for the whole pool (see RootTablebaseMemo).
+        int serial = ++_searchSerial;
+        if (serial == 0)
+            serial = ++_searchSerial;
+        _search.SearchSerial = serial;
+        foreach (AlphaBetaSearch h in _helpers)
+            h.SearchSerial = serial;
 
         // Age the shared table exactly ONCE; every worker then runs with
         // newSearch:false so the shared generation is not bumped n times.
@@ -339,6 +354,18 @@ public sealed class ChessEngine
         return chosen with { NodesSearched = totalNodes };
     }
 
+    // Builds the helper pool ahead of the first search (UCI "ucinewgame" and
+    // "isready"), so rebuilding up to 31 searchers and their threads is not
+    // paid inside the first move's clock: measured on the bot at 24 threads,
+    // the first search of every game spent a median 41 ms reaching depth 1
+    // against 1 ms on later moves. Skipped while a search is in flight; the
+    // search itself still calls EnsureHelpers, which is then a cheap re-sync.
+    public void PrepareSearchThreads()
+    {
+        if (_threads > 1 && !Volatile.Read(ref _searchInFlight))
+            EnsureHelpers();
+    }
+
     // Rebuilds the helper pool when the thread count or evaluator changed, then
     // re-syncs the tunable settings onto every helper.
     private void EnsureHelpers()
@@ -352,6 +379,10 @@ public sealed class ChessEngine
             _helpers = pool;
             _helpersStale = false;
         }
+
+        _search.RootTbMemo = _rootTbMemo;
+        foreach (AlphaBetaSearch h in _helpers)
+            h.RootTbMemo = _rootTbMemo;
 
         // The worker THREADS are rebuilt only when the count changes, not when
         // the searchers are replaced. A new game or a new evaluator swaps
