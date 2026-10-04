@@ -3,14 +3,17 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.20, 2026-09-24).** The embedded net is `fqco5912` (entry below): fqco592's
-weights re-annealed over 14 epochs of a real cosine on fqco5911's corpus. Before it, fqco5911 (v5.9.17)
+**Current state (v5.9.25, 2026-10-04).** The embedded net is still `fqco5912` (shipped in v5.9.20,
+entry below): fqco592's weights re-annealed over 14 epochs of a real cosine on fqco5911's corpus.
+`fqblind`, a cold 60-epoch anneal with the blind-spot corpus on the trainer rebuilt for v5.9.25, is
+training (first entry below); v5.9.21 to v5.9.25 changed search, time management and the trainer,
+not the net. Before fqco5912, fqco5911 (v5.9.17)
 was fqco592's recipe over a larger corpus, warm-started from `fqco592.pt.partial`; v5.9.18 and
 v5.9.19 changed search only (see CHANGELOG.md). Architecture is HalfKAv2_hm
 with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
 training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
-CCRL: **3321 +/- 45** (v5.9.2 gauntlet, measured field labels, 52.1% over 240 games); nothing from
-v5.9.3 onward has been regauntleted (a clock-based gauntlet needs the box free). 461 tests.
+CCRL: **3368 +/- 46** (v5.9.23 gauntlet on field 2, single-threaded, 58.1% over 240 games; v5.9.19
+read 3364 +/- 40, v5.9.2 3321 +/- 45). 490 tests.
 
 **Read this before training another generation the same way.** The investigation that explains
 `fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
@@ -26,6 +29,93 @@ another `--epochs 7` run at this learning rate. `--max-records 120000000` in `Tr
 dead code on the streaming path (`train_streaming` returns before it is read) and should not be
 copied forward as if it limited anything - every run described here consumed its entire corpus,
 every epoch.
+
+**Open issues found by the audit of 2026-10-04, none acted on yet** (a net is training):
+
+- *Quantization with factorization.* Quantization-aware training rounds the real and the virtual
+  (factorized) feature-transformer rows separately, while the exporter folds them and rounds the
+  sum. The exported table differs from what the training saw by 1.67-1.70 cp of eval on average,
+  with 25.6% of its entries one LSB off. `verify_qat.py` only covers `factorized=False`, which is
+  how it went unseen. The fix (fold before fake-quantizing in `model.py`) waits for the running
+  training; a net re-exported with any fix is a new net and needs its own SPRT (0.5-2 Elo expected).
+- *Tablebase labels.* `NoaChess.DataGen --tb-path` relabelled the WDL of positions inside the tables
+  but its search never probed them in-tree (it only ever filtered the root): the per-engine probe
+  limit was never set. Fixed in v5.9.25, with a startup self-check. Every corpus generated with
+  `--tb-path` before then - the blind-spot batch included - carries score labels from a search blind
+  to the tables, and the corpora generated without `--tb-path` labelled their rows with six men or
+  fewer without tables at all. A relabel into a new directory, with a DTZ and fifty-move guard, is
+  due before the next anneal. The fix also changes what a new corpus contains: a search that finds a
+  decisive tablebase result now scores it in the tablebase band (about 98,700), which the
+  `|score| < 20000` row filter drops and the resign adjudication ends on, and a drawn tablebase
+  subtree scores 0, which brings the draw adjudication forward. Expect fewer late-endgame rows than
+  in the older corpora.
+- *Elite results decided on time* are taken as the game result; the next label-book pass should keep
+  those positions with a neutral or omitted result.
+- *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
+  been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqblind in training, and the trainer rebuilt under it (2026-10-01 to 2026-10-04, v5.9.25)
+
+**Not a shipped net.** v5.9.25 still embeds `fqco5912`. `fqblind` is the long anneal the fqco5912
+result pointed to, and it is still training; it will be judged by its own SPRT when it ends. On the
+evening of 2026-10-04 it was in epoch 46 of 60.
+
+**The run.** A cold start (no `--init-from`): 60 epochs of a cosine from lr 1e-3, lambda 1.0 to 0.7,
+otherwise fqco5912's architecture and recipe (HalfKAv2_hm, 128/32/32, one output bucket, factorized,
+coarse lane, QAT at QA 255, the reference-style loss with exponent 2.5, 240/145 constants, weight
+decay 1e-05 and none on the transformer), seed 2, batch 16384. 282 files: datascale2, datascale4,
+datascale5, selfplay-gen8, the elite WDL shards and the 19 files of the blind-spot corpus, sampled
+at 1.5x their size with `--reweight`. Validation is the new `--val-split tail-dedup` (below), so its
+validation losses are not comparable with those of earlier nets, which were read on the leaking tail
+cut.
+
+**The blind-spot corpus.** 48,270,285 positions aimed at what the review of the Windows test
+(2026-09-27) found the net misjudging. Elite positions were mined in six groups - opposite-coloured
+bishops with a passed pawn, same-coloured bishops, rook endings with a passed pawn, king attacks,
+large material gaps and pawn tension - and given to `NoaChess.DataGen` both to label directly and as
+starting points for self-play, one labelled file and one to three self-play files per group. Its
+labels carry the `--tb-path` defect recorded under the open issues at the top of this file (the
+search that scored them did not probe the tables in-tree).
+
+**The trainer changes it runs on, shipped with v5.9.25** (`tools/training/nnue/train_nnue.py`,
+`dataset.py`):
+- **`--val-split tail-dedup`.** The tail cut, minus every tail row whose position is a training row
+  of any file; the training rows are exactly the tail split's. A position is the pair of HalfKA
+  feature sets the net reads, each taken as a set, so a mirrored board or a colour-flipped one
+  counts as the same input (on datascale5, one shard's tail against three others: identical rows
+  2.47%, identical feature sets 3.63% - hashing rows in order would have left a third of the leak).
+  The fqco5911 entry below measured 5.48% of one shard's tail inside other files; on fqblind's 282
+  files 12,068,759 of 63,385,725 validation tail rows (19.04%; 18.66% without the blind-spot corpus)
+  are positions the training rows contain, and the trainer keeps the checkpoint with the best
+  validation loss, so the leak steered that choice toward memorisation. A position-hash split
+  (`--val-split hash`) was built first and kept only for comparison: it splits every game across
+  both sides, so 99.99% of its validation rows have training rows from their own game, and its
+  validation pass reads the whole corpus. The masks are cached next to the feature shards. The
+  default stays `tail`.
+- **Exact resume at an epoch boundary.** Every epoch writes `<out>.state`: weights, optimizer,
+  scheduler, lambda ramp, best validation so far and every RNG the loop draws from. `--resume-state`
+  restores all of it and continues at the next epoch, where `--init-from` only approximated it with
+  a fresh optimizer (fqco5912's resume, and the crash-resumed segments of the 60-epoch anneals
+  above). The other arguments must be the run's own; `--data` may gain files at the boundary, and
+  dropping or shortening one is refused where it would leak trained rows into validation
+  (`--accept-val-leak` overrides). `--stop-after-epoch N`, or creating `<out>.stop` in a running
+  job, ends it cleanly at the next epoch boundary (exit code 3); a fresh run refuses to start over
+  an unfinished one in the same `--out`.
+- **Memory-mapped coarse caches.** `np.load` ignores `mmap_mode` for an `.npz` and read every member
+  whole: about 52 GB of RAM for the coarse caches. Each member is now mapped where it sits in the
+  archive, and the page cache keeps what fits.
+- **The loader in its own process** (`--loader-process`, plus `--loader-workers` reader threads).
+  The GPU sat idle about half the time waiting for a single-threaded buffer build; the same
+  `stream_batches` now runs in a child process, off the trainer's GIL, with byte-identical batches
+  in the same order and the same RNG a resume saves. fqblind was stopped at the end of its first
+  epoch through `<out>.stop` and resumed with it through `--resume-state`, the first real use of the
+  exact resume: about 10.5 steps per second before, about 21 after.
+
+**DataGen.** `NoaChess.DataGen --tb-path` now probes the tables inside the search, with a startup
+self-check (K+N+N against K must score 0; it scored +361 before). What that means for the corpora
+already on disk, and for the next one, is under the open issues at the top of this file.
 
 ---
 
