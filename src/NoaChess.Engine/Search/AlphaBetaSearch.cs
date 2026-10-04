@@ -555,6 +555,37 @@ public sealed class AlphaBetaSearch
 
     private long _nodes;
 
+    // The squares a non-king move must land on to answer a check: the single
+    // checker or a square between it and our king. ~0 when not in check, 0
+    // under double check (only the king can move). Speed only: a move outside
+    // the set is illegal, and the lazy legality test after the make would
+    // reject it anyway, so skipping it earlier changes no node.
+    private static ulong EvasionTargets(Board board, Color us)
+    {
+        Color them = Board.OppositeColor(us);
+        int ksq = board.KingSquare(us);
+        ulong occ = board.AllOccupancy;
+        ulong queens = board.Pieces(them, PieceType.Queen);
+        ulong checkers = (Attacks.Pawn(us, ksq) & board.Pieces(them, PieceType.Pawn))
+            | (Attacks.Knight(ksq) & board.Pieces(them, PieceType.Knight))
+            | (Attacks.Bishop(ksq, occ) & (board.Pieces(them, PieceType.Bishop) | queens))
+            | (Attacks.Rook(ksq, occ) & (board.Pieces(them, PieceType.Rook) | queens));
+        if (checkers == 0)
+            return ~0UL;
+        if ((checkers & (checkers - 1)) != 0)
+            return 0;
+        return checkers | Attacks.Between(ksq, Bitboard.Lsb(checkers));
+    }
+
+    // True for a move that cannot answer the check described by 'targets'.
+    // King moves and en passant are never judged here (the king leaves the
+    // line; en passant can remove a checking pawn off its own square), and
+    // keep going through the legality test as before.
+    private static bool CannotEvade(Board board, Move move, ulong targets)
+        => (targets & Bitboard.SquareBB(move.To)) == 0
+           && move.Flag != MoveFlag.EnPassant
+           && board.PieceTypeAt(move.From) != PieceType.King;
+
     // Search statistics, printed as "info string stats ..." after each
     // completed iteration when NOA_SEARCH_STATS=1 (audit 2026-09-07). Off,
     // they cost one predicted branch per event. The first-move cutoff rate,
@@ -623,6 +654,13 @@ public sealed class AlphaBetaSearch
     // PonderTrustMargin keeps the good move and only the REPORTED depth is
     // short. See CHESSTEST/notas/PONDER_ACANTILADO_DISENO.md.
     //
+    // A caveat found on 2026-10-04: at one thread the conversion read the side
+    // to move and the move number off the board the search was still making
+    // and unmaking moves on, so it could budget from the opponent's clock
+    // (fixed in UciLoop.ParseLimits). The time-forfeit tails of any of these
+    // runs played at one thread, and the reading that the converted budget
+    // was too aggressive, are confounded by that race.
+    //
     // What it does: installs a real clock on a search already running
     // unlimited ("go ponder"), converting it in place instead of stopping it
     // and starting over, which is what the reference scheduler does.
@@ -654,7 +692,7 @@ public sealed class AlphaBetaSearch
     internal bool ApplyClockLimits(SearchLimits limits)
     {
         if (!_searching || _clockMode || _hardTimeMs != long.MaxValue
-            || limits.SoftTimeMs >= limits.HardTimeMs)
+            || !limits.IsClockMode)
             return false;
 
         long soft = limits.SoftTimeMs;
@@ -719,15 +757,12 @@ public sealed class AlphaBetaSearch
     // heuristic - but this was once commented as simply "benign", and it was
     // not: reading it before the worker had reset it for the new search handed
     // the coordinator a whole previous search's total, and the correction on
-    // the next iteration turned the time budget negative. The coordinator now
-    // zeroes these before waking anyone, which is what makes the read benign.
+    // the next iteration turned the time budget negative. The coordinator does
+    // NOT zero these before waking the helpers: that closed the race and
+    // measured worse (-7.9 over 836 games, H0; see ChessEngine.
+    // FindBestMoveParallel). What keeps the read safe is the clamp of the
+    // decayed change count at zero in the iteration loop.
     internal int BestMoveChangesTotal => _bestMoveChangesTotal;
-
-    // Lets the coordinator zero the counter BEFORE the worker is woken, so the
-    // peer baseline is taken from a real zero rather than from whatever the
-    // previous search left behind. The worker's own reset then finds it already
-    // clear.
-    internal void ResetBestMoveChangesTotal() => _bestMoveChangesTotal = 0;
 
     // Sentinel for "no previous score yet" (first search of the game).
 
@@ -864,6 +899,8 @@ public sealed class AlphaBetaSearch
     // zero or once the root is proven lost); on also probes proven draws
     // and losses at any clock, which is what a long quiet drawn endgame
     // needs to keep the search anchored to the truth instead of NNUE eval.
+    // A loss read at a high clock can be a fifty-move draw (the tables know
+    // no clock); the site says why the behaviour is kept as measured.
     // ON since v5.9.19 by criterion, not by H1: verified against Syzygy
     // directly (not just our own search) on three separate points of one
     // real bot game (a K+R vs K+R+B draw, WDL=0), each stuck at -122 to
@@ -1487,10 +1524,15 @@ public sealed class AlphaBetaSearch
     // LLR +2.98, H1 over 1,515 games; bench -4.8% nodes at depth 12.
     public bool UseLmpAllDepths = true;
 
-    // SEE pruning of quiet moves (reference: see_ge(-27 * lmrDepth^2)), which
+    // SEE pruning of quiet moves (reference: see_ge(-23 * lmrDepth^2)), which
     // this engine never applied outside the ladder: a quiet move that hangs a
-    // piece outright is searched like any other. Our units and our full
-    // depth in place of the reduced one, so the margin is the looser side.
+    // piece outright is searched like any other. The constant was copied raw,
+    // but the reference's SEE is in its material units, where a pawn is 208:
+    // its -23 is about -11 of our centipawns, so ours prunes at about twice
+    // the reference's width in pawns, and on the full depth instead of the
+    // reduced one. An earlier audit compared the two constants as if the
+    // units were equal. The reference's width (QuietSeeTight) was measured
+    // flat and removed on 2026-10-04 (see the audit block below).
     // Measured 2026-09-07 at 100,000 nodes: +15.7 Elo +/- 11.8, LLR +2.96, H1
     // over 1,657 games (sprt_quietseeprune_100k). ON since v5.8.2.
     public bool UseQuietSeePrune = true;
@@ -1814,6 +1856,40 @@ public sealed class AlphaBetaSearch
     // relaunch keeps the ponder's history whole. Clock games only, by
     // construction; a search without a ponder credit is untouched.
     public bool UseNoDecayOnRelaunch = false;
+
+    // ---- Audit of 2026-10-04: reference ports, each measured at 100,000
+    //      fixed nodes against the same build with it off. None passed, and
+    //      all were removed. ----
+    //
+    // No AlphaRaiseReduction (reference step 19: at a PV node, once a move
+    // has raised alpha without cutting, the rest searched three plies
+    // shallower, depth 4 to 11): -23.1 +/- 19.2 over 558 games, H0.
+    // No QuietSeeTight (the quiet SEE prune at -11 per depth^2, the
+    // reference's width in pawns; see the QuietSeePrune site for the units):
+    // 0.0 +/- 8.0 over 2,938 games, H0.
+    // No TtPvFailLow (a fail-low stores its parent's PV mark, reference
+    // ss->ttPv = ss->ttPv || (ss - 1)->ttPv): -5.7 +/- 11.7 over 1,402
+    // games, H0.
+    // No PostLmrContHist (a later quiet whose null-window probe beats alpha
+    // earns one cutoff's worth of continuation history, reference step 17):
+    // +2.6 +/- 7.0 over 4,000 games, LLR -1.90, undecided at the cap.
+    // No QsMoveCountPrune (quiescence skips the captures after the second,
+    // with recaptures and direct checks exempt from that cut and from the
+    // futility prunes, reference qsearch step 6): -5.0 +/- 11.3 over 1,465
+    // games, H0.
+    // No HindsightBeforeTt (the hindsight depth rules applied before the TT
+    // cutoff test, in the reference's order): -13.1 +/- 15.2 over 820 games,
+    // H0.
+    // No IirReference (IIR after the null move, from depth 6, PV and
+    // expected cut nodes only): -1.7 +/- 9.3 over 2,311 games, H0. Not the
+    // reference's whole condition: it also spares nodes on the previous
+    // iteration's PV (followPV), a mark this engine lacks, so this does not
+    // close that form.
+    // No QsCheckSeePrune (quiescence quiet checks skipped when SEE loses
+    // beyond QsSeeThreshold): -3.8 +/- 10.6 over 1,654 games, H0; measured
+    // on a separate tree and never merged.
+    // TtMoveOnKeep is recorded at TranspositionTable.Store.
+
     private readonly int[] _rootPrevScores = new int[1 << 16];
     private static int MoveKey(Move move) => ((int)move.Flag << 12) | (move.To << 6) | move.From;
 
@@ -2032,11 +2108,13 @@ public sealed class AlphaBetaSearch
         // with no clock that nobody is waiting to stop. That is a frozen game.
         _searching = true;
 
-        // Clock mode is recognizable by soft < hard; "movetime" sets them
-        // equal and the budget must then be used in full, not predictively.
+        // Clock mode: a clock-derived budget (ClockManaged), or soft < hard;
+        // "movetime" sets them equal and the budget must then be used in
+        // full, not predictively. Soft < hard alone used to decide it, and a
+        // clock budget clamped to soft == hard was read as a movetime.
         // The local serves the two entry-time decisions below; everything
         // inside the loop reads the field, which a ponderhit may flip.
-        _clockMode = limits.SoftTimeMs < limits.HardTimeMs;
+        _clockMode = limits.IsClockMode;
         bool clockMode = _clockMode;
 
         // Terminal root: checkmate or stalemate on the board. There is nothing
@@ -2131,6 +2209,30 @@ public sealed class AlphaBetaSearch
                 _hardTimeMs = Math.Min(_hardTimeMs, TbResolvedBudgetMs * 4);
                 _maxTimeMs = _hardTimeMs;
                 _softDeadlineMs = _softTimeMs;
+            }
+
+            // Defensive: a root filter must never leave nothing to search. An
+            // empty root list makes every iteration fail low against a window
+            // that widens to infinity and stays there, so the loop below never
+            // ends and no bestmove is ever sent. Answer from the legal moves.
+            if (_rootMoves.Count == 0)
+            {
+                MoveGenerator.GenerateLegalMoves(board, _rootMoves);
+                if (excludedRootMoves is { Count: > 0 })
+                {
+                    for (int i = 0; i < _rootMoves.Count; i++)
+                    {
+                        if (!excludedRootMoves.Contains(_rootMoves[i]))
+                            continue;
+                        _rootMoves.Swap(i, _rootMoves.Count - 1);
+                        _rootMoves.Truncate(_rootMoves.Count - 1);
+                        i--;
+                    }
+                }
+                if (_rootMoves.Count == 0)
+                    return new SearchResult(Move.None, 0, 0);
+                _incremental?.Reset(board);
+                return StaticFallback(board, _rootMoves);
             }
         }
 
@@ -2835,30 +2937,8 @@ public sealed class AlphaBetaSearch
         // makes that a rook-pawn push, which looks absurd), pick the move with
         // the best static eval - a one-ply search that costs one eval per legal
         // move and guarantees a sane reply even when the real search never ran.
-        if (best.BestMove == Move.None)
-        {
-            MoveList legal = _rootMoves;
-            if (legal.Count > 0)
-            {
-                Move fallbackMove = legal[0];
-                int fallbackVal = int.MinValue;
-                for (int i = 0; i < legal.Count; i++)
-                {
-                    _incremental?.PushMove(board, legal[i]);
-                    board.MakeMove(legal[i]);
-                    _incremental?.CompleteThreatDelta(board);
-                    int val = -_evaluator.Evaluate(board); // child is opponent-relative
-                    board.UnmakeMove();
-                    _incremental?.Pop();
-                    if (val > fallbackVal)
-                    {
-                        fallbackVal = val;
-                        fallbackMove = legal[i];
-                    }
-                }
-                best = new SearchResult(fallbackMove, fallbackVal, _nodes);
-            }
-        }
+        if (best.BestMove == Move.None && _rootMoves.Count > 0)
+            best = StaticFallback(board, _rootMoves);
 
         // Announce the move actually being returned whenever it is not the one
         // the last completed iteration reported. An interrupted iteration and
@@ -2878,6 +2958,30 @@ public sealed class AlphaBetaSearch
         }
 
         return best;
+    }
+
+    // The move among 'legal' (not empty) with the best static evaluation: one
+    // evaluation per move, no search. The incremental evaluator must be
+    // anchored at this root.
+    private SearchResult StaticFallback(Board board, MoveList legal)
+    {
+        Move fallbackMove = legal[0];
+        int fallbackVal = int.MinValue;
+        for (int i = 0; i < legal.Count; i++)
+        {
+            _incremental?.PushMove(board, legal[i]);
+            board.MakeMove(legal[i]);
+            _incremental?.CompleteThreatDelta(board);
+            int val = -_evaluator.Evaluate(board); // child is opponent-relative
+            board.UnmakeMove();
+            _incremental?.Pop();
+            if (val > fallbackVal)
+            {
+                fallbackVal = val;
+                fallbackMove = legal[i];
+            }
+        }
+        return new SearchResult(fallbackMove, fallbackVal, _nodes);
     }
 
     // Root node. Separated from Negamax because it must track WHICH move is
@@ -3281,7 +3385,8 @@ public sealed class AlphaBetaSearch
     private readonly sbyte[] _wdlCacheValues = new sbyte[WdlCacheSize]; // 0 empty, 1 no answer, 10 + WDL
     private int _wdlCacheGeneration = -1;
 
-    private bool ProbeWdlCached(Board board, out Tablebases.WdlScore wdl)
+    // 'fromFile': false on a memo hit, true when the probe went to the tables.
+    private bool ProbeWdlCached(Board board, out Tablebases.WdlScore wdl, out bool fromFile)
     {
         int generation = Tablebases.Syzygy.Generation;
         if (generation != _wdlCacheGeneration)
@@ -3296,9 +3401,11 @@ public sealed class AlphaBetaSearch
         if (cached != 0 && _wdlCacheKeys[slot] == key)
         {
             wdl = cached == 1 ? default : (Tablebases.WdlScore)(cached - 10);
+            fromFile = false;
             return cached != 1;
         }
 
+        fromFile = true;
         bool ok = Tablebases.Syzygy.ProbeWdl(board, out wdl);
         _wdlCacheKeys[slot] = key;
         _wdlCacheValues[slot] = ok ? (sbyte)(10 + (int)wdl) : (sbyte)1;
@@ -3317,7 +3424,10 @@ public sealed class AlphaBetaSearch
     private void FilterRootMovesShared(Board board)
     {
         RootTablebaseMemo? memo = RootTbMemo;
-        if (memo is null || SearchSerial == 0)
+        // Read once: the coordinator writes it from another thread, and the
+        // compare and the stamp below must name the same search.
+        int serial = SearchSerial;
+        if (memo is null || serial == 0)
         {
             FilterRootMovesByTablebase(board);
             return;
@@ -3325,12 +3435,22 @@ public sealed class AlphaBetaSearch
 
         lock (memo)
         {
-            if (memo.Serial == SearchSerial)
+            if (memo.Serial == serial)
             {
                 int kept = 0;
                 for (int i = 0; i < _rootMoves.Count; i++)
                     if (Array.IndexOf(memo.RootMoves, _rootMoves[i]) >= 0)
                         _rootMoves.Swap(kept++, i);
+                // A ranking that keeps none of this root's moves belongs to
+                // another position (every worker's list holds the moves the
+                // ranking kept). Nothing was swapped, so the list is intact:
+                // rank it here instead of searching an empty root, which spins
+                // the aspiration loop forever.
+                if (kept == 0)
+                {
+                    FilterRootMovesByTablebase(board);
+                    return;
+                }
                 _rootMoves.Truncate(kept);
                 _rootLostInTb = memo.LostInTb;
                 _rootTbResolved = memo.TbResolved;
@@ -3349,7 +3469,7 @@ public sealed class AlphaBetaSearch
             memo.TbResolved = _rootTbResolved;
             memo.InTb = _rootInTb;
             memo.TbHits = TbHits - hitsBefore;
-            memo.Serial = SearchSerial;
+            memo.Serial = serial;
         }
     }
 
@@ -3388,9 +3508,13 @@ public sealed class AlphaBetaSearch
         //
         // BlessedLoss is what makes this safe to separate. There the fifty-move
         // rule genuinely can still save the game, so stretching DTZ is the
-        // correct play and the filter must keep applying. A plain Loss cannot
-        // be saved by anything, so there is nothing left to protect and the
-        // search should be free to pick the most resilient practical try.
+        // correct play and the filter must keep applying. A plain Loss is
+        // plain only for a ZEROED counter - the tables know nothing of the
+        // clock - so with the counter already high the rule can save it too
+        // (corrected 2026-10-04: this comment used to say a plain Loss cannot
+        // be saved by anything). That case is ranked first, below; a loss no
+        // move can save has nothing left to protect, and the search should be
+        // free to pick the most resilient practical try.
         //
         // _rootInTb is set on the way out and that is not optional: it is what
         // switches off the flat in-search tablebase scores. Without it every
@@ -3412,6 +3536,48 @@ public sealed class AlphaBetaSearch
             && lostRoot == Tablebases.WdlScore.Loss)
         {
             TbHits++;
+
+            // A LOSS THE CLOCK HAS ALREADY SAVED (2026-10-04). The WDL above is
+            // for a zeroed counter; with the counter already high, a move that
+            // keeps the game reversible until it reaches 100 is a draw, and
+            // every capture or pawn move hands the winner a fresh counter. The
+            // code below threw those draws away: 11 to 12 of 30 such test
+            // positions from real endings played a zeroing or too-short move.
+            // So the root is ranked exactly as the reference ranks every root
+            // (RootDtzRank, a repetition counted only when it is a threefold),
+            // and when the best rank is above its draw bound only the
+            // best-ranked group is kept, as the reference searches only its top
+            // tbRank group: a real draw before any save, then the save with the
+            // widest margin over the counter, the one a DTZ one ply off is
+            // least likely to break. The search picks within that group with
+            // the in-search probe off, as for any root the tables resolved.
+            // The pre-check skips the ranking when even the root's own distance
+            // cannot reach the rule; 98, not 100, because a stored DTZ may be
+            // one ply off.
+            if (Syzygy50MoveRule && board.HalfmoveClock > 0
+                && Tablebases.Syzygy.ProbeDtz(board, out int rootDtz)
+                && -rootDtz + board.HalfmoveClock > 98)
+            {
+                Span<int> saveRanks = stackalloc int[n];
+                if (TryRankRootMovesByDtz(board, saveRanks, out int bestSave, threefoldOnly: true))
+                {
+                    const int drawBound = -(MaxDtz / 2 - 100);
+                    if (bestSave > drawBound)
+                    {
+                        var saves = new MoveList();
+                        for (int i = 0; i < n; i++)
+                            if (saveRanks[i] == bestSave)
+                                saves.Add(_rootMoves[i]);
+                        _rootMoves.Clear();
+                        for (int i = 0; i < saves.Count; i++)
+                            _rootMoves.Add(saves[i]);
+                        _rootTbResolved = true;
+                        _rootInTb = true;
+                        return;
+                    }
+                }
+            }
+
             _rootLostInTb = true;
 
             // The one lost case where DTZ IS resistance (added 2026-09-07): no
@@ -3425,6 +3591,8 @@ public sealed class AlphaBetaSearch
             // of this kind, and with the probe alone 4 of them still walked
             // into a mate the search could not see. A slack band of a few
             // plies keeps the search a choice among the longest defences.
+            // Threefold only here too: a twofold ranked as a draw would take
+            // the band over with a move the winner simply declines to repeat.
             Color us = board.SideToMove;
             bool pawnless = board.Pieces(us, PieceType.Pawn) == 0;
             bool nothingToTake = true;
@@ -3434,7 +3602,7 @@ public sealed class AlphaBetaSearch
             if (pawnless && nothingToTake)
             {
                 Span<int> lostRanks = stackalloc int[n];
-                if (TryRankRootMovesByDtz(board, lostRanks, out int longest))
+                if (TryRankRootMovesByDtz(board, lostRanks, out int longest, threefoldOnly: true))
                 {
                     const int resistSlack = 4;
                     var resist = new MoveList();
@@ -3546,10 +3714,19 @@ public sealed class AlphaBetaSearch
             _rootMoves.Add(keep[i]);
     }
 
+    // 'threefoldOnly': a root move counts as a repetition draw only when it
+    // completes a true threefold, as the reference ranks every root
+    // (is_repetition(1)). The lost-root callers need it: a position seen once
+    // before is no draw, the winner simply does not repeat, and ranking it 0
+    // kept such a move as a "save" (2 of 60 four-ply histories looping back to
+    // the clock-save test positions played a loss that way). The won-root
+    // caller keeps the twofold rule it was measured with; there a draw rank
+    // only drops a move from the winning set.
     private bool TryRankRootMovesByDtz(Board board, Span<int> ranks,
-                                       out int bestRank)
+                                       out int bestRank, bool threefoldOnly = false)
     {
         bestRank = int.MinValue;
+        int repetitionDraw = threefoldOnly ? 2 : 1;
         int rule50Count = board.HalfmoveClock;
         bool repeated = board.HasRepeated();
         var replies = new MoveList();
@@ -3569,7 +3746,7 @@ public sealed class AlphaBetaSearch
                 dtz = ok ? Tablebases.Syzygy.DtzBeforeZeroing(rootWdl) : 0;
             }
             else if ((Syzygy50MoveRule && board.HalfmoveClock >= 100)
-                     || board.CountRepetitions() >= 1)
+                     || board.CountRepetitions() >= repetitionDraw)
             {
                 // A reversible root move that immediately reaches a draw must
                 // rank as a draw, regardless of the counter-free TB verdict.
@@ -3807,6 +3984,10 @@ public sealed class AlphaBetaSearch
             // its switch: the node-type rule non-PV only on the corrected
             // labels, the ttMove history bonus scaled and non-PV only, and
             // the reference's fifty-move guard on the whole cutoff.
+            //
+            // No HindsightBeforeTt: the hindsight depth rules applied to the
+            // depth this test compares, as the reference orders them, lost
+            // (-13.1 +/- 15.2 over 820 games, H0, 2026-10-04).
             if (entry.Depth >= depth && excluded == Move.None
                 && (!UseTtNoPvCutoff || !pvWindow)
                 && (!UseTtRule50Guard || board.HalfmoveClock < 96)
@@ -3870,10 +4051,15 @@ public sealed class AlphaBetaSearch
         // Infinity means no cap.
         int tbCeiling = Infinity;
         // TbDrawProbeAlways: the clock==0 gate below exists for the 50-move
-        // rule's sake, and that rule can only ever turn a WIN into a draw -
-        // it never turns a genuine draw into anything else, and a loss for
-        // the side to move stays a loss regardless of the clock (the rule
-        // only protects the side ahead). Gating draw and loss recognition on
+        // rule's sake. That rule never turns a genuine draw into anything
+        // else. It CAN turn a loss into a draw, exactly as it turns a win
+        // into one (a loss whose zeroing move the counter reaches first is a
+        // draw): the premise this comment shipped with, that a loss stays a
+        // loss regardless of the clock, was false (corrected 2026-10-04).
+        // So a loss probed here at a high clock may really be a fifty-move
+        // draw; the behaviour is unchanged and measured as it is, and the
+        // root, where the move is chosen, now ranks such losses by DTZ and
+        // the clock (FilterRootMovesByTablebase). Gating draw recognition on
         // the clock as well was found 2026-09-23 investigating a real bot
         // game (a K+R vs K+R+B ending, WDL=0 confirmed against the tables
         // directly): with no captures for many plies the clock almost never
@@ -3891,7 +4077,19 @@ public sealed class AlphaBetaSearch
             && (tbClockOk || UseTbDrawProbeAlways) && ply > 0
             && excluded == Move.None)
         {
-            if (ProbeWdlCached(board, out var wdlScore))
+            bool probed = ProbeWdlCached(board, out var wdlScore, out bool fromFile);
+
+            // A probe that reached the file may have waited on the disk: the
+            // tables are memory-mapped and a cold page is a blocking read,
+            // while the regular stop check only runs every StopCheckInterval
+            // nodes. Check the clock and the stop request right here, so a
+            // stop waits for one probe at most (the reference forces a time
+            // check at the next node for the same reason). Not the node
+            // limit: fixed-node and fixed-depth searches stay identical.
+            if (fromFile && (_cancellation.IsCancellationRequested || ElapsedMs >= _maxTimeMs))
+                _stopped = true;
+
+            if (probed)
             {
                 // With the option on and the clock gate the only reason this
                 // node was reached, a WIN cannot be trusted yet: skip it and
@@ -3950,6 +4148,9 @@ public sealed class AlphaBetaSearch
         // ordering will be poor and the full depth is not worth its cost.
         // Search one ply shallower; if the node matters, a later (deeper)
         // visit will find a TT move waiting and search it properly.
+        // The reference's placement (after the null move, from depth 6, PV
+        // and expected cut nodes only) was measured and removed, IirReference
+        // in the audit block of 2026-10-04.
         if (depth >= 4 && ttMove == Move.None && excluded == Move.None)
         {
             if (SearchStats) _stIir++;
@@ -4590,6 +4791,11 @@ public sealed class AlphaBetaSearch
         int triedCaptureCount = 0;
         Span<Move> triedQuiets = _triedQuiets.AsSpan(ply * MaxTriedQuiets, MaxTriedQuiets);
         int triedQuietCount = 0;
+        // In check, the moves that cannot answer it (see EvasionTargets) are
+        // dropped before they are counted, scored or made. Every one of them
+        // used to be made, found illegal and unmade, with its history read and
+        // its accumulator pushed on the way.
+        ulong evasionTargets = inCheck ? EvasionTargets(board, stm) : ~0UL;
 
         for (int i = 0; ; i++)
         {
@@ -4630,6 +4836,8 @@ public sealed class AlphaBetaSearch
                 continue; // The generators re-emit the TT move; already served.
             if (move == excluded)
                 continue; // Singular verification searches everything BUT this.
+            if (inCheck && CannotEvade(board, move, evasionTargets))
+                continue;
             moveCount++;
             bool isQuiet = !move.IsCapture && !move.IsPromotion;
 
@@ -4830,6 +5038,9 @@ public sealed class AlphaBetaSearch
 
                 // A quiet move that loses material outright by SEE is not the
                 // one that rescues a node; the bar tightens with depth squared.
+                // 23 in our centipawns is about twice the reference's width
+                // (its 23 is in units where a pawn is 208); its width, 11,
+                // measured flat (QuietSeeTight, removed 2026-10-04).
                 if (UseQuietSeePrune && depth <= 8
                     && StaticExchangeEvaluator.Evaluate(board, move) < -23 * depth * depth)
                     continue;
@@ -5599,14 +5810,15 @@ public sealed class AlphaBetaSearch
     // Scores are fail-soft (the real bestScore, never the alpha/beta rail), so
     // callers receive the tightest bound this node actually established.
     //
-    // NOT ported here, deliberately: the reference's tuned quiescence constants
-    // - stand-pat beta softening (441/583 and 462/562 in 1024ths), futilityBase
-    // = staticEval + 306, the moveCount > 2 cut, and its SEE >= -74 threshold
-    // (ours prunes at SEE >= 0). Those are heuristic constants and the project
-    // rule is that they do not transfer without their ecosystem; they get their
-    // own measured block. The TT probe/store at quiescence depth is also left
-    // out: measured in the 5E campaign, depth-0 entries flooded the clusters
-    // and evicted main-search entries (d15 nodes ROSE 1.35M -> 1.75M, nps -11%).
+    // The reference's quiescence constants, as they stand here: the futility
+    // base (staticEval + 306 in its units) and the SEE floor (-74) are ported
+    // at x0.48 (QsFutilityMargin 147, QsSeeThreshold 36); the stand-pat beta
+    // softening (441/583 and 462/562 in 1024ths) was measured and removed
+    // (the FailHighDamping tombstone); the moveCount > 2 cut with its
+    // recapture and check exemptions was measured and removed
+    // (QsMoveCountPrune, -5.0 +/- 11.3 over 1,465 games, H0, 2026-10-04).
+    // The table is probed for a cutoff off the PV and written at depth 0
+    // with a real bound (see both sites).
     // pvHint (PvWindowEarly): 1 or 0 when the caller knows whether the window
     // it passes was a PV window before its own draw-rule narrowing; -1 means
     // take the window as received.
@@ -5782,6 +5994,21 @@ public sealed class AlphaBetaSearch
         // and promotions only, which is what keeps quiescence finite.
         MoveList moves = _moveLists[ply];
         MoveGenerator.GeneratePseudoLegalMoves(board, moves, capturesOnly: !inCheck);
+        if (inCheck)
+        {
+            // Drop the moves that cannot answer the check before they are
+            // scored (see EvasionTargets). The ordering sort is a stable
+            // insertion sort, so the survivors keep their relative order.
+            ulong qsTargets = EvasionTargets(board, board.SideToMove);
+            int kept = 0;
+            for (int k = 0; k < moves.Count; k++)
+            {
+                Move m = moves[k];
+                if (!CannotEvade(board, m, qsTargets))
+                    moves.Moves[kept++] = m;
+            }
+            moves.Truncate(kept);
+        }
         if (inCheck)
             MovePicker.Order(moves, board, Move.None, _killers, _history, ply,
                 contHist: default, counterMove: Move.None,

@@ -184,4 +184,61 @@ public class TimeManagerTests
         Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
         Assert.True(sw.ElapsedMilliseconds < 1_500, $"took {sw.ElapsedMilliseconds}ms");
     }
+
+    // 2026-10-04: a six-fold clock lead (ClockLead's cap) on 8 s plus 1 s
+    // clamps the optimum onto the maximum. The budget is still a clock
+    // budget, and the search must know it: soft == hard alone used to read as
+    // an explicit movetime, and a position with one legal move then spent the
+    // whole 6.3 s instead of answering at once.
+    [Fact]
+    public void ClampedClockBudget_IsClockManaged()
+    {
+        SearchLimits limits = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        Assert.Equal(limits.SoftTimeMs, limits.HardTimeMs);
+        Assert.True(limits.ClockManaged);
+        Assert.True(limits.IsClockMode);
+        Assert.False(SearchLimits.Time(500).IsClockMode);
+    }
+
+    [Fact]
+    public void ClampedClockBudget_OneLegalMove_AnswersAtOnce()
+    {
+        // White's king on a1 is in check from the rook, a2 is defended by the
+        // black king, b1 is the only square.
+        var board = new Board("8/8/8/8/8/1k6/r7/K7 w - - 0 1");
+        Assert.Single(MoveGenerator.GenerateLegalMoves(board));
+        var engine = new ChessEngine();
+        engine.FindBestMove(board, SearchLimits.Depth(1)); // warm-up, off the clock
+
+        SearchLimits limits = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        var sw = Stopwatch.StartNew();
+        SearchResult result = engine.FindBestMove(board, limits);
+        sw.Stop();
+        Assert.Equal(MoveGenerator.GenerateLegalMoves(board)[0], result.BestMove);
+        Assert.True(sw.ElapsedMilliseconds < 50, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void MoveTime_IsStillSpentInFull()
+    {
+        var engine = new ChessEngine();
+        var board = new Board();
+        engine.FindBestMove(board, SearchLimits.Depth(1)); // warm-up
+        var sw = Stopwatch.StartNew();
+        engine.FindBestMove(board, SearchLimits.Time(300));
+        sw.Stop();
+        Assert.True(sw.ElapsedMilliseconds >= 280, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    // ClockOptimumHalfMax (off by default): the optimum may not exceed half
+    // the maximum, so the clamped case above keeps room to extend.
+    [Fact]
+    public void HalfMax_CapsTheOptimumAtHalfTheMaximum()
+    {
+        SearchLimits plain = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        SearchLimits half = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600, halfMax: true);
+        Assert.Equal(plain.HardTimeMs, half.HardTimeMs);
+        Assert.Equal(half.HardTimeMs / 2, half.SoftTimeMs);
+        Assert.True(half.ClockManaged);
+    }
 }

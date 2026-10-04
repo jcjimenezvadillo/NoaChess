@@ -65,4 +65,39 @@ public class HelperQuarantineTests
             Hook.SetValue(null, null);
         }
     }
+
+    // 2026-10-04: a main worker that threw (here, a progress sink that fails)
+    // used to leave every helper searching forever. The stop was only sent on
+    // the normal path, and disposing the linked token source uncancelled also
+    // unlinked it from the caller's token, so helpers on unlimited limits had
+    // nothing left that could stop them. The next search then waited out the
+    // watchdog and quarantined all of them.
+    [Fact]
+    public void AMainWorkerThatThrowsStillStopsItsHelpers()
+    {
+        var engine = new ChessEngine { Threads = 4 };
+        var messages = new List<string>();
+        engine.Diagnostic += m => { lock (messages) messages.Add(m); };
+        var board = new Board();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            engine.FindBestMove(board, SearchLimits.Time(5000), progress: new ThrowingProgress(atDepth: 3)));
+
+        var sw = Stopwatch.StartNew();
+        SearchResult next = engine.FindBestMove(board, SearchLimits.Time(300));
+        sw.Stop();
+        Assert.Contains(next.BestMove, MoveGenerator.GenerateLegalMoves(board));
+        Assert.True(sw.ElapsedMilliseconds < 2500, $"the next search took {sw.ElapsedMilliseconds} ms");
+        lock (messages)
+            Assert.DoesNotContain(messages, m => m.Contains("quarantined"));
+    }
+
+    private sealed class ThrowingProgress(int atDepth) : IProgress<SearchProgress>
+    {
+        public void Report(SearchProgress value)
+        {
+            if (value.Depth >= atDepth)
+                throw new InvalidOperationException("progress sink failed");
+        }
+    }
 }

@@ -647,6 +647,10 @@ public static class NnueInference
         int lanes = Vector<short>.Count;
         int inputs = 2 * ftOut;
 
+        if (Avx2.IsSupported && net.L1WeightsByPair is not null
+            && ftOut % Vector256<short>.Count == 0 && net.QbShift >= 0)
+            return EvaluateInt16Sparse(net, stmAccumulator, oppAccumulator, bucket);
+
         var zero = Vector<short>.Zero;
         var qaVec = new Vector<short>((short)qa);
 
@@ -776,6 +780,118 @@ public static class NnueInference
                 }
                 hidden[o] = net.L1Bias[biasBase + o] + Vector.Sum(accum);
             }
+        }
+
+        return FinishOutput(net, hidden, bucket);
+    }
+
+    // ---- ARCH 1, sparse inputs (audit of 2026-10-04) ----
+    //
+    // After the clamp to [0, QA] most of the feature transformer's outputs are
+    // exactly zero - 79% of them on the shipping net, as the audit counted -
+    // and the dense kernel above multiplies every one of them by every row. This
+    // one walks only the input PAIRS with a nonzero activation: the pair is
+    // broadcast as one int32 and VPMADDWD against that pair's column for eight
+    // outputs at a time (L1WeightsByPair holds the columns contiguously),
+    // accumulating straight into the bias.
+    //
+    // EXACT, not approximate: every term is an integer product, integer
+    // addition gives the same int32 whatever the order (and the bound in
+    // FinishOutput keeps these sums far from wrapping anyway), and a pair
+    // whose two activations are both zero contributes exactly zero to every
+    // output - which is all this skips. The parity tests assert it against
+    // the scalar reference.
+    [SkipLocalsInit]
+    private static int EvaluateInt16Sparse(NnueNetwork net, short[] stmAccumulator,
+                                           short[] oppAccumulator, int bucket)
+    {
+        int ftOut = net.FtOutputs;
+        int inputs = 2 * ftOut;
+        int pairs = inputs / 2;
+        int l1 = net.L1Outputs;
+
+        // Clamp into [stm | opp] and record which int32 pairs are nonzero,
+        // eight pairs per 16 activations.
+        Span<short> act = stackalloc short[inputs];
+        Span<ulong> masks = stackalloc ulong[(pairs + 63) / 64];
+        masks.Clear();
+        ref short sRef = ref MemoryMarshal.GetArrayDataReference(stmAccumulator);
+        ref short oRef = ref MemoryMarshal.GetArrayDataReference(oppAccumulator);
+        ref short aRef = ref MemoryMarshal.GetReference(act);
+        var zero = Vector256<short>.Zero;
+        var qaVec = Vector256.Create((short)net.QA);
+        for (int i = 0; i < ftOut; i += Vector256<short>.Count)
+        {
+            var a = Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref sRef, (nuint)i), zero), qaVec);
+            a.StoreUnsafe(ref aRef, (nuint)i);
+            ulong nz = ~Vector256.ExtractMostSignificantBits(
+                Vector256.Equals(a.AsInt32(), Vector256<int>.Zero)) & 0xFFUL;
+            int bit = i / 2;
+            masks[bit >> 6] |= nz << (bit & 63);
+
+            var b = Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref oRef, (nuint)i), zero), qaVec);
+            b.StoreUnsafe(ref aRef, (nuint)(ftOut + i));
+            ulong nz2 = ~Vector256.ExtractMostSignificantBits(
+                Vector256.Equals(b.AsInt32(), Vector256<int>.Zero)) & 0xFFUL;
+            int bit2 = (ftOut + i) / 2;
+            masks[bit2 >> 6] |= nz2 << (bit2 & 63);
+        }
+
+        ref int actPairs = ref Unsafe.As<short, int>(ref aRef);
+        ref short wRef = ref MemoryMarshal.GetArrayDataReference(net.L1WeightsByPair!);
+        ref int biasRef = ref MemoryMarshal.GetArrayDataReference(net.L1Bias);
+        nuint biasBase = (nuint)(bucket * l1);
+        nuint wBase = (nuint)(bucket * l1 * inputs);
+        nuint pairStride = (nuint)(2 * l1); // shorts per pair column
+
+        Span<int> hidden = stackalloc int[l1];
+        ref int hRef = ref MemoryMarshal.GetReference(hidden);
+
+        // Thirty-two outputs per pass in four independent chains (the shipping
+        // width is exactly one pass), then eight at a time for any remainder.
+        int g = 0;
+        for (; g + 32 <= l1; g += 32)
+        {
+            var acc0 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g);
+            var acc1 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 8);
+            var acc2 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 16);
+            var acc3 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 24);
+            for (int w = 0; w < masks.Length; w++)
+            {
+                ulong m = masks[w];
+                while (m != 0)
+                {
+                    int p = (w << 6) + BitOperations.TrailingZeroCount(m);
+                    m &= m - 1;
+                    var x = Vector256.Create(Unsafe.Add(ref actPairs, p)).AsInt16();
+                    nuint col = wBase + (nuint)p * pairStride + (nuint)(2 * g);
+                    acc0 = Avx2.Add(acc0, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col)));
+                    acc1 = Avx2.Add(acc1, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 16)));
+                    acc2 = Avx2.Add(acc2, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 32)));
+                    acc3 = Avx2.Add(acc3, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 48)));
+                }
+            }
+            acc0.StoreUnsafe(ref hRef, (nuint)g);
+            acc1.StoreUnsafe(ref hRef, (nuint)g + 8);
+            acc2.StoreUnsafe(ref hRef, (nuint)g + 16);
+            acc3.StoreUnsafe(ref hRef, (nuint)g + 24);
+        }
+        for (; g < l1; g += 8)
+        {
+            var acc = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g);
+            for (int w = 0; w < masks.Length; w++)
+            {
+                ulong m = masks[w];
+                while (m != 0)
+                {
+                    int p = (w << 6) + BitOperations.TrailingZeroCount(m);
+                    m &= m - 1;
+                    var x = Vector256.Create(Unsafe.Add(ref actPairs, p)).AsInt16();
+                    nuint col = wBase + (nuint)p * pairStride + (nuint)(2 * g);
+                    acc = Avx2.Add(acc, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col)));
+                }
+            }
+            acc.StoreUnsafe(ref hRef, (nuint)g);
         }
 
         return FinishOutput(net, hidden, bucket);

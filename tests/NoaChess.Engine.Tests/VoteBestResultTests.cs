@@ -151,4 +151,26 @@ public class VoteBestResultTests
 
         Assert.Equal(mateFound, chosen.BestMove);
     }
+
+    // 2026-10-04: with SmpVoteAll on, the vote floor was max(1, main - 1), so a
+    // main worker stopped before its first iteration completed (depth 0, its
+    // static fallback move) fell out of its own vote, and the comparison that
+    // reads the main's tally threw KeyNotFoundException.
+    [Fact]
+    public void VoteAll_AMainWorkerWithNoCompletedIterationStillVotes()
+    {
+        MethodInfo method = typeof(ChessEngine).GetMethod(
+            "VoteBestResult", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var engine = new ChessEngine { UseSmpVoteAll = true };
+        Move fallback = MoveOf(12, 28);
+        Move helperMove = MoveOf(11, 27);
+
+        var chosen = (SearchResult)method.Invoke(engine, [new SearchResult[]
+        {
+            new(fallback, 30, 100, 0),
+            new(helperMove, 50, 90_000, 3),
+        }])!;
+
+        Assert.Equal(helperMove, chosen.BestMove);
+    }
 }

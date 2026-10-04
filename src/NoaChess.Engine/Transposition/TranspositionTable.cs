@@ -212,6 +212,10 @@ public sealed unsafe class TranspositionTable
                     target.StaticEval = staticEval;
                 return;
             }
+            // No TtMoveOnKeep (a refused store still writing its new move, as
+            // the reference writes the move before this test): measured
+            // 2026-10-04 at 100,000 fixed nodes, +2.3 +/- 6.7 over 4,000
+            // games, LLR -2.32, undecided at the cap; removed.
             if (bound != BoundType.Exact && depth < target.Depth - 4)
                 return;
         }

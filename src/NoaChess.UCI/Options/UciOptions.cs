@@ -149,7 +149,19 @@ public sealed class UciOptions
     // games, with zero time forfeits - it lost on chess, not on the clock.
     // Kept inert; the full record is in AlphaBetaSearch.ApplyClockLimits.
     public bool PonderInPlace { get; private set; }
-    public bool PonderContinue { get; private set; }
+    // ON by default since 5.9.25: on the Lichess bots it took the instant
+    // ponderhit replies from 11 of 32 to 0 of 13 in the first game, and the
+    // 180+2 ponder gauntlet against three foreign engines read +8 Elo for it
+    // (inside the noise) with no time forfeit.
+    public bool PonderContinue { get; private set; } = true;
+    // The clock lead PonderContinue needs, in percent of the opponent's clock
+    // (125 = a quarter more; 100 = equal clocks or better).
+    public int PonderContinueLead { get; private set; } = 125;
+    // Cap the clock optimum at half the move's hard maximum (see
+    // TimeManager.FromClock). Off until a ponder-on clock match against
+    // foreign engines on a quiet machine says otherwise; fixed-node SPRTs
+    // cannot see it.
+    public bool ClockOptimumHalfMax { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -292,7 +304,9 @@ public sealed class UciOptions
         output.WriteLine("option name UCI_Opponent type string default <empty>");
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
-        output.WriteLine("option name PonderContinue type check default false");
+        output.WriteLine("option name PonderContinue type check default true");
+        output.WriteLine("option name PonderContinueLead type spin default 125 min 0 max 1000");
+        output.WriteLine("option name ClockOptimumHalfMax type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
@@ -600,6 +614,12 @@ public sealed class UciOptions
             case "pondercontinue" when bool.TryParse(value, out bool pcn):
                 PonderContinue = pcn;
                 return "PonderContinue";
+            case "pondercontinuelead" when int.TryParse(value, out int pcl):
+                PonderContinueLead = Math.Clamp(pcl, 0, 1000);
+                return "PonderContinueLead";
+            case "clockoptimumhalfmax" when bool.TryParse(value, out bool ohm):
+                ClockOptimumHalfMax = ohm;
+                return "ClockOptimumHalfMax";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;

@@ -21,9 +21,13 @@ namespace NoaChess.Engine.TimeManagement;
 // earlier versions; MoveOverhead per expected move absorbs GUI latency.
 public static class TimeManager
 {
+    // 'halfMax' (ClockOptimumHalfMax, off by default): the optimum may not
+    // exceed half the maximum, so the dynamic factors always keep room to
+    // extend a move that turns out dangerous. A large clock lead or a low
+    // clock otherwise clamps the optimum onto the maximum itself.
     public static SearchLimits FromClock(long remainingMs, long incrementMs, int moveOverheadMs,
                                          int? movesToGo = null, int gamePly = 0,
-                                         int timeScalePercent = 100)
+                                         int timeScalePercent = 100, bool halfMax = false)
     {
         long time = Math.Max(1, remainingMs);
 
@@ -171,6 +175,9 @@ public static class TimeManager
             optimum = Math.Min(optimum, sustainableOptimum);
             maximum = Math.Min(maximum, sustainableMaximum);
         }
+
+        if (halfMax)
+            optimum = Math.Min(optimum, Math.Max(1, maximum / 2));
 
         if (optimum > maximum)
             optimum = maximum;
