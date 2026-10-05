@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Linq;
+using NoaChess.Engine.Search;
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
@@ -312,6 +314,10 @@ public sealed class UciOptions
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
         output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
+        // The search constants open to a joint retune (see SearchParams), one
+        // spin each, defaulting to the engine's value (the 2026-10-05 SPSA).
+        foreach (SearchParams.Param p in SearchParams.All)
+            output.WriteLine($"option name Tune_{p.Name} type spin default {p.Default} min {p.Min} max {p.Max}");
     }
 
     // Applies "setoption name <name> value <value>". Returns the canonical
@@ -642,6 +648,21 @@ public sealed class UciOptions
                 return "Debug Log File";
 
             default:
+                // "Tune_<Name>": a SearchParams constant, clamped to its range
+                // and applied at once - they are statics every search thread
+                // reads, so there is nothing to push to the engine or its
+                // helpers. A fractional value (a tuner's raw theta) rounds to
+                // the nearest integer.
+                if (name.StartsWith("tune_", StringComparison.OrdinalIgnoreCase)
+                    && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                       out double tuned)
+                    && SearchParams.Find(name[5..]) is { } param)
+                {
+                    int v = (int)Math.Clamp(Math.Round(tuned, MidpointRounding.AwayFromZero),
+                                            param.Min, param.Max);
+                    param.Set(v);
+                    return "Tune_" + param.Name;
+                }
                 return null;
         }
     }

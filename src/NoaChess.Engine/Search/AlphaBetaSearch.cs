@@ -171,6 +171,14 @@ public sealed class AlphaBetaSearch
     // Selected via the UCI "Profile" option; see EngineProfile.
     public Profiles.EngineProfile Profile { get; set; } = Profiles.EngineProfile.Default;
 
+    // The profile's knobs as this search uses them, resolved at its start:
+    // under the Default profile the aspiration window and the LMR move
+    // threshold come from SearchParams (tunable), every other profile keeps
+    // its recorded values.
+    private int _aspWindow;
+    private int _lmrMinMoves;
+    private int _lmrMinDepth;
+
     // How often (in nodes) the time/cancellation check runs. A power-of-two
     // mask makes the check nearly free.
     private const int StopCheckInterval = 2048;
@@ -415,8 +423,8 @@ public sealed class AlphaBetaSearch
     // The reference's values live in ITS units, where a pawn is 208; ours is
     // 100, so both are converted by that ratio (the project's x0.48 rule,
     // which is exactly 100/208). Margin 306 -> 147, SEE floor -74 -> -36.
-    private const int QsFutilityMargin = 147;
-    private const int QsSeeThreshold = 36; // LosesAtLeast takes it positive.
+    // Now SearchParams.QsFutilityMargin and SearchParams.QsSeeThreshold
+    // (LosesAtLeast takes the threshold positive).
 
     // Victim values for the quiescence futility margin, in our own units.
     private static readonly int[] PieceValueQs = [100, 320, 330, 500, 900, 0, 0];
@@ -473,15 +481,13 @@ public sealed class AlphaBetaSearch
     // contHist p99 630 - combined statScore range ~0.28x the reference's), so
     // every threshold is scaled by that measured ratio, and value-producing
     // divisors additionally by the x0.48 value-unit rule.
+    // The RFP divisor (reference 303 / 0.48 x 0.28) is SearchParams.RfpStatDiv.
     private const int StatScoreOffset = 1250; // reference  4433 x 0.28
-    private const int StatScoreRfpDiv = 180;  // reference 303 / 0.48 x 0.28
 
-    // ProbCut safety margins. As in the reference search, an improving node
+    // ProbCut safety margins (SearchParams.ProbCutMargin, ProbCutImproving,
+    // SmallProbCutMargin). As in the reference search, an improving node
     // gets both a cheaper bar and a shallower verification: the static trend
     // is treated as extra confidence, reducing ProbCut's cost.
-    private const int ProbCutMargin = 150;
-    private const int ProbCutImprovingMargin = 40;
-    private const int SmallProbCutMargin = 428;
     // NMP verification-search state (reference nmpMinPly/nmpColor): while the
     // verification search runs, null moves stay disabled for the verifying
     // side below this ply, so a false null-move cutoff cannot verify itself.
@@ -546,12 +552,28 @@ public sealed class AlphaBetaSearch
     private static int[] BuildLmrTable()
     {
         var table = new int[64 * 64];
+        FillLmrTable(table);
+        return table;
+    }
+
+    // 0.83 + ln(depth) ln(move) / 2.28 at the defaults (0.75 and 2.25 before
+    // the 2026-10-05 tune); both constants are SearchParams in hundredths
+    // (75 / 100.0 and 225 / 100.0 are exactly 0.75 and 2.25, so the pre-tune
+    // values rebuild a table bit-identical to the old literal one).
+    private static void FillLmrTable(int[] table)
+    {
+        double lmrBase = SearchParams.LmrBase / 100.0;
+        double lmrDiv = SearchParams.LmrDiv / 100.0;
         for (int depth = 1; depth < 64; depth++)
             for (int move = 1; move < 64; move++)
                 table[(depth * 64) + move] =
-                    (int)((0.75 + Math.Log(depth) * Math.Log(move) / 2.25) * LmrScale);
-        return table;
+                    (int)((lmrBase + Math.Log(depth) * Math.Log(move) / lmrDiv) * LmrScale);
     }
+
+    // Refills the shared table in place after Tune_LmrBase or Tune_LmrDiv
+    // changed. UCI sets options between searches only, so no search reads it
+    // half-written.
+    internal static void RebuildLmrTable() => FillLmrTable(LmrReductions);
 
     private long _nodes;
 
@@ -2078,6 +2100,10 @@ public sealed class AlphaBetaSearch
 
         _nodes = 0;
         TbHits = 0;
+        bool defaultProfile = ReferenceEquals(Profile, Profiles.EngineProfile.Default);
+        _aspWindow = defaultProfile ? SearchParams.AspWindow : Profile.AspirationWindow;
+        _lmrMinMoves = defaultProfile ? SearchParams.LmrMinMoves : Profile.LmrMinMoves;
+        _lmrMinDepth = Profile.LmrMinDepth;
         if (SearchStats)
             _stMain = _stQs = _stTtHit = _stTtCut = _stTtServed = _stNullTry = _stNullCut
                 = _stCut = _stCutFirst = _stCutTt = _stFutility = _stLmp = _stSeePrune = _stLmr = _stLmrResearch
@@ -2368,7 +2394,7 @@ public sealed class AlphaBetaSearch
             // widening usually resolves them in one cheap retry.
             // The fixed profile window won the final v2.8.2 SPRT. Adaptive
             // narrowing increased re-search cost at short time controls.
-            int window = Profile.AspirationWindow;
+            int window = _aspWindow;
             int alpha = depth >= 3 ? previousScore - window : -Infinity;
             int beta = depth >= 3 ? previousScore + window : Infinity;
 
@@ -2445,7 +2471,9 @@ public sealed class AlphaBetaSearch
                     beta = Math.Min(score + window, Infinity);
                 }
 
-                window *= 2;
+                // Doubling at a growth of 128 (130 by default); always at least
+                // one wider, so no growth setting can retry the same window.
+                window = Math.Max(window + 1, window * SearchParams.AspGrowth / 64);
                 if (window > 1000) // Give up widening: full window.
                 {
                     alpha = -Infinity;
@@ -4151,7 +4179,7 @@ public sealed class AlphaBetaSearch
         // The reference's placement (after the null move, from depth 6, PV
         // and expected cut nodes only) was measured and removed, IirReference
         // in the audit block of 2026-10-04.
-        if (depth >= 4 && ttMove == Move.None && excluded == Move.None)
+        if (depth >= SearchParams.IirDepth && ttMove == Move.None && excluded == Move.None)
         {
             if (SearchStats) _stIir++;
             depth--;
@@ -4307,12 +4335,15 @@ public sealed class AlphaBetaSearch
         // (x0.48) that runs to depth 18; ours asks 85 a ply up to depth 6 and
         // cuts only the clear cases, so the guard only gave up sound cuts.
         // Removed 2026-09-22.
-        if (!inCheck && nonPv && depth <= 6
+        // Margins: SearchParams.RfpMargin per ply, RfpImproving off it when
+        // improving (85 and 85 before the 2026-10-05 tune: the old
+        // 85 x (depth - improving)).
+        if (!inCheck && nonPv && depth <= SearchParams.RfpDepth
             && (UsePruneLossGuard ? beta > -TbScoreBound : beta > -MateBound) && beta < MateBound
             && excluded == Move.None
             && pruningEval >= beta
-            && pruningEval - 85 * (depth - (improving ? 1 : 0))
-               - (ply > 0 ? _stackStatScore[ply - 1] : 0) / StatScoreRfpDiv >= beta)
+            && pruningEval - SearchParams.RfpMargin * depth + (improving ? SearchParams.RfpImproving : 0)
+               - (ply > 0 ? _stackStatScore[ply - 1] : 0) / SearchParams.RfpStatDiv >= beta)
             return pruningEval;
 
         // ---- Null Move Pruning (with verification search) ----
@@ -4356,7 +4387,7 @@ public sealed class AlphaBetaSearch
         // null probe when beta is a mated or tablebase-lost score. Not
         // node-identical even without tablebases (mated betas occur in any
         // search that has seen a mate), so it is measured with the option.
-        if (allowNull && !inCheck && depth >= 3 && ply > 0 && excluded == Move.None
+        if (allowNull && !inCheck && depth >= SearchParams.NmpMinDepth && ply > 0 && excluded == Move.None
             && (!UsePruneLossGuard || beta > -TbScoreBound)
             && (!UseNmpNonPvOnly || nonPv)
             && (!UseNmpCutNodeOnly || cutNode)
@@ -4372,11 +4403,13 @@ public sealed class AlphaBetaSearch
             // keeps its shallow null cutoffs tactically safe (measured here:
             // WAC 249-251/300 vs 257-259 with the old R, and verification
             // onset at 8 neither recovers the tactics nor keeps the nodes).
-            int r = 3 + depth / 4;
+            // SearchParams.NmpBase + depth / NmpDepthDiv (3 + depth / 4).
+            int r = SearchParams.NmpBase + depth / SearchParams.NmpDepthDiv;
             // NmpEvalR: the reference's eval-proportional term on our base R,
-            // (eval - beta) / 168 in its units, 81 here, at most three plies.
+            // (eval - beta) / 168 in its units, 81 here (NmpEvalDiv), at most
+            // three plies.
             if (UseNmpEvalR && pruningEval > beta)
-                r += Math.Min((pruningEval - beta) / 81, 3);
+                r += Math.Min((pruningEval - beta) / SearchParams.NmpEvalDiv, 3);
             // histstats instrument (armed only by the histstats command).
             int nmpBucket = -1;
             long nmpNodes0 = 0;
@@ -4472,8 +4505,8 @@ public sealed class AlphaBetaSearch
         // A promising capture may prune this node only after passing both a
         // qsearch filter and a regular reduced search. The depth floor is the
         // critical correction: no cutoff may rest on qsearch alone.
-        int probBeta = beta + ProbCutMargin
-                     - ProbCutImprovingMargin * (improving ? 1 : 0);
+        int probBeta = beta + SearchParams.ProbCutMargin
+                     - (improving ? SearchParams.ProbCutImproving : 0);
         // Decisive windows - mate OR tablebase band - are excluded, as the
         // reference's is_decisive does (audit 2026-09-08: the guard stopped
         // at MateBound, and a window inside the tablebase-loss band let a
@@ -4566,7 +4599,7 @@ public sealed class AlphaBetaSearch
 
         // A sufficiently deep TT lower bound far above beta can provide the
         // same evidence without repeating the capture probe.
-        int smallProbBeta = beta + SmallProbCutMargin;
+        int smallProbBeta = beta + SearchParams.SmallProbCutMargin;
         // Depth >= 1 is not redundant. Quiescence now writes its own results at
         // depth 0 with a real bound, and at depth 4 the "depth - 4" test alone
         // would let a quiescence score - a truncated, captures-only search -
@@ -4667,7 +4700,7 @@ public sealed class AlphaBetaSearch
         // for a TT move that reached its move loop, and multi-cut returns on
         // the verification's word, so a colliding non-move must not get here.
         bool sg = UseSingularTight;
-        if (depth >= (sg ? 6 + (ttPv ? 1 : 0) : 8) && excluded == Move.None && ttMove != Move.None
+        if (depth >= (sg ? 6 + (ttPv ? 1 : 0) : SearchParams.SeDepth) && excluded == Move.None && ttMove != Move.None
             && ttHit && entry.Depth >= depth - 3 && entry.Bound != BoundType.UpperBound
             && CanReuseTtScore(entry.Score, board.HalfmoveClock)
             && (!sg || (MoveGenerator.IsPseudoLegal(board, ttMove) && !IsShuffling(board, ttMove, ply))))
@@ -4679,8 +4712,9 @@ public sealed class AlphaBetaSearch
             {
                 // Reference margin (59 + 66 * (ttPv && !PvNode)) * depth / 63, x0.48:
                 // singularBeta is compared to a search value, so it is eval-valued.
+                // The shipped form's 2 * depth is SearchParams.SeMargin in 16ths.
                 int singularBeta = sg ? ttScore - (28 + (ttPv && nonPv ? 32 : 0)) * depth / 63
-                                      : ttScore - 2 * depth;
+                                      : ttScore - SearchParams.SeMargin * depth / 16;
                 int score = Negamax(board, (depth - 1) / 2, singularBeta - 1, singularBeta,
                                     ply, allowNull: false, cutNode: cutNode, excluded: ttMove);
                 if (_stopped)
@@ -4994,7 +5028,8 @@ public sealed class AlphaBetaSearch
                 // low depth, the remaining ones are very unlikely to be best.
                 // In a worsening position quiet moves rarely save the node -
                 // halve the count before the cut (reference LMP shape).
-                int lmpThreshold = 3 + depth * depth;
+                // 3 + depth^2 at the defaults (SearchParams.LmpBase, LmpScale 16ths).
+                int lmpThreshold = SearchParams.LmpBase + depth * depth * SearchParams.LmpScale / 16;
                 if (!improving) lmpThreshold /= 2;
                 // HistoryPruneCounts: quiets that HistoryPrune removed use up the
                 // LMP budget too (quietsPruned stays 0 otherwise), so that
@@ -5041,8 +5076,9 @@ public sealed class AlphaBetaSearch
                 // 23 in our centipawns is about twice the reference's width
                 // (its 23 is in units where a pawn is 208); its width, 11,
                 // measured flat (QuietSeeTight, removed 2026-10-04).
-                if (UseQuietSeePrune && depth <= 8
-                    && StaticExchangeEvaluator.Evaluate(board, move) < -23 * depth * depth)
+                if (UseQuietSeePrune && depth <= SearchParams.QuietSeeDepth
+                    && StaticExchangeEvaluator.Evaluate(board, move)
+                       < -SearchParams.QuietSeeMargin * depth * depth)
                     continue;
 
                 // Futility pruning (reference parent-node shape): if the static
@@ -5096,8 +5132,11 @@ public sealed class AlphaBetaSearch
                 // +929 at ttPv) H0, -12.7 +/- 15.2 over 792 games, LLR -2.95.
                 // Inside a package with CutNodeLmr and the quiescence evasion
                 // prune the three slow positives read -5.0 over 741 together.
-                int futilityValue = staticEval + 100 * depth;
-                bool futile = depth <= 4 && futilityValue <= alpha;
+                // staticEval + 100 * depth at depth <= 4 before the
+                // 2026-10-05 tune (FutilityBase 0, FutilityMargin 100).
+                int futilityValue = staticEval + SearchParams.FutilityBase
+                                  + SearchParams.FutilityMargin * depth;
+                bool futile = depth <= SearchParams.FutilityDepth && futilityValue <= alpha;
                 if (futile)
                 {
                     // The exemption is decided FIRST, so the fail-soft
@@ -5172,8 +5211,9 @@ public sealed class AlphaBetaSearch
                 // left; skip it.
                 if (UseCaptureSeePruneDeep
                     ? CaptureSeePrunes(board, move, stm, depth, alpha, bestScore)
-                    : depth <= 2
-                      && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: 100))
+                    : depth <= SearchParams.CapSeeDepth
+                      && StaticExchangeEvaluator.LosesAtLeast(board, move,
+                             threshold: SearchParams.CapSeeMargin))
                 {
                     if (SearchStats) _stSeePrune++;
                     continue;
@@ -5270,7 +5310,7 @@ public sealed class AlphaBetaSearch
                 // engine's checking moves earn their full depth.
                 int reduction = 0;
                 if ((isQuiet || (UseCaptureLmr && move.IsCapture && !move.IsPromotion))
-                    && searched >= Profile.LmrMinMoves && depth >= Profile.LmrMinDepth
+                    && searched >= _lmrMinMoves && depth >= _lmrMinDepth
                     && !inCheck && !board.IsInCheck())
                 {
                     if (SearchStats) _stLmr++;
@@ -5283,8 +5323,10 @@ public sealed class AlphaBetaSearch
                     // whole number of plies, so the single truncation at the
                     // end reproduces the previous per-term integer arithmetic
                     // exactly: floor(a) + k == floor(a + k) for integer k.
+                    // The 1024ths below come from SearchParams (Lmr*); each
+                    // pre-tune value is the literal it replaced.
                     int r = LmrReductions[(Math.Min(depth, 63) * 64) + Math.Min(searched, 63)];
-                    if (nonPv) r += LmrScale;            // Reduce harder off the PV.
+                    if (nonPv) r += SearchParams.LmrNonPv;   // Reduce harder off the PV.
 
                     // 5C statScore term, REOPENED 2026-08-14.
                     //
@@ -5330,7 +5372,7 @@ public sealed class AlphaBetaSearch
                         if (_ssQuiet != null)
                             RecordStatScore(move.IsCapture, statScore);
                         r -= statScore
-                             * (UseHistoryBonus ? PackagedStatScoreScale : 1568) / 4096;
+                             * (UseHistoryBonus ? PackagedStatScoreScale : SearchParams.LmrHistWeight) / 4096;
                     }
 
                     // No base-offset + moveCount LMR pair (the reference's
@@ -5359,7 +5401,7 @@ public sealed class AlphaBetaSearch
                     // statScore covers the same ground from history space.
                     if (UseKillerShallowing
                         && (move == counterMove || _killers.Rank(ply, move) > 0))
-                        r -= LmrScale;
+                        r -= SearchParams.LmrKiller;
 
                     // The reference's correction-magnitude term: a node whose
                     // eval the correction tables moved hard is a node the
@@ -5379,7 +5421,7 @@ public sealed class AlphaBetaSearch
                     // value 1079 in 1024ths (~1.05 plies); a reduction is measured
                     // in plies so neither the value-unit nor history-unit scaling
                     // applies.
-                    if (ttCapture) r += 1079;
+                    if (ttCapture) r += SearchParams.LmrTtCapture;
 
                     // NO cutNode reduction term. The reference's largest LMR
                     // adjuster (r += 4026 at cut nodes) was measured at two
@@ -5424,7 +5466,7 @@ public sealed class AlphaBetaSearch
                         }
                         else
                         {
-                            r -= 1024 + (nonPv ? 0 : 340);
+                            r -= SearchParams.LmrTtPv + (nonPv ? 0 : 340);
                             if (ttHit)
                             {
                                 if (entry.Bound != BoundType.None && FromTT(entry.Score, ply) > alpha)
@@ -5436,7 +5478,7 @@ public sealed class AlphaBetaSearch
 
                     // Position is worsening: the remaining moves are even less
                     // likely to be good - reduce them one extra ply.
-                    if (!improving) r += LmrScale;
+                    if (!improving) r += SearchParams.LmrNotImproving;
 
                     // CutoffCountLmrAllNode: at an expected all-node whose
                     // children have already cut off more than twice, half a
@@ -5539,6 +5581,9 @@ public sealed class AlphaBetaSearch
                             // ported here. Continuation below keeps depth^2:
                             // its shape was measured alone (-5.8, see the 5G
                             // note) and that verdict stands.
+                            // The depth^2 amounts, each scaled by its
+                            // SearchParams 64ths (64 = depth^2 exactly).
+                            int depthSq = depth * depth;
                             int quietMalus = 0;
                             if (UseHistoryBonus)
                             {
@@ -5548,7 +5593,7 @@ public sealed class AlphaBetaSearch
                                     Math.Min(968 * depth - 235, 2244) * 1159 / 1024;
                             }
                             else
-                                _history.AddBonus(stm, move, depth);
+                                _history.Add(stm, move, depthSq * SearchParams.HistBonus / 64);
 
                             // movePieceIdx already holds exactly this: it was
                             // read from the same square of the same position,
@@ -5580,9 +5625,11 @@ public sealed class AlphaBetaSearch
                             // indistinguishable from zero. The levels are what
                             // cost. See ContinuationHistory for the shape.
                             if (prevPiece >= 0)
-                                _contHist[0].AddBonus(prevPiece, prevTo,
-                                                      movePieceIdx, move.To, depth);
+                                _contHist[0].Add(prevPiece, prevTo, movePieceIdx, move.To,
+                                                 depthSq * SearchParams.ContHistBonus / 64);
 
+                            int histMalus = depthSq * SearchParams.HistMalus / 64;
+                            int contMalus = depthSq * SearchParams.ContHistMalus / 64;
                             for (int q = 0; q < triedQuietCount; q++)
                             {
                                 Move tried = triedQuiets[q];
@@ -5594,12 +5641,12 @@ public sealed class AlphaBetaSearch
                                     _history.Add(stm, tried, -quietMalus);
                                 }
                                 else
-                                    _history.AddMalus(stm, tried, depth);
+                                    _history.Add(stm, tried, -histMalus);
                                 int triedPiece =
                                     ContinuationHistory.PieceIndex(stm, board.PieceTypeAt(tried.From));
                                 if (prevPiece >= 0)
-                                    _contHist[0].AddMalus(prevPiece, prevTo,
-                                                          triedPiece, tried.To, depth);
+                                    _contHist[0].Add(prevPiece, prevTo, triedPiece, tried.To,
+                                                     -contMalus);
                             }
                         }
                         else if (move.IsCapture)
@@ -5735,7 +5782,7 @@ public sealed class AlphaBetaSearch
             {
                 // The reference's statScore carries no offset; its divisor
                 // 98 goes x0.28 here (a divisor on our 0.28x history, as
-                // StatScoreRfpDiv does).
+                // SearchParams.RfpStatDiv does).
                 int rawStat = _stackStatScore[ply - 1] + StatScoreOffset;
                 int scale = -241 + Math.Min(59 * depth, 420) - rawStat / 27
                     + (_stackMoveCount[ply - 1] > 9 ? 186 : 0)
@@ -5987,7 +6034,7 @@ public sealed class AlphaBetaSearch
                 return bestScore;
             if (bestScore > alpha)
                 alpha = bestScore;
-            futilityBase = bestScore + QsFutilityMargin;
+            futilityBase = bestScore + SearchParams.QsFutilityMargin;
         }
 
         // In check: every legal reply is a candidate escape. Otherwise captures
@@ -6129,7 +6176,8 @@ public sealed class AlphaBetaSearch
                 // losing capture can still be the move that resolves a
                 // tactic, and ProbCut/NMP verify their captures through here.
                 if (move.IsCapture
-                    && StaticExchangeEvaluator.LosesAtLeast(board, move, threshold: QsSeeThreshold))
+                    && StaticExchangeEvaluator.LosesAtLeast(board, move,
+                           threshold: SearchParams.QsSeeThreshold))
                     continue;
             }
 

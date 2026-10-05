@@ -1,4 +1,5 @@
 ﻿using NoaChess.Core;
+using NoaChess.Engine.Search;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -78,9 +79,10 @@ public static class MovePicker
     // eventual target, but its quiet score also sums FIVE continuation-history
     // levels plus pawn history, where this engine currently sums one. The
     // prior stays until that side is built up.
-    private const int KillerBonus = 4_096;
-    private const int SecondKillerBonus = 3_072;
-    private const int CounterMoveBonus = 2_048;
+    //
+    // Now tunable (SearchParams.KillerBonus and CounterMoveBonus, 4096 and
+    // 2048 before the 2026-10-05 tune); the older killer keeps three quarters
+    // of the newer one's bonus, so a retune cannot invert the two.
 
     // Rough piece values for capture ordering and threat-escape bonuses
     // (index = PieceType; a king never appears as a victim).
@@ -417,16 +419,16 @@ public static class MovePicker
         // Rank 2 is the most recent killer, rank 1 the older one.
         int killerRank = killers.Rank(ply, move);
         if (killerRank == 2)
-            quietScore += KillerBonus;
+            quietScore += SearchParams.KillerBonus;
         else if (killerRank == 1)
-            quietScore += SecondKillerBonus;
+            quietScore += SearchParams.KillerBonus * 3 / 4;
 
         // Not exclusive with the killer bonus: a move that is both the killer
         // at this ply AND the refutation of the opponent's last move carries
         // two independent pieces of evidence, so it should outrank a move
         // carrying only one.
         if (move == counterMove)
-            quietScore += CounterMoveBonus;
+            quietScore += SearchParams.CounterMoveBonus;
 
         if (GivesDirectCheck(board, move, mover, quietContext)
             && !StaticExchangeEvaluator.LosesAtLeast(board, move, CheckSeeThreshold))

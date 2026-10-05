@@ -1,6 +1,9 @@
-127139
+134088
 
-# Regenerated 2026-09-24 against the 5.9.20 tree (127139; the shipped 5.9.19 binary gives the same
+# Regenerated 2026-10-05 against the 5.9.27 tree (134088: the search defaults set to the
+# 2026-10-05 SPSA values; the 5.9.26 SPSA test binary gives the same 134088 with every Tune_ option
+# set to those values, and 127139 at its old defaults). Before that, 2026-09-24 against the
+# 5.9.20 tree (127139; the shipped 5.9.19 binary gives the same
 # 127139, so the 127104 of 5.9.16 had gone stale at 5.9.17/5.9.18 without being regenerated; the net swap
 # of 5.9.20 cannot move it). Before that, 2026-09-22 against the 5.9.16 tree (GoodCaptureSlack,
 # NmpEvalR, TtNoPvCutoff, FutilityFailSoft, ImprovingAboveBeta,
