@@ -1,5 +1,94 @@
 # CHANGELOG
 
+## 2026-10-05 (v5.9.26) - fqblind embedded: a cold 60-epoch anneal pays, the blind-spot labels do not
+
+**`fqblind` embedded.** The cold form of the schedule experiment. fqco5912 (v5.9.20) re-entered the
+original 60-epoch cosine at its epoch 46 and measured +34.3; `fqblind` starts from scratch (no
+`--init-from`) and runs the whole schedule: 60 epochs of a cosine from lr 1e-3 down to 1e-5, lambda
+1.0 to 0.7, otherwise fqco5912's architecture and recipe (HalfKAv2_hm, 128-wide factorized
+transformer, coarse threat lane, one output bucket, QAT at QA 255, the reference-style loss with the
+240/145 constants, no weight decay on the transformer), seed 2, batch 16384. 282 files: the 263 of
+fqco5912's corpus (1,219,446,812 records: datascale2, datascale4, datascale5, selfplay-gen8 and the
+elite WDL shards) plus the 19 files of the blind-spot corpus, sampled at 1.5x their size
+(`--reweight`).
+
+**The blind-spot corpus.** 48,270,285 positions aimed at what the review of the Windows test
+(2026-09-27) found the net misjudging. Elite positions were mined in six groups - opposite-coloured
+bishops with a passed pawn, same-coloured bishops, rook endings with a passed pawn, king attacks,
+large material gaps and pawn tension - then labelled directly (DataGen's label-book mode) and used
+as starting points for self-play, played out with relaxed draw and resign adjudication and tablebase
+WDL results. About 4% of the training rows.
+
+**Training.** The first run on the trainer of v5.9.25. Validation on the leak-free `--val-split
+tail-dedup`: 12,068,759 of the 63,385,725 tail rows (19.04%) were dropped as positions the training
+rows contain, leaving 1,204,331,372 training rows and 51,316,966 validation rows. The run was stopped
+at the end of epoch 1 through `<out>.stop` and resumed exactly through `--resume-state` with the
+loader in its own process (`--loader-process`, `--loader-workers 3`): about 10.5 steps per second
+before, about 21 after; about 62 h in all. Best epoch 59 of 60, validation 0.005989 (on the
+tail-dedup split, so not comparable with the validation losses of earlier nets, read on the leaking
+tail cut). Exported 2026-10-05: `models\nnue\fqblind.noannue`, 5,820,956 bytes, sha256 starting
+cc65210c23bf26ec; verified bit-exact against the engine (44 cp on the start position on both sides).
+Architecture and file size unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco5912** (cutechess, the same 5.9.25 binary on both
+sides, only `EvalFile` differing, fqblind listed first, 8moves_v3 book, elo0=0 elo1=10). The first
+batch stopped at its 6,000-game cap undecided: 1448-1321-3231, +7.4 +/- 6.0, LLR 2.54. A second batch
+of 353 games (96-77-180) took the pooled count to **1544-1398-3411 over 6,353 games, +8.0 Elo, LLR
+3.40, H1**.
+
+**The blind-spot exam: the labels did not fix the evaluation.** Held-out positions, never in the
+training corpus, 300 per group (299 for K and L), each net's static evaluation against an independent
+judge at depth 20; mean absolute error in centipawns, fqco5912 -> fqblind:
+- B1, opposite-coloured bishops with a passer: 255 -> 253
+- B2, same-coloured bishops: 176 -> 173
+- R, rook endings with a passer: 371 -> 369
+- K, king attacks: 173 -> 173
+- L, large material gaps: 666 -> 661
+- P, pawn tension: 68 -> 70
+The rook-ending evaluations are still compressed to about 0.64-0.71 of the judge's. The +8.0 comes
+from the long cold anneal; the blind-spot labels did not move the static evaluation where they were
+aimed. Likely causes: the labels come from our own 6,000-node search, whose evaluation shares the blind
+spots it was meant to correct; the datagen search did not probe the tablebases in-tree (fixed in
+v5.9.25, the audit's item A9), so the endings closest to the tables were labelled blind to them; and
+the corpus is about 4% of the data. The next generation: deeper labels from our own search with the
+tablebases in the search, more weight for those files, and more weight on the game result for them.
+Detail in NNUE_HISTORY.md.
+
+**Also measured since v5.9.25 shipped.**
+- **v5.9.25 against v5.9.24 at the clock** (10+0.1, one thread, no tablebases, the new side first):
+  **+39.7 +/- 21.3 Elo, 78-39-226 over 343 games, LOS 100%, H1.** What separates the two there is
+  the audit's node-identical speed; an early H1 inflates the point estimate.
+- **The audit's remaining reserves**, at 100,000 fixed nodes, option on against off, new side first,
+  [0, 10], all H0: `TbPvCap` + `TbPvFloor` +1.3 +/- 6.9 over 3,753 games; `QuietUnderpromotions` -5.1
+  +/- 11.3 over 1,436; `PvExactHistory` -20.5 +/- 18.1 over 610; `LowPlyHistory` -16.6 +/- 16.8 over
+  711. `EvalDiffHistory` failed its own histstats gate and was not run. None of them is in the 5.9.26
+  code; `TbPvCap` stays the inert option it has been since v5.4.0.
+- **Shipped pruning rules switched off**, one at a time, the same conditions, all H0: `QuietSeePrune`
+  off -3.2 +/- 10.3 over 1,853; `LmpAllDepths` off -3.7 +/- 10.7 over 1,586; `StatScoreLmr` off +0.6
+  +/- 7.5 over 3,277; `CheckExemptFutility` off -5.9 +/- 11.8 over 1,407. With `NmpEvalR` off H0 in
+  v5.9.25, switching none of them off gains anything: the shipped pruning rules stay.
+
+**In progress.** A joint SPSA retune of 45 search constants (40,000 games at 25,000 nodes); its result
+goes to SPRTs before anything ships.
+
+**Versioning.** The next major version, 6.0.0, ships when three things hold: a jointly tuned search
+passes its SPRTs; the next-generation net, with the improved labels, ships; and a CCRL gauntlet shows
+a clear jump (+30 or more over v5.9.23's 3368, or above 3400). See ROADMAP.md.
+
+**Verified.** Search code untouched: only the embedded net and the version string changed. CI node
+count 127139, unchanged (the classical path, which a net swap never moves). 490 tests (128 Core + 362
+Engine).
+
+**Still pending.** `ClockOptimumHalfMax` and the corrected PonderContinue gate (ponder-on clock
+matches against other engines on a quiet box). The quiet-box and 24-thread timing of v5.9.25's speed
+work. The reserves `ContHistByState` and `SharedCorrection` (an NPS A/B and a multi-thread SPRT on a
+quiet box). The QAT rounding of factorized rows, WDL-versus-score row filtering and the tablebase
+relabel of the older corpora (NNUE_HISTORY.md). A gauntlet for the CCRL number.
+
+**Deployment.** Published (Windows + Mac), and both bots run it: the Windows bot from its engine
+folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet not run for this
+version (5.9.23's 3368 CCRL stands).
+
 ## 2026-10-04 (v5.9.25) - node-identical speed and correctness from a full-engine audit, PonderContinue on by default
 
 **Where these came from.** An overnight audit of the whole engine (2026-10-03/04): 66 findings, 30
@@ -158,7 +247,8 @@ numbers kept as comments where they acted, and the reserve never entered it.
 game UWeztPu1 of the 2026-09-27 review, 38.Qf3 never becomes the best move by depth 24 with the
 quiet SEE prune on, and appears at depth 18 with it off): at 100,000 fixed nodes `NmpEvalR` off is
 **H0, -33.0 +/- 22.4 over 401 games**, so `NmpEvalR` stays. `QuietSeePrune`, `LmpAllDepths` and
-`StatScoreLmr` off are still running: pending.
+`StatScoreLmr` off are still running: pending. [Closed after the release, with `CheckExemptFutility`
+off as well: all H0, the rules stay; see v5.9.26.]
 
 **Verified.** CI node count 127139, unchanged; bench60 at depth 12 (8,453,908 nodes) and bench150 at
 depth 11 (11,593,960) identical to 5.9.24 in every position's nodes and best move. Net unchanged

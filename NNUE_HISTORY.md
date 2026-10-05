@@ -3,17 +3,18 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.25, 2026-10-04).** The embedded net is still `fqco5912` (shipped in v5.9.20,
-entry below): fqco592's weights re-annealed over 14 epochs of a real cosine on fqco5911's corpus.
-`fqblind`, a cold 60-epoch anneal with the blind-spot corpus on the trainer rebuilt for v5.9.25, is
-training (first entry below); v5.9.21 to v5.9.25 changed search, time management and the trainer,
-not the net. Before fqco5912, fqco5911 (v5.9.17)
-was fqco592's recipe over a larger corpus, warm-started from `fqco592.pt.partial`; v5.9.18 and
-v5.9.19 changed search only (see CHANGELOG.md). Architecture is HalfKAv2_hm
+**Current state (v5.9.26, 2026-10-05).** The embedded net is `fqblind` (first entry below): a cold
+60-epoch cosine anneal from lr 1e-3 over fqco5912's corpus plus the blind-spot corpus, on the trainer
+rebuilt for v5.9.25; +8.0 Elo, H1 over 6,353 fixed-node games against `fqco5912`. Before it,
+`fqco5912` (v5.9.20) re-annealed fqco592's weights over 14 epochs of a real cosine on fqco5911's
+corpus, and fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus, warm-started from
+`fqco592.pt.partial`; v5.9.18 and v5.9.19, and v5.9.21 to v5.9.25, changed search, time management
+and the trainer, not the net (see CHANGELOG.md). Architecture is HalfKAv2_hm
 with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
 training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
 CCRL: **3368 +/- 46** (v5.9.23 gauntlet on field 2, single-threaded, 58.1% over 240 games; v5.9.19
-read 3364 +/- 40, v5.9.2 3321 +/- 45). 490 tests.
+read 3364 +/- 40, v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 490
+tests.
 
 **Read this before training another generation the same way.** The investigation that explains
 `fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
@@ -25,12 +26,15 @@ schedule at epoch 53 of 60, to nine figures) - and they are exactly the two that
 nothing. The recipe `dump_args.py` reads off a champion checkpoint is a **resume stub**, not a
 recipe: copying it forward again is the most expensive mistake available. The next generation needs
 either a cold 60-epoch anneal or a real re-entry point in the schedule (not its last 12%), not
-another `--epochs 7` run at this learning rate. `--max-records 120000000` in `Train-Fqco5911.ps1` is
+another `--epochs 7` run at this learning rate. [Both forms have since run and both paid: the
+re-entry `fqco5912`, +34.3 over fqco592 (v5.9.20), and the cold 60-epoch `fqblind`, +8.0 over
+fqco5912 (v5.9.26).] `--max-records 120000000` in `Train-Fqco5911.ps1` is
 dead code on the streaming path (`train_streaming` returns before it is read) and should not be
 copied forward as if it limited anything - every run described here consumed its entire corpus,
 every epoch.
 
-**Open issues found by the audit of 2026-10-04, none acted on yet** (a net is training):
+**Open issues found by the audit of 2026-10-04, none acted on yet** (they waited for fqblind, which
+has since finished and shipped in v5.9.26; they belong to the next generation):
 
 - *Quantization with factorization.* Quantization-aware training rounds the real and the virtual
   (factorized) feature-transformer rows separately, while the exporter folds them and rounds the
@@ -56,11 +60,73 @@ every epoch.
 
 ---
 
+## fqblind ships as v5.9.26 (2026-10-05): the cold anneal pays, the blind-spot labels do not
+
+The run is described in the next entry, written while it trained. It finished on 2026-10-05 after
+about 62 h (all 60 epochs on the 282 files, the loader process from epoch 2 on: about 10.5 steps per
+second before it, about 21 after). Best epoch 59 of 60, validation 0.005989 on the tail-dedup split
+(1,204,331,372 training rows, 51,316,966 validation rows after 12,068,759 tail rows, 19.04%, were
+dropped as training positions); that number is not comparable with the validation losses of any
+earlier net, all read on the leaking tail cut. Exported 2026-10-05, 5,820,956 bytes, sha256 starting
+cc65210c23bf26ec; verified bit-exact against the engine (44 cp on the start position on both sides).
+Architecture and file size unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco5912, the same 5.9.25 binary on both sides (only
+`EvalFile` differing, fqblind listed first, 8moves_v3, elo0=0 elo1=10).** The first batch stopped at
+its 6,000-game cap undecided: 1448-1321-3231, +7.4 +/- 6.0, LLR 2.54. A second batch of 353 games
+(96-77-180) took the pooled count to **1544-1398-3411 over 6,353 games, +8.0 Elo, LLR 3.40, H1**.
+
+**The blind-spot exam.** Held-out positions of the six groups, never in the training corpus, 300 per
+group (299 for K and L); each net's static evaluation against an independent judge at depth 20. Mean
+absolute error in centipawns:
+
+| Group | fqco5912 | fqblind |
+|-------|----------|---------|
+| B1, opposite-coloured bishops with a passer | 255 | 253 |
+| B2, same-coloured bishops | 176 | 173 |
+| R, rook endings with a passer | 371 | 369 |
+| K, king attacks | 173 | 173 |
+| L, large material gaps | 666 | 661 |
+| P, pawn tension | 68 | 70 |
+
+The rook-ending evaluations are still compressed to about 0.64-0.71 of the judge's. Nothing here
+moved by more than a few centipawns, so **the +8.0 comes from the long cold anneal, not from the
+blind-spot labels**: they did not fix the static evaluation where they were aimed.
+
+**Why, most likely.**
+- The labels come from our own 6,000-node search, whose evaluation shares the blind spots the corpus
+  was meant to correct: a shallow search does not label correctly what its own evaluation misjudges
+  at that depth.
+- The datagen search did not probe the tablebases in-tree (the `--tb-path` defect, fixed in
+  v5.9.25), so the endings closest to the tables, the rook endings among them, were scored blind to
+  them.
+- The corpus is about 4% of the data (sampled at 1.5x), a small voice against 1.2 billion rows that
+  carry the old judgment.
+
+**Lessons.**
+- The schedule is the lever, again: a cold 60-epoch anneal over the same data, plus 4%, beat a
+  14-epoch re-entry anneal by +8.0. Both forms the "Read this before training" note asked for have now
+  paid.
+- Positions alone do not teach what their labels do not know. A blind-spot corpus is only as good as
+  the search that scores it, and that search has to be deeper than the eval it corrects, or see the
+  answer some other way (the tables, the game result).
+- Measure the target, not only the Elo: the +8.0 alone would have credited the blind-spot corpus;
+  the held-out exam against an independent judge says it did not do its job.
+
+**The next generation.** Deeper labels from our own search with the tablebases probed in the search,
+more weight for the blind-spot files, and more weight on the game result for them; the open issues at
+the top of this file (QAT rounding of factorized rows, the tablebase relabel, results decided on time,
+WDL-versus-score row filtering) belong to the same cycle. Shipping that net is one of the three
+conditions for 6.0.0 (ROADMAP.md).
+
+---
+
 ## fqblind in training, and the trainer rebuilt under it (2026-10-01 to 2026-10-04, v5.9.25)
 
 **Not a shipped net.** v5.9.25 still embeds `fqco5912`. `fqblind` is the long anneal the fqco5912
 result pointed to, and it is still training; it will be judged by its own SPRT when it ends. On the
-evening of 2026-10-04 it was in epoch 46 of 60.
+evening of 2026-10-04 it was in epoch 46 of 60. [It finished on 2026-10-05 and shipped as v5.9.26,
++8.0 over fqco5912: entry above.]
 
 **The run.** A cold start (no `--init-from`): 60 epochs of a cosine from lr 1e-3, lambda 1.0 to 0.7,
 otherwise fqco5912's architecture and recipe (HalfKAv2_hm, 128/32/32, one output bucket, factorized,
