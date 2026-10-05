@@ -1,5 +1,77 @@
 # CHANGELOG
 
+## 2026-10-05 (v5.9.27) - the search retuned as a whole: 45 constants tuned jointly by SPSA
+
+**Why a joint retune.** Every search constant in the engine was a literal, ported from the reference
+under this project's unit rules (values x0.48, margins raw, history thresholds measured at the
+consumer) or hand-measured here, and each was settled one at a time against the others as they
+stood. Dozens of one-at-a-time ports have failed since (15 H0 in the night of the full-engine audit
+alone), which is what a set of constants stuck in a piecewise optimum looks like from the inside.
+Moving them together was the one lever left untried.
+
+**45 constants as UCI options.** `src/NoaChess.Engine/Search/SearchParams.cs` holds 45 search
+constants - reverse futility, null move, ProbCut, internal iterative reduction, singular extension,
+late move pruning, quiet and capture SEE pruning, futility, the LMR table and its adjustments,
+aspiration, quiescence, the history bonus and malus scales, the correction-history weights and the
+killer and counter-move bonuses - each exposed over UCI as a `Tune_<Name>` spin option, clamped to a
+range that bounds what a tuner may try. They are static fields, so every Lazy SMP helper reads the
+same values with nothing to copy, and UCI only sets them between searches. Fixed-point forms
+(`LmpScale`, `SeMargin`, the history scales, `AspGrowth`) give an integer tuner room to move a
+constant that was a small whole number, and each reproduces the old arithmetic exactly at its old
+value. Before any tuning, the build with every option at its old value was proven to search exactly
+as 5.9.25 did: CI node count 127139 and the bench identical.
+
+**The tune.** OpenBench-style SPSA: each iteration plays theta + c * delta against theta - c * delta,
+with delta +/-1 per parameter, and moves theta by the result. 5,000 iterations of 4 game pairs,
+40,000 games at 25,000 nodes per move, one thread, no tablebases, the 8moves_v3 book, about 7 hours.
+Each new default is the run's final value rounded to the nearest integer. The driver lives outside
+the repository.
+
+**What moved.** 36 of the 45. The biggest: `NmpMinDepth` 3 -> 4, `AspWindow` 50 -> 38,
+`CorrNonPawnW` 32 -> 40, `QuietSeeMargin` 23 -> 17, `LmrTtPv` 1024 -> 859, `NmpDepthDiv` 4 -> 3,
+`SeDepth` 8 -> 7, `RfpImproving` 85 -> 75, `NmpBase` 3 -> 4, `FutilityMargin` 100 -> 90, `RfpMargin`
+85 -> 78, `LmrBase` 75 -> 83, `ProbCutImproving` 40 -> 45, `LmrNonPv` 1024 -> 955. Read together:
+null move starts a ply later and reduces more (R = 4 + depth / 3 from depth 4, against 3 + depth / 4
+from depth 3), the reverse-futility, futility and quiet-SEE margins shrink, the aspiration window
+narrows and the non-pawn correction histories weigh more. The nine that stayed: `RfpDepth`,
+`IirDepth`, `LmpBase`, `LmpScale`, `QuietSeeDepth`, `FutilityDepth`, `CapSeeDepth`, `LmrMinMoves`,
+`CorrPawnW`. The full table is in `SearchParams.cs`, each changed field with a "was N" comment;
+setting every "was" value over UCI restores the old search.
+
+**Measured: the tuned defaults against the old ones, on the same binary.**
+- **100,000 fixed nodes** (the previous net, fqco5912, on both sides): **+16.4 +/- 12.2 Elo,
+  271-213-747 over 1,231 games, H1.**
+- **10+0.1** (the shipping net, fqblind, on both sides): **+18.3 +/- 13.1 Elo, 187-138-608 over 933
+  games, H1.** Time per move unchanged: mean 0.236 s against 0.237 s, p99 1.50 s on both sides. The
+  match had 10 time forfeits (7 tuned, 3 base), all in increment-only endings of 114 to 322 plies at
+  the 0.1 s increment, the pattern other fast matches on this machine have shown; they are not
+  attributable to the tuning.
+Both SPRTs stopped at H1 within about 1,200 games, so their point estimates carry some of the stopping
+rule's inflation; the two agree with each other.
+
+**The road to 6.0.0.** Condition (1), a jointly tuned search passing its SPRTs, is met. Condition
+(2), the next-generation net with improved labels, is in progress: the 12M mined blind-spot
+positions are being relabelled at 40,000 nodes by fqblind with the tablebases probed inside the
+search. Condition (3), a CCRL gauntlet at +30 or more over v5.9.23's 3368 or above 3400, is pending.
+See ROADMAP.md.
+
+**Verified.** CI node count 127139 -> 134088 at the new defaults (`tools/ci/nodecount_ref.txt`
+regenerated; the SPSA test build gives the same 134088 with the tuned values set over UCI, and
+127139 at the old ones). `uci` now lists 138 options (93 + the 45 `Tune_` options). Net unchanged
+(`fqblind`). 493 tests (128 Core + 365 Engine): the new `SearchParamsTests` check that every
+parameter is declared at its default and inside its range, that `setoption` clamps, rounds and
+reaches the field, and that changing and restoring the LMR table restores the tree.
+
+**Still pending.** `ClockOptimumHalfMax` and the corrected PonderContinue gate (ponder-on clock
+matches against other engines on a quiet box). The quiet-box and 24-thread timing of v5.9.25's speed
+work. The reserves `ContHistByState` and `SharedCorrection`. The QAT rounding of factorized rows,
+WDL-versus-score row filtering and the tablebase relabel of the older corpora (NNUE_HISTORY.md). A
+gauntlet for the CCRL number.
+
+**Deployment.** Published (Windows + Mac, build tag `spsa`), and both bots run it: the Windows bot
+from its engine folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet
+not run for this version (5.9.23's 3368 CCRL stands).
+
 ## 2026-10-05 (v5.9.26) - fqblind embedded: a cold 60-epoch anneal pays, the blind-spot labels do not
 
 **`fqblind` embedded.** The cold form of the schedule experiment. fqco5912 (v5.9.20) re-entered the
@@ -69,7 +141,8 @@ Detail in NNUE_HISTORY.md.
   v5.9.25, switching none of them off gains anything: the shipped pruning rules stay.
 
 **In progress.** A joint SPSA retune of 45 search constants (40,000 games at 25,000 nodes); its result
-goes to SPRTs before anything ships.
+goes to SPRTs before anything ships. [It shipped in v5.9.27: +16.4 at 100,000 fixed nodes and +18.3 at
+10+0.1, both H1.]
 
 **Versioning.** The next major version, 6.0.0, ships when three things hold: a jointly tuned search
 passes its SPRTs; the next-generation net, with the improved labels, ships; and a CCRL gauntlet shows
