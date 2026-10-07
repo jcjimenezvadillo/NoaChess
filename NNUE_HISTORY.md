@@ -3,20 +3,26 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.27, 2026-10-05).** The embedded net is `fqblind` (v5.9.26, first entry below):
+**Current state (v5.9.27, 2026-10-05, updated 2026-10-07).** The embedded net is `fqblind` (v5.9.26, first entry below):
 a cold 60-epoch cosine anneal from lr 1e-3 over fqco5912's corpus plus the blind-spot corpus, on the
 trainer rebuilt for v5.9.25; +8.0 Elo, H1 over 6,353 fixed-node games against `fqco5912`. Before it,
 `fqco5912` (v5.9.20) re-annealed fqco592's weights over 14 epochs of a real cosine on fqco5911's
 corpus, and fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus, warm-started from
 `fqco592.pt.partial`; v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
 45 search constants) changed search, time management and the trainer, not the net (see
-CHANGELOG.md). In progress for the next generation: the 12M mined blind-spot positions relabelled at
-40,000 nodes by `fqblind` with the tablebases probed inside the search. Architecture is HalfKAv2_hm
-with factorized features, 128-wide feature transformer, coarse threat lane, quantization-aware
-training - unchanged since fq60/v4.7.0 (see the 2026-08-11 status entry further down). Last measured
-CCRL: **3368 +/- 46** (v5.9.23 gauntlet on field 2, single-threaded, 58.1% over 240 games; v5.9.19
-read 3364 +/- 40, v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493
-tests.
+CHANGELOG.md). In training for the next generation: `fqgen7`, a 14-epoch re-entry from `fqblind`
+(lr 1.371433e-4) in which the `fqblind` corpus's 6,000-node blind-spot label files are replaced by
+the same mined elite positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed
+inside the search, at weight 4x; on the blind-spot exam positions those deeper labels measured
+closer to the independent judge in every group (paired positions, mean absolute error in cp, 6,000
+-> 40,000 nodes: large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops
+294 -> 273, king attacks 87 -> 77, same-coloured bishops 123 -> 116, pawn tension 48 -> 38). It is
+the last of the three conditions for 6.0.0, which ships when `fqgen7` passes its SPRT against
+`fqblind`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
+coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
+status entry further down). Last measured CCRL: **3420 +/- 50** (v5.9.27 gauntlet on field 2,
+single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
+v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493 tests.
 
 **Read this before training another generation the same way.** The investigation that explains
 `fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -

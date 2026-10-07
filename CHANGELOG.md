@@ -53,7 +53,8 @@ rule's inflation; the two agree with each other.
 (2), the next-generation net with improved labels, is in progress: the 12M mined blind-spot
 positions are being relabelled at 40,000 nodes by fqblind with the tablebases probed inside the
 search. Condition (3), a CCRL gauntlet at +30 or more over v5.9.23's 3368 or above 3400, is pending.
-See ROADMAP.md.
+See ROADMAP.md. [Condition (3) was met on 2026-10-07: 3420 +/- 50 CCRL, +52; see "Measured after
+release" below.]
 
 **Verified.** CI node count 127139 -> 134088 at the new defaults (`tools/ci/nodecount_ref.txt`
 regenerated; the SPSA test build gives the same 134088 with the tuned values set over UCI, and
@@ -66,11 +67,50 @@ reaches the field, and that changing and restoring the LMR table restores the tr
 matches against other engines on a quiet box). The quiet-box and 24-thread timing of v5.9.25's speed
 work. The reserves `ContHistByState` and `SharedCorrection`. The QAT rounding of factorized rows,
 WDL-versus-score row filtering and the tablebase relabel of the older corpora (NNUE_HISTORY.md). A
-gauntlet for the CCRL number.
+gauntlet for the CCRL number [run on 2026-10-07, below].
 
 **Deployment.** Published (Windows + Mac, build tag `spsa`), and both bots run it: the Windows bot
-from its engine folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet
-not run for this version (5.9.23's 3368 CCRL stands).
+from its engine folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet:
+3420 +/- 50 CCRL (2026-10-07, below).
+
+**Measured after release (2026-10-07): the CCRL gauntlet.** Field 2, single-threaded, the project's
+series field (weighted field mean 3305), 240 games at 60+0.6, performance solved by
+`audit/gauntlet.py`: **64.6% (+95 =120 -25), 3420 CCRL +/- 50 (95%)**, against v5.9.23's 3368 +/- 46
+(58.1%, +82 =115 -43) on the same field and the same tool: **+52, the highest of the series**; the two
+error bands still overlap. No time forfeit or disconnect. The box ran only the gauntlet and a light
+background check (the bots were on the Mac). Between the two readings: 5.9.24 (tablebase speed under
+Lazy SMP), 5.9.25 (node-identical speed, +39.7 at 10+0.1 against 5.9.24), 5.9.26 (the `fqblind` net,
++8.0 at fixed nodes) and 5.9.27 (the SPSA retune, +18.3 at 10+0.1). Per opponent, 20 games each,
+performance of v5.9.27 against v5.9.23:
+
+| Opponent | Rating | v5.9.27 | v5.9.23 |
+|----------|--------|---------|---------|
+| Renegade | 3500 | 3483 | 3353 |
+| Velvet | 3420 | 3385 | 3312 |
+| Reckless | 3407 | 3390 | 3299 |
+| Iris | 3405 | 3475 | 3388 |
+| Rice | 3394 | 3394 | 3464 |
+| Nalwald | 3283 | 3410 | 3336 |
+| Bitbit | 3269 | 3396 | 3377 |
+| Avalanche | 3269 | 3437 | 3304 |
+| Defenchess | 3224 | 3371 | 3415 |
+| Patricia | 3206 | 3421 | 3259 |
+| Princhess | 3187 | 3428 | 3623 |
+| Rubichess | 3096 | 3478 | 3434 |
+
+The gain is concentrated against the four strongest opponents, all four up (by 73 to 130); against
+the other eight the readings move both ways, as 20-game readings do.
+
+**The road to 6.0.0 after the gauntlet.** Condition (3) is met: 3420 +/- 50, +52 over 3368 and above
+3400. With (1) met in this release, 6.0.0 ships when condition (2), the next-generation net, passes
+its SPRT against `fqblind`. That net, `fqgen7`, is in training: a 14-epoch re-entry from `fqblind`
+(lr 1.371433e-4) in which the `fqblind` corpus's 6,000-node blind-spot label files are replaced by the
+same mined elite positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed inside
+the search, at weight 4x. On the blind-spot exam positions those deeper labels measured closer to the
+independent judge in every group (paired positions, mean absolute error in centipawns, 6,000 ->
+40,000 nodes): large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops
+294 -> 273, king attacks 87 -> 77, same-coloured bishops 123 -> 116, pawn tension 48 -> 38. Also
+running: a second SPSA round at 60,000 nodes per move, starting from the 5.9.27 values.
 
 ## 2026-10-05 (v5.9.26) - fqblind embedded: a cold 60-epoch anneal pays, the blind-spot labels do not
 
