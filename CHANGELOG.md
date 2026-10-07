@@ -154,7 +154,7 @@ the search, at weight 4x. On the blind-spot exam positions those deeper labels m
 independent judge in every group (paired positions, mean absolute error in centipawns, 6,000 ->
 40,000 nodes): large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops
 294 -> 273, king attacks 87 -> 77, same-coloured bishops 123 -> 116, pawn tension 48 -> 38. Also
-running: a second SPSA round at 60,000 nodes per move, starting from the 5.9.27 values.
+running: a second SPSA round at 60,000 nodes per move, starting from the 5.9.27 values. [Update 2026-10-07: finished. The second SPSA round (60,000 nodes per move, 2,400 iterations, 19,200 games, started from the 5.9.27 values) moved no parameter by more than one step and its values lost the SPRT against the 5.9.27 defaults, -17.4 +/- 17.0 over 580 games at 100,000 fixed nodes (H0): the 5.9.27 values stay and the SPSA route is exhausted for now.]
 
 ## 2026-10-05 (v5.9.26) - fqblind embedded: a cold 60-epoch anneal pays, the blind-spot labels do not
 

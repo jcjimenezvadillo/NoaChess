@@ -86,10 +86,10 @@ measured **3420 +/- 50 CCRL** (64.6%, +95 =120 -25 over 240 games at 60+0.6, fie
 overlapping. **Versioning from here:** 6.0.x for fixes and node-identical changes, 6.x.0 for a new
 net or a gauntlet-measured gain, 7.0.0 for a change of architecture (the threat features, a wider or
 different net). **Next:** a gauntlet of 6.0.0 itself (the 3420 belongs to v5.9.27 with fqblind), the
-second SPSA round at 60,000 nodes per move from the 5.9.27 values, and the next net (`fqgen8`) on the
+next net (`fqgen8`) on the
 `datascale6` corpus (autoplay at 6,000 nodes, fqblind as teacher, the tablebases probed in the
 search), which also carries the open items of the audit: the QAT rounding of factorized rows, the
-WDL row filtering and the tablebase relabel of the older corpora.
+WDL row filtering and the tablebase relabel of the older corpora. The second SPSA round (60,000 nodes per move, 2,400 iterations, 19,200 games, started from the 5.9.27 values) moved no parameter by more than one step and its values lost the SPRT against the 5.9.27 defaults, -17.4 +/- 17.0 over 580 games at 100,000 fixed nodes (H0): the 5.9.27 values stay and the SPSA route is exhausted for now.
 
 **Campaign log, 2026-09-19 to 2026-09-22:** the off-by-default search options were re-measured one
 at a time at 100,000 fixed nodes, first against the v5.9.11 build and then against each new release,
