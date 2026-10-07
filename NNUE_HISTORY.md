@@ -3,24 +3,22 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v5.9.27, 2026-10-05, updated 2026-10-07).** The embedded net is `fqblind` (v5.9.26, first entry below):
-a cold 60-epoch cosine anneal from lr 1e-3 over fqco5912's corpus plus the blind-spot corpus, on the
-trainer rebuilt for v5.9.25; +8.0 Elo, H1 over 6,353 fixed-node games against `fqco5912`. Before it,
-`fqco5912` (v5.9.20) re-annealed fqco592's weights over 14 epochs of a real cosine on fqco5911's
-corpus, and fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus, warm-started from
-`fqco592.pt.partial`; v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
+**Current state (v6.0.0, 2026-10-07).** The embedded net is `fqgen7` (v6.0.0, first entry below):
+a 14-epoch re-entry from `fqblind` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7) over its corpus
+with the 6,000-node blind-spot label files replaced by the same mined elite positions relabelled at
+40,000 nodes by `fqblind` with the tablebases probed inside the search, at weight 4x; +15.9 Elo, H1
+over 1,354 fixed-node games against `fqblind`. Before it, `fqblind` (v5.9.26) was a cold 60-epoch
+cosine anneal from lr 1e-3 over fqco5912's corpus plus the blind-spot corpus, +8.0 Elo over
+`fqco5912` (v5.9.20), which re-annealed fqco592's weights over 14 epochs of a real cosine on
+fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus, warm-started from
+`fqco592.pt.partial`. v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
 45 search constants) changed search, time management and the trainer, not the net (see
-CHANGELOG.md). In training for the next generation: `fqgen7`, a 14-epoch re-entry from `fqblind`
-(lr 1.371433e-4) in which the `fqblind` corpus's 6,000-node blind-spot label files are replaced by
-the same mined elite positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed
-inside the search, at weight 4x; on the blind-spot exam positions those deeper labels measured
-closer to the independent judge in every group (paired positions, mean absolute error in cp, 6,000
--> 40,000 nodes: large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops
-294 -> 273, king attacks 87 -> 77, same-coloured bishops 123 -> 116, pawn tension 48 -> 38). It is
-the last of the three conditions for 6.0.0, which ships when `fqgen7` passes its SPRT against
-`fqblind`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
+CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
+on held-out positions, although its deeper labels were closer on paired ones (entry below). In
+preparation for the next generation (`fqgen8`): the `datascale6` corpus, autoplay at 6,000 nodes with
+`fqblind` as teacher and the tablebases probed in the search. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
-status entry further down). Last measured CCRL: **3420 +/- 50** (v5.9.27 gauntlet on field 2,
+status entry further down). Last measured CCRL: **3420 +/- 50** (v5.9.27 with `fqblind`; 6.0.0 not yet measured; gauntlet on field 2,
 single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
 v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493 tests.
 
@@ -65,6 +63,66 @@ has since finished and shipped in v5.9.26; they belong to the next generation):
   those positions with a neutral or omitted result.
 - *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
   been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqgen7 ships as v6.0.0 (2026-10-07): deeper labels pay in play, not on the exam
+
+**The run.** Warm start from `fqblind`, 14 epochs of a cosine from lr 1.371433e-4 (the 60-epoch
+schedule evaluated at epoch 46) to 1e-5, lambda 0.735 -> 0.7, batch 16384, reference loss with
+pow-exp 2.5, `--val-split tail-dedup`, the loader process with three readers, QAT, the factorized
+128-wide transformer with the coarse lane. Data: the `fqblind` corpus with its blind-spot label-book
+files (the elite positions mined in six groups, labelled at 6,000 nodes by our search) replaced by the
+same positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed in the search,
+sampled at 4x, the blind self-play files at 1.5x; about 1,245,881,765 rows drawn per epoch. It ran at
+19-21 steps/s and finished on 2026-10-07 with the validation 0.006154 (epoch 12), 0.006158 (epoch 13) and
+0.006150 (epoch 14, best); the split is a function of the corpus, so this is not comparable with `fqblind`'s 0.005989.
+Exported 5,820,956 bytes, sha256 starting 7a70aeab80c2339f; bit-exact against the engine (42 cp on
+the start position from the trainer's check and from `NoaChess.DataGen --nnueprobe`), accumulator
+headroom with the coarse lane 98.5% of the int16 range in the worst lane. Two whole-machine disk
+stalls (reads of one to four seconds on the SSD) slowed it for minutes each; neither changed a number.
+
+**Measured at 100,000 fixed nodes against `fqblind`, the same 5.9.27 binary on both sides (only
+`EvalFile` differing, `fqgen7` listed first, 8moves_v3, elo0=0 elo1=10, one thread):
++15.9 +/- 11.9 Elo, 313-251-790 (0.523) over 1,354 games, LOS 99.5%, LLR 2.95, H1**, no time losses,
+no anomalies; ten games still running when the test stopped are not counted. As with every early H1
+the point estimate leans high.
+
+**The blind-spot exam, again.** The same 1,401 held-out points (scale k = 0.810), each net's static
+evaluation against the independent judge at depth 20, mean absolute error in centipawns, and the signed
+bias (negative = the net is compressed towards zero against the judge):
+
+| Group | fqco5912 | fqblind | fqgen7 | bias fqblind | bias fqgen7 |
+|-------|----------|---------|--------|--------------|-------------|
+| B1, opposite-coloured bishops | 255 | 253 | 252 | -57 | -59 |
+| B2, same-coloured bishops | 176 | 173 | 175 | -32 | -35 |
+| R, rook endings with a passer | 371 | 369 | 369 | -71 | -75 |
+| K, king attacks | 173 | 173 | 173 | -86 | -87 |
+| L, large material gaps | 666 | 661 | 665 | -74 | -82 |
+| P, pawn tension | 68 | 70 | 69 | -28 | -27 |
+
+Nothing moved by more than a few centipawns, and the compression grew a little where the labels
+were deepest. The rate of positions the net gets wrong outright stays at 0-3% for all three nets.
+
+**Reading.**
+- The deeper labels were closer to the judge on the paired positions they replaced (6,000 -> 40,000
+  nodes: large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops 294 ->
+  273, king attacks 87 -> 77), yet the trained net is not closer to it on positions it has not seen:
+  the static evaluation does not generalise the deeper label from a few million examples in 4% of a
+  1.2-billion-row corpus.
+- The +15.9 is therefore not credited to the blind-spot labels. What the run shares with `fqco5912`
+  (+34.3) is the recipe: a warm re-entry at a real point of the schedule, here with a changed share of
+  the data. Which part of the change pays (the deeper labels for play in the middlegame, the extra
+  14 epochs at a lower rate, the 4x weight) is not separated by this run and would need a control
+  re-entry on the unchanged corpus.
+- Rook endings are still evaluated at about 0.7 of the judge's magnitude. If they are to move, the
+  next net needs them from a source that sees the answer (the tablebases in the label, the game
+  result) rather than more of our own shallow labels.
+
+**The next generation (`fqgen8`).** The `datascale6` corpus (autoplay at 6,000 nodes, `fqblind` as
+teacher, the tablebases probed in the search, the four-source mix of datascale4 and 5), the QAT
+rounding of the factorized rows, WDL-versus-score row filtering, and a control re-entry on the unchanged
+`fqblind` corpus if the cause of the +15.9 needs separating.
 
 ---
 

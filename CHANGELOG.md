@@ -1,5 +1,49 @@
 # CHANGELOG
 
+## 2026-10-07 (v6.0.0) - fqgen7 embedded: deeper blind-spot labels, +15.9 Elo over fqblind
+
+**Why 6.0.0.** The road to 6.0.0 agreed on 2026-10-05 had three conditions, and the last one closed
+today: (1) a jointly tuned search passes its SPRTs - v5.9.27, +16.4 at 100,000 fixed nodes and
++18.3 at 10+0.1; (2) the next-generation net with improved labels ships - this release; (3) a CCRL
+gauntlet shows +30 or more over v5.9.23's 3368, or above 3400 - v5.9.27 measured 3420 +/- 50.
+The search is unchanged from v5.9.27 (CI node count 134088, the classical path); the release is the
+net. The reading of 3420 belongs to v5.9.27 with `fqblind`; a gauntlet of 6.0.0 itself follows.
+
+**The net.** `fqgen7` is a 14-epoch re-entry from `fqblind`, the same form that gave `fqco5912`
+(+34.3 over fqco592): a warm start from the finished net and a real cosine from lr 1.371433e-4 (the
+60-epoch schedule evaluated at epoch 46) down to 1e-5, lambda 0.735 -> 0.7, batch 16384,
+`--val-split tail-dedup`, the loader process, quantization-aware training, the factorized 128-wide
+transformer with the coarse lane (architecture unchanged). The data is `fqblind`'s corpus with one
+change: the blind-spot label-book files, the elite positions mined in six groups and labelled at
+6,000 nodes by our own search, are replaced by the same positions relabelled at 40,000 nodes by
+`fqblind` with the tablebases probed inside the search (the v5.9.25 fix), up-weighted 4x; the
+blind-spot self-play files stay at 1.5x. About 1.25 billion rows drawn per epoch, 19-20 steps/s, the
+last epochs interrupted twice by whole-machine disk stalls that only delayed them. Best epoch 14 of 14
+(validation 0.006150 on the tail-dedup split; the split is a function of the corpus, so this is not
+comparable to `fqblind`'s 0.005989). The export is bit-exact against the engine (42 cp on the start
+position, from the trainer's check and from `NoaChess.DataGen --nnueprobe`), payload sha256
+`7a70aeab...9c39c6`, checked again from the "NNUE embedded model loaded" line of the built engine.
+
+**The SPRT.** Against `fqblind` on the same binary, one thread, 100,000 fixed nodes per move, the
+8moves_v3 book, `fqgen7` listed first, [0, 10]: **+15.9 +/- 11.9 Elo, 313-251-790 (0.523) over 1,354
+games, LOS 99.5%, LLR 2.95, H1 accepted**, no time losses, no anomalies (ten games that were still
+running when the test stopped are not counted). Like every early H1 the point estimate leans high.
+
+**What did not move: the blind-spot exam.** Each net's static evaluation against an independent
+judge at depth 20 on the held-out blind-spot positions (1,401 points, scale k = 0.810), mean absolute
+error in cp: opposite-coloured bishops 253 -> 252, same-coloured bishops 173 -> 175, rook endings
+369 -> 369, king attacks 173 -> 173, large material gaps 661 -> 665, pawn tension 70 -> 69
+(`fqblind` -> `fqgen7`). The signed bias in the compressed groups is a little larger (rook endings
+-71 -> -75, large gaps -74 -> -82). So the deeper labels did measure closer to the judge on paired
+positions, as predicted, but the net did not become closer to it on held-out ones, and the gain is
+not explained by the exam: as with `fqblind`, the measured gain is what a longer, better-conditioned
+anneal on a larger share of deeper-labelled data pays in play, and the blind spots themselves remain
+open (rook endings are still evaluated at about 0.7 of the judge's magnitude).
+
+**Versioning from here.** 6.0.x for fixes and node-identical changes, 6.x.0 for a new net or a
+gauntlet-measured gain, 7.0.0 for a change of architecture (the threat features, a wider or different
+net). 493 tests, CI node count 134088 unchanged.
+
 ## 2026-10-05 (v5.9.27) - the search retuned as a whole: 45 constants tuned jointly by SPSA
 
 **Why a joint retune.** Every search constant in the engine was a literal, ported from the reference
