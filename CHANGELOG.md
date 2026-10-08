@@ -40,6 +40,8 @@ not explained by the exam: as with `fqblind`, the measured gain is what a longer
 anneal on a larger share of deeper-labelled data pays in play, and the blind spots themselves remain
 open (rook endings are still evaluated at about 0.7 of the judge's magnitude).
 
+**After the release.** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net. A control re-entry from fqblind on the unchanged corpus (the old 6,000-node blind-spot labels, fqctl) is training to separate the deeper labels from the recipe.
+
 **Versioning from here.** 6.0.x for fixes and node-identical changes, 6.x.0 for a new net or a
 gauntlet-measured gain, 7.0.0 for a change of architecture (the threat features, a wider or different
 net). 493 tests, CI node count 134088 unchanged.

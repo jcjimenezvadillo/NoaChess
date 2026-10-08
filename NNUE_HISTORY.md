@@ -104,6 +104,8 @@ bias (negative = the net is compressed towards zero against the judge):
 Nothing moved by more than a few centipawns, and the compression grew a little where the labels
 were deepest. The rate of positions the net gets wrong outright stays at 0-3% for all three nets.
 
+**A second re-entry does not repeat it (2026-10-08).** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net. A control re-entry from fqblind on the unchanged corpus (the old 6,000-node blind-spot labels, fqctl) is training to separate the deeper labels from the recipe.
+
 **Reading.**
 - The deeper labels were closer to the judge on the paired positions they replaced (6,000 -> 40,000
   nodes: large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops 294 ->
