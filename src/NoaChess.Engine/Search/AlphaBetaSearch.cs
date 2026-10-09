@@ -197,6 +197,54 @@ public sealed class AlphaBetaSearch
     private const int EasyMoveStableDepth = 6;    // best move unchanged for this many iterations
     private const double EasyMoveFraction = 0.12; // spend at most this share of the optimum
 
+    // The stability evidence the easy-move and obvious-move cuts read is
+    // FAKE on a ponderhit relaunch, and that made the relaunch answer at once
+    // in positions that were anything but obvious. The relaunch restarts at
+    // depth 1 over the table the ponder filled: the table move IS the pondered
+    // best move, so the root "settles" at depth 1, every iteration up to the
+    // pondered depth replays it in a few milliseconds, and the whole tree goes
+    // into that one move (node share 0.95 and above). Twelve agreeing
+    // iterations in 20 ms, settled by depth 1, unanimous: the obvious-move
+    // rule, written to recognise a forced recapture, sees that shape on EVERY
+    // relaunch, whatever the position. Measured over the bot's 110 games of
+    // 2026-10-08/09 (7,852 moves, centisecond clocks): 37% of its moves took
+    // 0.2 s or less against 11% of the opponents'; with the clocks within
+    // 25% of each other (where PonderContinue does not fire) 43-45% of the
+    // replies to an opponent think of 1-10 s were instant, at 600+1 with
+    // 500 s on the clock included (UxVuSRT1 moves 22-46: 40 ms each); the
+    // engine spent a median 0.25 of its own optimum on non-book moves and
+    // ended games with more clock than the opponent at every control. The
+    // ponder's OWN record is the evidence that is real: the depth where its
+    // root last changed, its decayed change count, its node share and its
+    // score at the last completed iteration are what a continued search would
+    // carry, so the relaunch carries exactly those. A cut may fire on a
+    // relaunch only when the ponder itself already satisfied that cut's
+    // conditions, or once the relaunch has gone the cut's own stability
+    // distance PAST the pondered depth on iterations that are not table
+    // replays. A forced recapture pondered to depth 20 still answers at once;
+    // a position the ponder was still changing its mind about gets the budget
+    // the clock already allots to it (soft budget minus the pondered credit).
+    // Ponder misses, fresh searches and fixed-depth searches are untouched.
+    // Not below SlowTcDampFloorMs of soft budget either: that boundary is
+    // where the cut fractions were measured (bullet, 60+1 and 60+2) and the
+    // regime the slow-control damp leaves alone, and the first clock match of
+    // the fix without this gate said bullet wants the instant reply - at 60+1
+    // with ponder the fixed side spent 1.62 s per move against 1.47, ended
+    // with 23.5 s against 32.2 (one game at 5.7 s) and started 3-6-14. A
+    // bullet budget is the opponent's think plus a little, and that little is
+    // worth more banked for the scramble than spent now. Above the floor
+    // (180+1 from the opening, 600+1 everywhere, a 2x lead at 60+1) the gate
+    // is open, and as a blitz clock runs down and the budget falls under it,
+    // the instant reply comes back on its own.
+    private int _lastIterDepth;           // last completed iteration of the previous search on this worker
+    private int _lastIterSettledBy;       // depth where its root move last changed
+    private double _lastIterChanges;      // its decayed root change count
+    private double _lastIterShare;        // its node share into the best move
+    private int _lastIterScore;           // its score
+    private int _carriedDepth;            // the relaunch's copy of the above, taken at search start
+    private bool _carriedEasy;
+    private bool _carriedObvious;
+
     // An OBVIOUS move is not the same thing as a WON position, and treating
     // them as one was a real defect: a recapture in a level position is the
     // clearest easy move there is and the decisive-score gate above excluded it
@@ -233,6 +281,25 @@ public sealed class AlphaBetaSearch
     // the search itself says the decision was unanimous, treat it like the
     // decisive-score case and bank the clock for a position that needs it.
     private const double ObviousMoveUnanimousShare = 0.95;
+
+    // Whether a ponder search's last completed iteration already satisfied the
+    // easy-move cut (a decisive score the root had held for EasyMoveStableDepth
+    // iterations, at a trusted depth) or the obvious-move cut (settled by
+    // depth ObviousMoveSettledBy, held ObviousMoveStableDepth iterations, no
+    // root changes, the tree concentrated on it). These are the cuts' own
+    // conditions on the ponder's own record; the relaunch inherits the verdict
+    // (see _carriedDepth) instead of re-deriving it from table replays.
+    public static bool PonderWasEasy(int depth, int settledBy, int score, bool winOnly) =>
+        depth >= EasyMoveMinDepth
+        && (winOnly ? score >= EasyMoveMargin : Math.Abs(score) >= EasyMoveMargin)
+        && settledBy + EasyMoveStableDepth <= depth;
+
+    public static bool PonderWasObvious(int depth, int settledBy, double changes, double share) =>
+        depth >= EasyMoveMinDepth
+        && settledBy <= ObviousMoveSettledBy
+        && settledBy + ObviousMoveStableDepth <= depth
+        && changes <= ObviousMoveMaxChanges
+        && share >= ObviousMoveNodeShare;
 
     // Proven-short-mate stop (clock mode). Once a completed iteration proves a
     // forced mate in <= 3 plies for us - which cannot get materially shorter -
@@ -2123,6 +2190,17 @@ public sealed class AlphaBetaSearch
         _elapsedOffsetMs = limits.ElapsedOffsetMs;
         _relaunch = limits.ElapsedOffsetMs > 0;
         _minEasyDepth = Math.Max(EasyMoveMinDepth, limits.MinEasyDepth);
+        // A relaunch inherits the ponder's stability record (see the fields);
+        // any other search starts with none, and the record is consumed so a
+        // stale one can never serve a later relaunch.
+        _carriedDepth = _relaunch ? _lastIterDepth : 0;
+        _carriedEasy = _relaunch && PonderWasEasy(_lastIterDepth, _lastIterSettledBy, _lastIterScore, UseEasyMoveWinOnly);
+        _carriedObvious = _relaunch && PonderWasObvious(_lastIterDepth, _lastIterSettledBy, _lastIterChanges, _lastIterShare);
+        _lastIterDepth = 0;
+        _lastIterSettledBy = 0;
+        _lastIterChanges = 0;
+        _lastIterShare = 0;
+        _lastIterScore = 0;
         _convertedPonder = false;
         _timer.Restart();
 
@@ -2633,6 +2711,14 @@ public sealed class AlphaBetaSearch
             // of non-negative per-iteration counts.
             if (totBestMoveChanges < 0)
                 totBestMoveChanges = 0;
+            // The record a ponderhit relaunch of this worker will inherit
+            // (see _carriedDepth): kept for every search so it is the ponder's
+            // last completed iteration when the relaunch comes.
+            _lastIterDepth = depth;
+            _lastIterSettledBy = lastBestMoveDepth;
+            _lastIterChanges = totBestMoveChanges;
+            _lastIterShare = BestMoveNodeShare;
+            _lastIterScore = score;
             averageScore = averageScore == ScoreNone ? score : (2 * score + averageScore) / 3;
 
             // Eval stability: consecutive iterations whose score sits close to
@@ -2842,10 +2928,15 @@ public sealed class AlphaBetaSearch
                 // banking that the rule exists for is untouched.
                 bool fiftyPressure = UseEasyMoveFiftyGuard
                     && board.HalfmoveClock >= EasyMoveFiftyGuardClock;
+                // On a relaunch the stability below is a table replay (see
+                // _carriedDepth): the cut needs the ponder's own verdict, or
+                // the same stability distance past the pondered depth.
                 bool easyMoveEligible = depth >= _minEasyDepth
                     && decisive
                     && !fiftyPressure
-                    && lastBestMoveDepth + EasyMoveStableDepth <= depth;
+                    && lastBestMoveDepth + EasyMoveStableDepth <= depth
+                    && (!_relaunch || _softTimeMs <= SlowTcDampFloorMs || _carriedEasy
+                        || depth >= _carriedDepth + EasyMoveStableDepth);
                 if (easyMoveEligible)
                     totalTime = Math.Min(totalTime, _softTimeMs * SlowTcDamp(EasyMoveFraction));
 
@@ -2859,7 +2950,9 @@ public sealed class AlphaBetaSearch
                     && lastBestMoveDepth <= ObviousMoveSettledBy
                     && lastBestMoveDepth + ObviousMoveStableDepth <= depth
                     && totBestMoveChanges <= ObviousMoveMaxChanges
-                    && BestMoveNodeShare >= ObviousMoveNodeShare;
+                    && BestMoveNodeShare >= ObviousMoveNodeShare
+                    && (!_relaunch || _softTimeMs <= SlowTcDampFloorMs || _carriedObvious
+                        || depth >= _carriedDepth + ObviousMoveStableDepth);
                 if (obviousMoveEligible)
                 {
                     double share = BestMoveNodeShare >= ObviousMoveUnanimousShare
