@@ -1,5 +1,75 @@
 # CHANGELOG
 
+## 2026-10-09 (v6.0.1) - the ponderhit relaunch no longer answers at once on table-inherited confidence
+
+**The symptom, measured.** The user watched the bot answer in a fraction of a second with minutes on
+its clock and asked for every move of the games of 2026-10-08 and 09 to be reviewed. All 110 games
+(7,852 NoaChess moves, Lichess clocks at centisecond resolution; the 701 games of October 1-7 as
+the control): 37% of the engine's moves took 0.2 s or less against 11% of the opponents'. About
+eight per game are the opening book; the other 1,896 are the engine's: 608 in six-man tablebase
+positions (the root resolved by the tables, which is correct), 86 only moves, 111 recaptures, 96
+check evasions, 53 within six plies of the end, and 942 ordinary middlegame and endgame positions
+with 16 to 32 men and the opponent thinking 1 to 10 s. On the non-book moves the engine spent a
+median 0.25 of the optimum its own time manager computes (TimeManager plus ClockLead, with the
+lichess-bot overhead), a third of them under 0.10. With the clocks within 25% of each other, where
+PonderContinue does not fire, 43-45% of the replies to an opponent think of 1-10 s were instant,
+at 600+1 included (UxVuSRT1, moves 22 to 46: 40 ms each with 500 s on the clock and the opponent
+thinking 8-40 s). The engine ended the games with more clock than the opponent at every control
+(60+1/2: 37.5 s against 29.4 s; 180+1/2: 71.9 against 52.2; 600+1/2: 160 against 102). The control
+week shows the same shares (34%, 31% and 26% instant by base clock), so this is not a regression
+of v6.0.0: it is the standing behaviour since the obvious-move cut shipped.
+
+**The mechanism, reproduced.** After a ponderhit the engine stops the ponder and relaunches over
+the table the ponder filled. The table move IS the pondered best move, so the root "settles" at
+depth 1, every iteration up to the pondered depth replays it in milliseconds, and the whole tree
+goes into that one move (node share 0.95 and above). Twelve agreeing iterations in 20 ms, settled
+by depth 1, unanimous: the obvious-move rule, written to recognise a forced recapture (v5.8.x,
+E6wD3ggu), sees that shape on EVERY relaunch, whatever the position, and the easy-move rule sees
+the same stability. PonderContinue (v5.9.25) only steps in with a clock lead of 125% or more, and
+then only forces one iteration past the pondered depth. A faithful replay harness (the previous
+NoaChess move searched on its real clock so the table is warm as in a game, the engine pondering
+on its own hint as lichess-bot does, the opponent's real think time slept, then "ponderhit")
+reproduces the games move for move on the v6.0.0 binary: of 28 ponderhits among the first 35 real
+positions replayed, 20 ended on the obvious-move cut and 19 answered within 150 ms (median 57 ms)
+against a mean soft budget of 10.3 s, the relaunch stopping at a mean depth 17 while the ponder had
+reached 27 (NU325Ecd move 52 at 600+1: the opponent thought 10 s, the ponder reached depth 22, the
+relaunch answered in 21 ms at depth 13 with a 15 s budget; s5TOMeKZ move 37: 22 ms with 24 s).
+Ponder misses spent their budget (median 10 s). The bot's own log for 2026-10-09 (lichess-bot at
+DEBUG level, the full UCI traffic of 884 timed replies) says the same about production: of 465
+ponderhits, 39% were answered within 150 ms (median reply 1.08 s, the relaunch stopping at a mean
+depth 24 while the ponder had reached 36); with the opponent having thought 0.5-2 s, 53% (median
+70 ms); the 419 fresh searches after a ponder miss spent a median 4.8 s.
+
+**The fix.** The relaunch now inherits the ponder's OWN stability record - the depth where its
+root last changed, its decayed root-change count, its node share and its score at the last
+completed iteration (`AlphaBetaSearch`, `_lastIter*` recorded on every completed iteration of
+every search, copied into `_carried*` when a search starts with a pondered credit). The easy-move
+and obvious-move cuts may fire on a relaunch only when the ponder itself already satisfied that
+cut's conditions (`PonderWasEasy`, `PonderWasObvious`: the cuts' own thresholds applied to the
+ponder's record), or once the relaunch has gone the cut's own stability distance PAST the pondered
+depth on iterations that are not table replays. A forced recapture pondered to depth 20 still
+answers at once; a position the ponder was still changing its mind about now gets the budget the
+clock already allots to it (the soft budget minus the pondered credit, bounded as before by the
+hard maximum and the sustainability guard). Ponder misses, fresh searches, the in-place conversion
+and fixed-depth searches are untouched: CI node count 134088, unchanged. PonderContinue stays as it
+was. Two new tests pin the carried verdicts (`RelaunchStabilityTests`); 496 tests.
+
+**Not below 5 s of soft budget.** The first clock match of the fix, without that gate, said bullet
+wants the instant reply: at 60+1 with ponder on both sides the fixed side spent 1.62 s per move
+against 1.47, ended with a mean 23.5 s against 32.2 (one game at 5.7 s) and started 3-6-14 over 23
+games (noise at that size, but the clock profile is not). A bullet budget is the opponent's think
+plus a little, and that little is worth more banked for the scramble than spent now. The carried
+record therefore governs the cuts only above `SlowTcDampFloorMs` (5,000 ms of soft budget) - the
+boundary the slow-control damp already uses as "the regime the cut fractions were measured in" -
+so 60+1 and 60+2 play exactly as before, 180+1 and 180+2 get the fix from the opening and lose it
+on their own as the clock runs down and the budget falls under the floor, and 600+1 and slower get
+it everywhere; a 2x clock lead at 60+1 also opens it, which is where PonderContinue already adds
+an iteration.
+
+**Measured on the same positions.** The replay harness run again with the fix, paired on 37 ponderhits of the real positions (the opponent's real think, a mean 4.5 s): the v6.0.0 binary answered 24 of them within 150 ms (median 61 ms, 25 on the obvious-move cut, mean depth 17.9); the fix answered 7 within 150 ms (median 0.83 s, mean 3.72 s, 9 on the cut, mean depth 24.0 against the ponder's 25.5), spending a mean 0.53 of the soft budget of fresh time; the move played was the same in 29 of the 37 positions. That run used the candidate without the bullet gate; the shipped build, replayed on the 60+1 and 60+2 positions, answered the ponderhits under 5 s of budget exactly as v6.0.0 did (3 of 6 within 150 ms on both, the same three) and the 30 s and 26 s fresh searches it found at 60+2 (a 6x clock lead scaling the budget to 11-15 s, then the dynamic factors) belong to v6.0.0 as much as to it.
+
+**Measured at the clock, self-play on a loaded box** (the box was running the fqctl training and a replay probe at the same time, so the Elo figures are noisy and the clock profile is the reading that matters): at 180+1 with ponder on both sides, one thread, the fix listed first: 5-7-28 (0.475) over 40 games, -17.4 +/- 59.4 Elo, 0 time forfeits; the fix spent 2.26 s per move against 2.14 and ended with a mean 123.0 s against 127.9; at 60+1 with ponder on both sides, one thread, the fix listed first: 5-6-53 (0.492) over 64 games, -5.8 +/- 37.7 Elo, 0 time forfeits; the fix spent 1.42 s per move against 1.45 and ended with a mean 36.5 s against 34.7. The user's standing order was to fix the time management and ship; the matches are the forfeit and regression check, not an Elo claim. Both bots run it since 2026-10-09.
+
 ## 2026-10-07 (v6.0.0) - fqgen7 embedded: deeper blind-spot labels, +15.9 Elo over fqblind
 
 **Why 6.0.0.** The road to 6.0.0 agreed on 2026-10-05 had three conditions, and the last one closed
