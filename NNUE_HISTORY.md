@@ -15,8 +15,8 @@ fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus,
 45 search constants) changed search, time management and the trainer, not the net (see
 CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
 on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). In
-preparation for the next generation (`fqgen8`): the `datascale6` corpus, autoplay at 6,000 nodes with
-`fqblind` as teacher and the tablebases probed in the search. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
+preparation for the next generation (`fqgen8`): `datascale6/bulk` (130M positions of 6,000-node autoplay,
+`fqblind` as teacher, the tablebases probed in the search) and a second 40,000-node relabel, `deep2`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
 status entry further down). Last measured CCRL: **3420 +/- 50** (v5.9.27 with `fqblind`; 6.0.0 not yet measured; gauntlet on field 2,
 single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
@@ -120,10 +120,7 @@ were deepest. The rate of positions the net gets wrong outright stays at 0-3% fo
   next net needs them from a source that sees the answer (the tablebases in the label, the game
   result) rather than more of our own shallow labels.
 
-**The next generation (`fqgen8`).** The `datascale6` corpus (autoplay at 6,000 nodes, `fqblind` as
-teacher, the tablebases probed in the search, the four-source mix of datascale4 and 5), the QAT
-rounding of the factorized rows, WDL-versus-score row filtering, and more of the deep labels (the +9.0 says that is
-where the Elo is): the 40,000-node relabel of more positions than the mined 12M.
+**The next generation (`fqgen8`).** The `datascale6` corpus was stopped on 2026-10-10 after its first source, `bulk` (130M positions of 6,000-node autoplay with `fqblind` as teacher and the tablebases probed in the search): its other sources (`open`, `mid`, `hard`) had no measured value, while the 40,000-node labels had just measured +9.0 Elo. The CPU goes to a second deep relabel instead (`deep2`: the next 8M positions of the six mined blind-spot groups, labelled at 40,000 nodes by `fqgen7` with the tablebases in the search, about two days at 10 threads). `fqgen8` is a cold 60-epoch anneal on the corpus plus `datascale6/bulk` and the first deep batch (running since 2026-10-10), followed by its 14-epoch re-entry, where `deep2` enters at weight 4x. Still open for it: the QAT rounding of the factorized rows and WDL-versus-score row filtering.
 
 ---
 
