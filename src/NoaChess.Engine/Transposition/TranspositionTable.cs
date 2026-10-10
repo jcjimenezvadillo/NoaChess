@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using NoaChess.Core;
 
@@ -25,7 +24,7 @@ namespace NoaChess.Engine.Transposition;
 // - The full 64-bit key is split: low bits index the cluster, the high 32
 //   bits are stored for verification (TT moves are pseudo-legality-vetted
 //   before use, so the 2^-32 residual false-match rate is harmless).
-public sealed class TranspositionTable
+public sealed unsafe class TranspositionTable
 {
     private const int ClusterSize = 4;
     // GenBound == 0 is the empty marker. Keeping the live generation in 1..31
@@ -33,39 +32,48 @@ public sealed class TranspositionTable
     // like an empty slot, while preserving TTEntry's 16-byte size.
     private const int GenerationCycle = 31;
     private const int EntryBytes = 16;
-    private const int LineBytes = 64;
 
-    // The table lives in a PINNED ulong buffer instead of a TTEntry[] so the
-    // clusters can be 64-byte aligned. A managed array starts wherever the GC
-    // puts it (8-aligned, nothing more), and since every cluster shares the
-    // array's misalignment, one unlucky allocation makes EVERY probe straddle
-    // two cache lines: two memory accesses single-threaded, and under SMP two
-    // coherence units per probe on the hottest shared structure in the engine.
-    // Pinning keeps the computed alignment valid for the buffer's lifetime;
-    // one spare cache line of slack pays for sliding the base to a boundary.
+    // Process-wide: allocate new tables in large pages when the OS allows it
+    // (see TableMemory). The UCI host turns it on ("LargePages" option); the
+    // library default keeps ordinary pages for every other caller.
+    public static bool LargePagesAllowed { get; set; }
+
+    // The clusters must be 64-byte aligned. A managed array starts wherever
+    // the GC puts it (8-aligned, nothing more), and since every cluster shares
+    // the array's misalignment, one unlucky allocation makes EVERY probe
+    // straddle two cache lines: two memory accesses single-threaded, and under
+    // SMP two coherence units per probe on the hottest shared structure in the
+    // engine. TableMemory owns the block and hands out an aligned base.
     // Assigned by Resize (called from the constructor); the initializer only
     // silences the compiler, which cannot see through the method call.
-    private ulong[] _buffer = [];
-    private int _byteBase;
+    private TableMemory _memory = null!;
+    private byte* _base;
+    private long _tableBytes;
     private ulong _clusterMask;
     private int _generation;
+
+    // Blocks replaced while a worker might still hold the old base (a helper
+    // quarantined for missing a stop, or a resize requested mid-search). They
+    // are released with the table, never under a running reader.
+    private readonly List<TableMemory> _retired = [];
 
     public TranspositionTable(int sizeMb)
     {
         Resize(sizeMb);
     }
 
-    // The entry at 'index', addressed through the aligned base. The pattern
-    // (data reference plus byte offset) compiles to a single lea; going
-    // through a Span slice-and-cast per probe would not.
+    public bool UsesLargePages => _memory.LargePages;
+    public int SizeMb => (int)(_tableBytes >> 20);
+
+    // The entry at 'index', addressed through the aligned base (a single lea).
     private ref TTEntry EntryAt(int index)
-        => ref Unsafe.As<byte, TTEntry>(ref Unsafe.AddByteOffset(
-               ref Unsafe.As<ulong, byte>(ref MemoryMarshal.GetArrayDataReference(_buffer)),
-               _byteBase + index * EntryBytes));
+        => ref Unsafe.AsRef<TTEntry>(_base + (nint)index * EntryBytes);
 
     // Allocates the table. The cluster count is rounded down to a power of
-    // two so "key % clusters" becomes "key & mask".
-    public void Resize(int sizeMb)
+    // two so "key % clusters" becomes "key & mask". 'releaseOld' false keeps
+    // the previous block alive until the table itself goes, for callers that
+    // cannot rule out a worker still reading it.
+    public void Resize(int sizeMb, bool releaseOld = true)
     {
         if (Unsafe.SizeOf<TTEntry>() != EntryBytes)
             throw new InvalidOperationException(
@@ -78,19 +86,27 @@ public sealed class TranspositionTable
         while ((long)clusters * 2 * ClusterSize <= targetEntries)
             clusters *= 2;
 
-        // Cluster bytes, plus one line of slack for alignment, in ulongs.
-        long bytes = (long)clusters * ClusterSize * EntryBytes + LineBytes;
-        _buffer = GC.AllocateArray<ulong>((int)(bytes / sizeof(ulong)), pinned: true);
-        nint addr = Marshal.UnsafeAddrOfPinnedArrayElement(_buffer, 0);
-        _byteBase = (int)(-addr & (LineBytes - 1));
+        long bytes = (long)clusters * ClusterSize * EntryBytes;
+        TableMemory? old = _memory;
+        _memory = new TableMemory(bytes, LargePagesAllowed);
+        _base = _memory.Base;
+        _tableBytes = bytes;
         _clusterMask = (ulong)(clusters - 1);
         _generation = 1;
+
+        if (old is not null)
+        {
+            if (releaseOld)
+                old.Dispose();
+            else
+                _retired.Add(old);
+        }
     }
 
     // Wipes all entries (new game).
     public void Clear()
     {
-        Array.Clear(_buffer);
+        _memory.Clear(_tableBytes);
         _generation = 1;
     }
 
@@ -106,14 +122,12 @@ public sealed class TranspositionTable
     // it. The search calls this the instant a move is made, hundreds of cycles
     // before the child node actually probes.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public unsafe void Prefetch(ulong key)
+    public void Prefetch(ulong key)
     {
         if (!Sse.IsSupported)
             return;
         int baseIdx = (int)(key & _clusterMask) * ClusterSize;
-        Sse.Prefetch0(Unsafe.AsPointer(ref Unsafe.AddByteOffset(
-            ref Unsafe.As<ulong, byte>(ref MemoryMarshal.GetArrayDataReference(_buffer)),
-            _byteBase + baseIdx * EntryBytes)));
+        Sse.Prefetch0(_base + (nint)baseIdx * EntryBytes);
     }
 
     // Looks up a position. Returns true (and the entry) when any slot of the
@@ -198,6 +212,10 @@ public sealed class TranspositionTable
                     target.StaticEval = staticEval;
                 return;
             }
+            // No TtMoveOnKeep (a refused store still writing its new move, as
+            // the reference writes the move before this test): measured
+            // 2026-10-04 at 100,000 fixed nodes, +2.3 +/- 6.7 over 4,000
+            // games, LLR -2.32, undecided at the cap; removed.
             if (bound != BoundType.Exact && depth < target.Depth - 4)
                 return;
         }

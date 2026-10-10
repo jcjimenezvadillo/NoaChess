@@ -4,6 +4,7 @@ using NoaChess.Engine;
 using NoaChess.Engine.Profiles;
 using NoaChess.Engine.Search;
 using NoaChess.Engine.TimeManagement;
+using NoaChess.Engine.Transposition;
 using NoaChess.UCI.Options;
 
 namespace NoaChess.UCI;
@@ -28,8 +29,10 @@ public sealed class UciLoop
 
     private readonly TextReader _input;
     private TextWriter _output;
-    private readonly ChessEngine _engine = new();
     private readonly UciOptions _options = new();
+    // Created in the constructor, after the large-pages switch is set, so the
+    // first table is already allocated the way the options say.
+    private readonly ChessEngine _engine;
 
     // Optional UCI traffic log ("Debug Log File"): every stdin line ("<<"),
     // every stdout line (">>") and the stdin EOF, timestamped. It is never
@@ -54,6 +57,9 @@ public sealed class UciLoop
     // optimum over the warm TT.
     private string[]? _pendingPonderTokens;
     private readonly Stopwatch _ponderTimer = new();
+    // Side to move and move number of the position "go ponder" was sent for,
+    // for the in-place conversion (see ParseLimits).
+    private (Color Side, int Fullmove)? _ponderRoot;
 
     // Handoff between "ponderhit" and the ponder search finishing on its own.
     // Exactly one of the two decides how that search ends - converted in place
@@ -80,9 +86,6 @@ public sealed class UciLoop
     // back far shallower AND disagrees, the pondered move stands.
     private const int PonderTrustMargin = 4; // plies the relaunch may fall short by
     private int _ponderDepth;
-    // PonderContinue fires only when this side holds at least this much of the
-    // opponent's clock, in percent (125 = a quarter more).
-    private const long PonderContinueLeadPercent = 125;
     private Move _ponderMove = Move.None;
     // The ponder search's own PV, kept with _ponderMove: when the pondered move
     // is the one played, its second move is the reply to ponder on next.
@@ -115,6 +118,8 @@ public sealed class UciLoop
         // write so it keeps reading stdin no matter what.
         _queuedOutput = new QueuedWriter(output, this);
         _output = _queuedOutput;
+        TranspositionTable.LargePagesAllowed = _options.LargePages;
+        _engine = new ChessEngine();
         _engine.Diagnostic += message => _output.WriteLine("info string " + message);
     }
 
@@ -342,6 +347,11 @@ public sealed class UciLoop
                         if (_options.EvalFile.Length == 0)
                             TryLoadEmbeddedNnue();
                     }
+                    // With no search running, build the helper pool now so
+                    // the first "go" does not pay for it (after the net has
+                    // loaded, so the helpers clone the right evaluator).
+                    if (_searchTask is null or { IsCompleted: true })
+                        _engine.PrepareSearchThreads();
                     _output.WriteLine("readyok");
                     break;
 
@@ -445,6 +455,7 @@ public sealed class UciLoop
                     WaitForSearchToFinish(suppressBestmove: true);
                     _board = new Board();
                     _engine.NewGame(); // Clear TT/heuristics from the previous game.
+                    _engine.PrepareSearchThreads(); // fresh helpers, off the clock
                     break;
 
                 case "position":
@@ -481,7 +492,10 @@ public sealed class UciLoop
                         bool converted = false;
                         if (_options.PonderInPlace)
                         {
-                            SearchLimits timedLimits = ParseLimits(timedTokens, ponderElapsedMs: ponderedMs);
+                            // The root captured at "go ponder": at one thread
+                            // the running search owns _board right now.
+                            SearchLimits timedLimits = ParseLimits(timedTokens, ponderElapsedMs: ponderedMs,
+                                                                   root: _ponderRoot);
                             lock (_ponderGate)
                             {
                                 if (!_ponderSearchDone
@@ -998,8 +1012,13 @@ public sealed class UciLoop
         string? changed = _options.Set(name, value);
 
         // Options that require engine-side action.
-        if (changed == "Hash")
+        if (changed is "Hash" or "LargePages")
+        {
+            TranspositionTable.LargePagesAllowed = _options.LargePages;
             _engine.ResizeHash(_options.Hash);
+            _output.WriteLine($"info string Hash {_engine.HashSizeMb} MB in " +
+                              (_engine.HashInLargePages ? "large pages" : "normal pages"));
+        }
         if (changed == "Threads")
             _engine.Threads = _options.Threads;
         if (changed == "Profile")
@@ -1147,6 +1166,7 @@ public sealed class UciLoop
             _engine.ContemptCp = EffectiveContempt();
         if (changed == "CaptureLmr")
             _engine.UseCaptureLmr = _options.CaptureLmr;
+        // ClockOptimumHalfMax is read by ParseLimits directly; nothing to push.
         if (changed is "SyzygyProbeLimit" or "SyzygyProbeDepth" or "Syzygy50MoveRule")
         {
             _engine.SyzygyProbeLimit = _options.SyzygyProbeLimit;
@@ -1277,6 +1297,8 @@ public sealed class UciLoop
         if (ponder)
         {
             _ponderTimer.Restart();
+            // Read now, while no search is touching _board (see ParseLimits).
+            _ponderRoot = (_board.SideToMove, _board.FullmoveNumber);
             lock (_ponderGate)
             {
                 _ponderSearchDone = false;
@@ -1288,9 +1310,9 @@ public sealed class UciLoop
             ? SearchLimits.Unlimited()
             : ParseLimits(tokens, ponderElapsedMs: ponderedMs);
 
-        // Clock-managed searches only (soft < hard): movetime/depth/nodes
-        // budgets are explicit GUI requests and stay untouched.
-        if (ponderedMs > 0 && limits.SoftTimeMs < limits.HardTimeMs)
+        // Clock-managed searches only: movetime/depth/nodes budgets are
+        // explicit GUI requests and stay untouched.
+        if (ponderedMs > 0 && limits.IsClockMode)
         {
             // Charge at most HALF the soft budget, never more.
             //
@@ -1340,7 +1362,7 @@ public sealed class UciLoop
                 }
                 long? mine = _board.SideToMove == Color.White ? Clock(tokens, "wtime") : Clock(tokens, "btime");
                 long? theirs = _board.SideToMove == Color.White ? Clock(tokens, "btime") : Clock(tokens, "wtime");
-                if (mine is long t && theirs is long o && o > 0 && t >= o * PonderContinueLeadPercent / 100)
+                if (PonderContinueFires(mine, theirs, ponderedMs, _options.PonderContinueLead))
                     limits = limits with { MinEasyDepth = _ponderDepth + 1 };
             }
         }
@@ -1357,6 +1379,26 @@ public sealed class UciLoop
         var cts = new CancellationTokenSource();
         _searchCts = cts;
         _searchTask = Task.Run(() => RunSearch(limits, cts.Token, waitForStop, ponder, fromPonderhit));
+    }
+
+    // The PonderContinue gate: this side's clock against the opponent's, both
+    // as the "go ponder" command sent them. Ours did not move during the
+    // ponder (it was their turn), theirs ran for the whole of it, so it is
+    // corrected by the pondered time exactly as ParseLimits corrects it for
+    // ClockLead; read stale, it overstated their clock and the gate under-
+    // fired. No increment is added: the clock the GUI sends already has it.
+    // A correction that reaches zero (network latency inside the ponder time,
+    // an opponent in a scramble) is the biggest lead of all, so it fires
+    // whenever this side has time; flooring it at zero and requiring a
+    // positive clock had turned the gate off in exactly that case.
+    internal static bool PonderContinueFires(long? mine, long? theirs, long ponderedMs, int leadPercent)
+    {
+        if (mine is not long t || theirs is not long raw)
+            return false;
+        long o = raw - ponderedMs;
+        if (o <= 0)
+            return t > 0;
+        return t >= o * leadPercent / 100;
     }
 
     // Mate scores carry distance-to-mate in plies from the root; UCI wants
@@ -1608,8 +1650,18 @@ public sealed class UciLoop
     // overstating the opponent's remaining clock right after every
     // ponderhit and under-firing ClockLead (or spuriously firing
     // ClockDeficitBrake) for however long the ponder ran.
-    internal SearchLimits ParseLimits(string[] tokens, long ponderElapsedMs = 0)
+    //
+    // 'root' (PonderInPlace only): the side to move and move number of the
+    // position "go ponder" was sent for. The in-place conversion runs on the
+    // UCI thread while a single-threaded search is making and unmaking moves
+    // on _board itself, so _board then describes whichever node the search is
+    // in, and the budget could be read off the wrong clock.
+    internal SearchLimits ParseLimits(string[] tokens, long ponderElapsedMs = 0,
+                                      (Color Side, int Fullmove)? root = null)
     {
+        Color side = root?.Side ?? _board.SideToMove;
+        int fullmove = root?.Fullmove ?? _board.FullmoveNumber;
+
         // Reads the numeric value following a keyword ("wtime 60000" -> 60000).
         long? Value(string keyword)
         {
@@ -1628,18 +1680,18 @@ public sealed class UciLoop
         // soft/hard budget, discounting MoveOverhead for GUI latency.
         // "movestogo N" (classical time controls) tightens the budget to the
         // moves left until the next time control.
-        long? myTime = _board.SideToMove == Color.White ? Value("wtime") : Value("btime");
+        long? myTime = side == Color.White ? Value("wtime") : Value("btime");
         SearchLimits limits = SearchLimits.Unlimited();
         bool hasLimit = false;
         if (myTime is long time)
         {
-            long inc = (_board.SideToMove == Color.White ? Value("winc") : Value("binc")) ?? 0;
+            long inc = (side == Color.White ? Value("winc") : Value("binc")) ?? 0;
             int? movesToGo = Value("movestogo") is long mtg
                 ? (int)Math.Clamp(mtg, 1, int.MaxValue)
                 : null;
             // Game ply (halfmoves elapsed) drives the optimum-time curve: the
             // engine spends a growing share of its clock as the game advances.
-            int gamePly = 2 * (_board.FullmoveNumber - 1) + (_board.SideToMove == Color.Black ? 1 : 0);
+            int gamePly = 2 * (fullmove - 1) + (side == Color.Black ? 1 : 0);
             // ClockLead (2026-09-07, from a user observation): when this side
             // holds more clock than the opponent, the optimum grows by the
             // ratio of the two clocks. The hard maximum and the sustainability
@@ -1660,7 +1712,7 @@ public sealed class UciLoop
             // Math.Min(6.3, ...)) - so a genuinely large lead can actually be
             // spent instead of silently discarded past 2x.
             int scalePercent = _options.TimeScale;
-            long? oppTime = _board.SideToMove == Color.White ? Value("btime") : Value("wtime");
+            long? oppTime = side == Color.White ? Value("btime") : Value("wtime");
             if (ponderElapsedMs > 0 && oppTime is long oppRaw)
                 oppTime = Math.Max(0, oppRaw - ponderElapsedMs);
             if (_options.ClockLead && oppTime is long opp && opp > 0 && time > opp)
@@ -1684,7 +1736,7 @@ public sealed class UciLoop
                 scalePercent = (int)Math.Round(scalePercent * deficit);
             }
             limits = TimeManager.FromClock(time, inc, _options.MoveOverhead, movesToGo, gamePly,
-                                           scalePercent);
+                                           scalePercent, halfMax: _options.ClockOptimumHalfMax);
             hasLimit = true;
         }
 
@@ -1698,6 +1750,10 @@ public sealed class UciLoop
             {
                 HardTimeMs = Math.Min(limits.HardTimeMs, budget),
                 SoftTimeMs = Math.Min(limits.SoftTimeMs, budget),
+                // A movetime that binds the deadline is spent as a movetime,
+                // exactly as before ClockManaged existed; one that does not
+                // leaves the clock budget, and its mode, as they were.
+                ClockManaged = limits.ClockManaged && budget >= limits.HardTimeMs,
             };
             hasLimit = true;
         }

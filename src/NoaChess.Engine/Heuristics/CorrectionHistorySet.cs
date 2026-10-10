@@ -1,4 +1,5 @@
 using NoaChess.Core;
+using NoaChess.Engine.Search;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -34,9 +35,13 @@ namespace NoaChess.Engine.Heuristics;
 public sealed class CorrectionHistorySet
 {
     // Pawn weight == divisor: pawn-only behaviour is unchanged from v4.2.0.
-    private const int PawnWeight = 4;
-    private const int OtherWeight = 1;
-    private const int Divisor = PawnWeight;
+    // The pawn, non-pawn and continuation weights are tunable
+    // (SearchParams.CorrPawnW, CorrNonPawnW, CorrContW), so the blend is kept
+    // in 32x finer units: 128 : 32 over 128 is the old 4 : 1 over 4 exactly,
+    // since the numerator and the divisor both carry the same factor of 32.
+    // The minor and major tables stay at the fixed 32.
+    private const int OtherWeight = 32;
+    private const int Divisor = 128;
 
     // The five secondary tables can together move the evaluation by at most
     // 5/4 of a full pawn-table correction, and the total is clamped regardless.
@@ -66,13 +71,14 @@ public sealed class CorrectionHistorySet
     public int Correct(Board board, int rawEval, ulong continuationKey)
     {
         long weighted =
-            (long)PawnWeight * _pawn.RawEntry(board, board.PawnZobristKey)
-            + OtherWeight * _minor.RawEntry(board, board.MinorZobristKey)
-            + OtherWeight * _major.RawEntry(board, board.MajorZobristKey)
-            + OtherWeight * _nonPawn[0].RawEntry(board, board.NonPawnZobristKey(Color.White))
-            + OtherWeight * _nonPawn[1].RawEntry(board, board.NonPawnZobristKey(Color.Black))
+            (long)SearchParams.CorrPawnW * _pawn.RawEntry(board, board.PawnZobristKey)
+            + (long)OtherWeight * _minor.RawEntry(board, board.MinorZobristKey)
+            + (long)OtherWeight * _major.RawEntry(board, board.MajorZobristKey)
+            + (long)SearchParams.CorrNonPawnW
+                * (_nonPawn[0].RawEntry(board, board.NonPawnZobristKey(Color.White))
+                   + _nonPawn[1].RawEntry(board, board.NonPawnZobristKey(Color.Black)))
             + (continuationKey != 0
-                ? OtherWeight * _continuation.RawEntry(board, continuationKey)
+                ? (long)SearchParams.CorrContW * _continuation.RawEntry(board, continuationKey)
                 : 0);
 
         // One rounding step at the end, over the combined numerator, instead of

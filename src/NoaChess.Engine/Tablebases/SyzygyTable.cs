@@ -49,6 +49,14 @@ internal sealed class SyzygyTable : IDisposable
 
     private MemoryMappedFile? _mapping;
     private MemoryMappedViewAccessor? _view;
+    // The view's base address, acquired ONCE when the table is mapped. Reading
+    // through the accessor (ReadByte) acquired and released the view's
+    // SafeHandle on every byte: two interlocked operations on one counter
+    // shared by every thread probing this table. Under Lazy SMP in
+    // tablebase-dense endgames that cache line bounced between all the
+    // workers, and per-thread speed fell to about 6% of normal at 24 threads.
+    private unsafe byte* _base;
+    private long _length;
     private long _mapOffset;                 // DTZ value-remap table
     private volatile bool _ready;
     private volatile bool _failed;
@@ -120,7 +128,14 @@ internal sealed class SyzygyTable : IDisposable
     }
 
     // ---- little/big-endian readers over the mapped file ----
-    private byte U8(long o) => _view!.ReadByte(o);
+    // Bounds-checked like the accessor was: a bad offset throws (and the
+    // probe fails) instead of reading outside the view.
+    private unsafe byte U8(long o)
+    {
+        if ((ulong)o >= (ulong)_length)
+            throw new ArgumentOutOfRangeException(nameof(o));
+        return _base[o];
+    }
     private ushort U16LE(long o) => (ushort)(U8(o) | (U8(o + 1) << 8));
     private uint U32LE(long o) => (uint)(U8(o) | (U8(o + 1) << 8)
                                       | (U8(o + 2) << 16) | (U8(o + 3) << 24));
@@ -167,6 +182,7 @@ internal sealed class SyzygyTable : IDisposable
                     MemoryMappedFileAccess.Read);
                 _view = _mapping.CreateViewAccessor(
                     0, 0, MemoryMappedFileAccess.Read);
+                AcquireBase();
 
                 uint magic = U32LE(0);
                 uint expected = IsWdl ? SyzygyTables.WdlMagic : SyzygyTables.DtzMagic;
@@ -202,8 +218,25 @@ internal sealed class SyzygyTable : IDisposable
         }
     }
 
-    private void CloseMapping()
+    private unsafe void AcquireBase()
     {
+        byte* pointer = null;
+        _view!.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+        _base = pointer + _view.PointerOffset;
+        _length = _view.Capacity;
+    }
+
+    // Unmaps at once, so a replaced table's file can be deleted right away.
+    // Only Syzygy.Init reaches this for a live table, on a SyzygyPath change,
+    // which UCI does not allow during a search.
+    private unsafe void CloseMapping()
+    {
+        if (_base != null)
+        {
+            _length = 0;
+            _base = null;
+            _view!.SafeMemoryMappedViewHandle.ReleasePointer();
+        }
         _view?.Dispose();
         _mapping?.Dispose();
         _view = null;

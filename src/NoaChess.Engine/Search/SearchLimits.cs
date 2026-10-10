@@ -17,8 +17,15 @@ namespace NoaChess.Engine.Search;
 //   depth. Set on a ponderhit relaunch (PonderContinue) to one past the depth
 //   the ponder reached, so the relaunch always adds an iteration of its own
 //   over the warm table instead of stopping at depth 12 on a settled move.
+// - ClockManaged: the budget came from a clock (Clock / TimeManager), so the
+//   search manages it predictively even when soft and hard coincide. They
+//   coincide when a large clock lead or a very low clock clamps the optimum
+//   to the maximum, and "soft < hard" alone then read the budget as an
+//   explicit movetime: no forced-move or tablebase shortcut, the whole budget
+//   spent on one legal move (measured 6.3 s at 8 s against 1.3 s).
 public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long SoftTimeMs, long MaxNodes,
-                                           long ElapsedOffsetMs = 0, int MinEasyDepth = 0)
+                                           long ElapsedOffsetMs = 0, int MinEasyDepth = 0,
+                                           bool ClockManaged = false)
 {
     // Sentinel used when depth is not itself a limit. The old value (64)
     // made "go infinite", pondering, clock and node searches stop on their
@@ -39,7 +46,10 @@ public readonly record struct SearchLimits(int MaxDepth, long HardTimeMs, long S
 
     // Clock-derived budget (see TimeManager): aim for 'soft', never exceed 'hard'.
     public static SearchLimits Clock(long softMs, long hardMs) =>
-        new(DepthUnlimited, hardMs, softMs, long.MaxValue);
+        new(DepthUnlimited, hardMs, softMs, long.MaxValue, ClockManaged: true);
+
+    // Whether a clock governs this search predictively (see ClockManaged).
+    public bool IsClockMode => ClockManaged || SoftTimeMs < HardTimeMs;
 
     // Node-limited search ("go nodes N").
     public static SearchLimits Nodes(long nodes) =>

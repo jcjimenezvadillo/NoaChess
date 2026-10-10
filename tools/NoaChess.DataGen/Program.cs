@@ -95,11 +95,15 @@ if (options.RequireBook && options.Book is null && options.LabelBook is null)
 // Optional tablebase WDL relabelling (--tb-path): a recorded position that the
 // tablebases cover gets the EXACT outcome under best play as its WDL label
 // instead of the self-play game's eventual result, which in the tablebase
-// range is only as good as the engine's endgame play. The search itself also
-// probes the tables once they are loaded (the same static index the engine's
-// own SyzygyPath option fills), so the score label in that range is the one
-// the deployed engine would produce. Off unless a path is given; the manifest
-// records the setting and the count.
+// range is only as good as the engine's endgame play. The search also probes
+// the tables inside the tree, so the score label in that range is the one the
+// deployed engine would produce - but only since 2026-10-04. Loading the
+// tables fills the static index the root filter reads, while the in-tree
+// probe needs each engine's own piece limit, which only RefreshTablebaseLimit
+// computes (the UCI host calls it on SyzygyPath; this tool never did). Every
+// corpus labelled with --tb-path before then had the root filter but a search
+// blind to the tables. Off unless a path is given; the manifest records the
+// setting and the count.
 long tbRelabelled = 0;
 if (options.TbPath is not null)
 {
@@ -107,6 +111,25 @@ if (options.TbPath is not null)
     if (!Syzygy.Available)
         throw new InvalidOperationException($"No tablebases found under '{options.TbPath}'.");
     Console.WriteLine($"tb     : {options.TbPath} (up to {Syzygy.Cardinality} men; WDL labels inside that range come from the tables)");
+
+    // Self-check: K+N+N vs K cannot be forced, so with the tables active in the
+    // search the score is exactly 0; a search blind to them reads the extra
+    // material instead. Done with an engine set up exactly as the workers'.
+    if (Syzygy.Cardinality >= 4)
+    {
+        var tbCheckEngine = new ChessEngine();
+        tbCheckEngine.RefreshTablebaseLimit();
+        SearchResult tbCheck = tbCheckEngine.FindBestMove(
+            new Board("8/8/8/4k3/8/8/4KNN1/8 w - - 0 1"), SearchLimits.Nodes(options.Nodes));
+        if (tbCheck.Score != 0)
+        {
+            Console.Error.WriteLine(
+                $"datagen: tablebase probing inactive in the search (K+N+N vs K scored {tbCheck.Score}, "
+              + "expected 0). Refusing to start.");
+            return 2;
+        }
+        Console.WriteLine("tb     : self-check passed (the search probes the tables)");
+    }
 }
 
 // Optional human-opening seed book (from the pgnbook subcommand): each game
@@ -173,6 +196,10 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
         Parallel.For(0, options.Threads, _ =>
         {
             var engine = new ChessEngine();
+            // The in-tree tablebase probe needs the engine's own piece limit,
+            // which only this computes (see the --tb-path block above).
+            if (options.TbPath is not null)
+                engine.RefreshTablebaseLimit();
             if (options.Model is not null)
             {
                 if (!engine.TryLoadNnueModel(options.Model, out string error))
@@ -279,6 +306,9 @@ using (var shards = new ShardWriter(options.Output, options.ShardSize, startShar
     Parallel.For(0, options.Threads, worker =>
     {
         var engine = new ChessEngine();
+        // As in the label-book path: without this the search never probes.
+        if (options.TbPath is not null)
+            engine.RefreshTablebaseLimit();
         if (options.Model is not null)
         {
             if (!engine.TryLoadNnueModel(options.Model, out string error))

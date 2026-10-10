@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.22";
+    public const string Version = "6.0.2";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -138,9 +138,29 @@ public sealed class ChessEngine
                                      CancellationToken cancellation = default,
                                      IProgress<SearchProgress>? progress = null,
                                      MoveList? excludedRootMoves = null)
-        => _threads <= 1
-            ? _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves)
-            : FindBestMoveParallel(board, limits, cancellation, progress);
+    {
+        Volatile.Write(ref _searchInFlight, true);
+        try
+        {
+            if (_threads <= 1)
+            {
+                _search.SearchSerial = 0; // alone: rank the tablebase root directly
+                return _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves);
+            }
+            return FindBestMoveParallel(board, limits, cancellation, progress);
+        }
+        finally
+        {
+            Volatile.Write(ref _searchInFlight, false);
+        }
+    }
+
+    // True between the start and the end of FindBestMove; read by ResizeHash.
+    private bool _searchInFlight;
+
+    // The pool's shared root tablebase ranking and the serial of its search.
+    private readonly RootTablebaseMemo _rootTbMemo = new();
+    private int _searchSerial;
 
     // Hands a running "go ponder" search its real clock instead of stopping it
     // and starting again (see AlphaBetaSearch.ApplyClockLimits). Returns false
@@ -168,6 +188,16 @@ public sealed class ChessEngine
     {
         EnsureHelpers();
         int n = _threads;
+
+        // One root tablebase ranking for the whole pool (see RootTablebaseMemo).
+        // The helpers get the serial only as they are woken (below): a helper
+        // still out in quarantine may be inside the root filter of an OLDER
+        // search, and stamping the memo with this serial would hand this
+        // search the root moves of another position.
+        int serial = ++_searchSerial;
+        if (serial == 0)
+            serial = ++_searchSerial;
+        _search.SearchSerial = serial;
 
         // Age the shared table exactly ONCE; every worker then runs with
         // newSearch:false so the shared generation is not bumped n times.
@@ -222,87 +252,94 @@ public sealed class ChessEngine
         // The honest repair is the time manager itself, and it is a separate
         // change with its own measurement.
 
-        // Wake the parked workers. Everything they read was written above, and
-        // the semaphore release is the barrier that publishes it. _done counts
-        // them back in after the main worker decides. Quarantined helpers
-        // (see the watchdog below) are still inside a previous call - skip
-        // them, both in the release and in the count _done waits for, or this
-        // move would pay the watchdog timeout again. Under the gate: a helper
-        // rejoining concurrently must not flip its flag between the count and
-        // the release, or a released-but-uncounted helper would signal a
-        // countdown already at zero.
-        int activeHelpers = 0;
-        lock (_quarantineGate)
-        {
-            for (int i = 0; i < n - 1; i++)
-            {
-                _workerFinished[i] = _helperQuarantined[i];
-                if (!_helperQuarantined[i])
-                    activeHelpers++;
-            }
-            _done!.Reset(activeHelpers);
-            for (int i = 1; i < n; i++)
-                if (!_helperQuarantined[i - 1])
-                    _go[i - 1].Release();
-        }
-
-        // Couple the pool to the main worker's time manager: its instability
-        // factor averages root best-move changes over ALL workers (peer sum /
-        // thread count), which keeps it low-variance instead of letting one
-        // thread's noisy count spike the budget. Reset afterwards so the
-        // single-threaded path (which uses _search directly) is never affected.
-        AlphaBetaSearch[] pool = _helpers;
-        int lastPeerTotal = 0; // fresh per search; peer func runs only on the main thread
-        _search.SearchThreadCount = n;
-        _search.PeerBestMoveChanges = () =>
-        {
-            int cur = 0;
-            for (int i = 0; i < pool.Length; i++)
-                cur += pool[i].BestMoveChangesTotal;
-            int delta = cur - lastPeerTotal; // changes since the last main iteration
-            lastPeerTotal = cur;
-            return delta;
-        };
-
-        // The main worker runs on the calling thread so its "info" progress is
-        // reported from where the UCI host expects it.
+        // The try opens before the wake on purpose: a wake that throws (the
+        // SemaphoreFullException a broken protocol raises, see RebuildPool)
+        // would otherwise leave the helpers already woken searching on an
+        // uncancelled token, the zombie pool the finally exists to prevent.
+        // A helper counted but never woken then costs the watchdog once and
+        // ends in quarantine, which is the lesser failure.
         try
         {
+            // Wake the parked workers. Everything they read was written above,
+            // and the semaphore release is the barrier that publishes it. _done
+            // counts them back in after the main worker decides. Quarantined
+            // helpers (see the watchdog below) are still inside a previous call
+            // - skip them, both in the release and in the count _done waits
+            // for, or this move would pay the watchdog timeout again. Under the
+            // gate: a helper rejoining concurrently must not flip its flag
+            // between the count and the release, or a released-but-uncounted
+            // helper would signal a countdown already at zero.
+            int activeHelpers = 0;
+            lock (_quarantineGate)
+            {
+                for (int i = 0; i < n - 1; i++)
+                {
+                    _workerFinished[i] = _helperQuarantined[i];
+                    if (!_helperQuarantined[i])
+                        activeHelpers++;
+                }
+                _done!.Reset(activeHelpers);
+                for (int i = 1; i < n; i++)
+                {
+                    if (!_helperQuarantined[i - 1])
+                    {
+                        _helpers[i - 1].SearchSerial = serial;
+                        _go[i - 1].Release();
+                    }
+                }
+            }
+
+            // Couple the pool to the main worker's time manager: its
+            // instability factor averages root best-move changes over ALL
+            // workers (peer sum / thread count), which keeps it low-variance
+            // instead of letting one thread's noisy count spike the budget.
+            // Reset afterwards so the single-threaded path (which uses _search
+            // directly) is never affected.
+            AlphaBetaSearch[] pool = _helpers;
+            int lastPeerTotal = 0; // fresh per search; peer func runs only on the main thread
+            _search.SearchThreadCount = n;
+            _search.PeerBestMoveChanges = () =>
+            {
+                int cur = 0;
+                for (int i = 0; i < pool.Length; i++)
+                    cur += pool[i].BestMoveChangesTotal;
+                int delta = cur - lastPeerTotal; // changes since the last main iteration
+                lastPeerTotal = cur;
+                return delta;
+            };
+
+            // The main worker runs on the calling thread so its "info" progress
+            // is reported from where the UCI host expects it.
             results[0] = _search.FindBestMove(_workerBoards[0], limits, linked.Token, progress, newSearch: false);
         }
         finally
         {
             _search.SearchThreadCount = 1;
             _search.PeerBestMoveChanges = null;
-        }
 
-        // Main decided (time/depth/nodes): stop the helpers and gather. The
-        // workers are NOT joined - they park again for the next search - so this
-        // waits on the countdown instead. Waiting is still mandatory: reading
-        // their results while they are mid-search would race.
-        //
-        // Bounded, not unbounded: every helper checks the cancellation token
-        // every StopCheckInterval nodes, so in the overwhelming majority of
-        // searches this returns in well under a millisecond of the deadline.
-        // A helper that is not back within HelperWatchdogMs is quarantined: not
-        // awaited, not used, its late result discarded, until it returns on
-        // its own and rejoins (see WorkerLoop).
-        linked.Cancel();
-        if (!_done.Wait(HelperWatchdogMs))
-        {
-            lock (_quarantineGate)
-            {
-                for (int i = 0; i < n - 1; i++)
-                {
-                    if (_helperQuarantined[i] || _workerFinished[i])
-                        continue;
-                    _helperQuarantined[i] = true;
-                    _quarantinedAt[i] = Environment.TickCount64;
-                    Diagnostic?.Invoke(
-                        $"helper thread {i + 1} did not honour cancellation within "
-                      + $"{HelperWatchdogMs} ms - quarantined until it returns");
-                }
-            }
+            // Main decided (time/depth/nodes) or threw: stop the helpers and
+            // gather. The workers are NOT joined - they park again for the
+            // next search - so this waits on the countdown instead. Waiting is
+            // still mandatory: reading their results while they are
+            // mid-search would race.
+            //
+            // Stop and gather the helpers on every exit path: disposing the
+            // linked source uncancelled also unlinks it from the caller token,
+            // and helpers on unlimited limits would never stop. A main worker
+            // that threw (a progress sink that failed, say) used to leave the
+            // whole pool searching forever, and every later search then lost
+            // HelperWatchdogMs and its helpers to the quarantine.
+            //
+            // Bounded, not unbounded: every helper checks the cancellation
+            // token every StopCheckInterval nodes, so in the overwhelming
+            // majority of searches this returns in well under a millisecond of
+            // the deadline. A helper that is not back within HelperWatchdogMs
+            // is quarantined: not awaited, not used, its late result
+            // discarded, until it returns on its own and rejoins (see
+            // WorkerLoop).
+            linked.Cancel();
+            if (!_done!.Wait(HelperWatchdogMs))
+                QuarantineStragglers(n);
         }
 
         long totalNodes = 0;
@@ -315,7 +352,46 @@ public sealed class ChessEngine
             ? results[0]
             : VoteBestResult(results);
 
+        // Logged so the bot's logs can say how often, and where, the vote
+        // overrules the main thread (the 2026-09-27 review could not compare
+        // the two hosts because nothing recorded it).
+        if (chosen.BestMove != results[0].BestMove && results[0].BestMove != Move.None)
+            Diagnostic?.Invoke(
+                $"vote chose {chosen.BestMove} (depth {chosen.Depth}, score {chosen.Score}) over the "
+              + $"main thread's {results[0].BestMove} (depth {results[0].Depth}, score {results[0].Score})");
+
         return chosen with { NodesSearched = totalNodes };
+    }
+
+    // Quarantines every helper of an n-thread search that has not come back
+    // from the stop (see HelperWatchdogMs).
+    private void QuarantineStragglers(int n)
+    {
+        lock (_quarantineGate)
+        {
+            for (int i = 0; i < n - 1; i++)
+            {
+                if (_helperQuarantined[i] || _workerFinished[i])
+                    continue;
+                _helperQuarantined[i] = true;
+                _quarantinedAt[i] = Environment.TickCount64;
+                Diagnostic?.Invoke(
+                    $"helper thread {i + 1} did not honour cancellation within "
+                  + $"{HelperWatchdogMs} ms - quarantined until it returns");
+            }
+        }
+    }
+
+    // Builds the helper pool ahead of the first search (UCI "ucinewgame" and
+    // "isready"), so rebuilding up to 31 searchers and their threads is not
+    // paid inside the first move's clock: measured on the bot at 24 threads,
+    // the first search of every game spent a median 41 ms reaching depth 1
+    // against 1 ms on later moves. Skipped while a search is in flight; the
+    // search itself still calls EnsureHelpers, which is then a cheap re-sync.
+    public void PrepareSearchThreads()
+    {
+        if (_threads > 1 && !Volatile.Read(ref _searchInFlight))
+            EnsureHelpers();
     }
 
     // Rebuilds the helper pool when the thread count or evaluator changed, then
@@ -331,6 +407,10 @@ public sealed class ChessEngine
             _helpers = pool;
             _helpersStale = false;
         }
+
+        _search.RootTbMemo = _rootTbMemo;
+        foreach (AlphaBetaSearch h in _helpers)
+            h.RootTbMemo = _rootTbMemo;
 
         // The worker THREADS are rebuilt only when the count changes, not when
         // the searchers are replaced. A new game or a new evaluator swaps
@@ -472,6 +552,14 @@ public sealed class ChessEngine
     // it safe to swap the arrays the workers index into afterwards.
     private void ShutdownPool()
     {
+        // Retire the generation FIRST. A quarantined thread that returns
+        // between the shutdown below and the bump in RebuildPool would
+        // otherwise still match it and index (or park on) slots this method
+        // disposes - and with a pool rebuilt for zero helpers the bump there
+        // never came at all.
+        lock (_quarantineGate)
+            _poolGeneration++;
+
         if (_pool.Length == 0)
             return;
 
@@ -584,7 +672,11 @@ public sealed class ChessEngine
         // main is a completed iteration of essentially current information;
         // depth-1 rosiness stays excluded by the distance to mainDepth.
         int mainDepth = results[0].Depth;
-        int voteDepth = UseSmpVoteAll ? Math.Max(1, mainDepth - 1) : mainDepth;
+        // Never above the main's own depth: a main worker stopped before its
+        // first iteration completed reports depth 0, and a floor of 1 then
+        // left it out of its own vote - the comparison below reads its tally
+        // unconditionally and threw KeyNotFoundException.
+        int voteDepth = UseSmpVoteAll ? Math.Min(mainDepth, Math.Max(1, mainDepth - 1)) : mainDepth;
         if (results[0].BestMove == Move.None)
             return results[0]; // no legal move: nothing to vote on
 
@@ -661,8 +753,22 @@ public sealed class ChessEngine
         _helpersStale = true; // rebuild helpers fresh (empty history) next search
     }
 
-    // Reallocates the transposition table ("setoption name Hash value N").
-    public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
+    // Reallocates the transposition table ("setoption name Hash value N", or
+    // the large-pages switch). The old block is released at once unless a
+    // worker may still be reading it: a search in flight (a GUI resizing
+    // mid-search) or a helper quarantined for missing a stop, which keeps
+    // searching until it notices. Then it lives as long as the table.
+    public void ResizeHash(int sizeMb)
+    {
+        bool readerOut = Volatile.Read(ref _searchInFlight);
+        lock (_quarantineGate)
+            readerOut |= Array.IndexOf(_helperQuarantined, true) >= 0;
+        _search.ResizeTT(sizeMb, releaseOld: !readerOut);
+    }
+
+    // Whether the transposition table currently sits in large pages.
+    public bool HashInLargePages => _search.Tt.UsesLargePages;
+    public int HashSizeMb => _search.Tt.SizeMb;
 
     // Syzygy probing settings, driven by the UCI options of the same name.
     public int SyzygyProbeLimit { set => _search.SyzygyProbeLimit = value; }

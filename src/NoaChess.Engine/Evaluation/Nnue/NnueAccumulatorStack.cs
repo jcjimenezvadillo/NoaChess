@@ -530,10 +530,34 @@ public sealed class NnueAccumulatorStack
         // feature work than the one it replaced. Writing each level as it is
         // crossed makes a parent that never evaluates pay exactly once for all
         // of its children.
+        //
+        // The commonest level - a non-king move on a net with no threats and
+        // no psqt head - is written in ONE pass from its parent (FusedFrom)
+        // instead of a copy followed by a patch of the copy. King moves,
+        // castling and null moves keep the general path below.
+        bool fused = !_network.UsesThreats && _network.PsqtBuckets == 0
+                     && System.Runtime.Intrinsics.X86.Avx2.IsSupported
+                     && _network.FtOutputs % System.Runtime.Intrinsics.Vector256<short>.Count == 0;
+        bool copyPsqt = _network.PsqtBuckets > 0;
         for (int i = src + 1; i <= _top; i++)
         {
             NnueAccumulator level = _stack[i];
-            level.CopyPerspectiveFrom(_stack[i - 1], perspective);
+            if (fused && !_pending[i].IsNull && _pending[i].Mover != PieceType.King)
+            {
+                ref Pending pf = ref _pending[i];
+                NnueProfiling.CountPendingApplied();
+                Color them = Board.OppositeColor(pf.Us);
+                int sub2 = pf.Victim != PieceType.None
+                    ? NnueFeatureIndex.Index(perspective, kingSquare, them, pf.Victim, pf.VictimSquare)
+                    : -1;
+                level.FusedFrom(_network, _stack[i - 1], perspective,
+                    NnueFeatureIndex.Index(perspective, kingSquare, pf.Us, pf.Landed, pf.To),
+                    NnueFeatureIndex.Index(perspective, kingSquare, pf.Us, pf.Mover, pf.From),
+                    sub2);
+                level.Computed[p] = true;
+                continue;
+            }
+            level.CopyPerspectiveFrom(_stack[i - 1], perspective, copyPsqt);
             ApplyPending(level, perspective, kingSquare, in _pending[i]);
             if (_network.UsesThreats)
                 ApplyThreatDelta(level, perspective, kingSquare, i);

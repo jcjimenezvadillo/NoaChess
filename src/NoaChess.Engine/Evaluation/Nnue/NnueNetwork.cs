@@ -50,6 +50,10 @@ public sealed class NnueNetwork
     public short[]? L1Weights { get; init; }           // arch 1: [Buckets * L1Outputs * 2*FtOutputs]
     public sbyte[]? L1WeightsI8 { get; init; }          // arch 2/3: same shape, int8
     public required int[] L1Bias { get; init; }        // [Buckets * L1Outputs]
+    // Arch 1 L1 weights re-laid out by input PAIR: [bucket][pair][output][2],
+    // built once at load for the sparse-input kernel (NnueInference); null
+    // when that kernel does not apply.
+    public short[]? L1WeightsByPair { get; init; }
     // ARCH 1-4: [Buckets * L1Outputs].
     // ARCH 5:   [Buckets * (2*L1Outputs + 2*L2Outputs)], because the output
     //           reads both hidden layers and both of their activations.

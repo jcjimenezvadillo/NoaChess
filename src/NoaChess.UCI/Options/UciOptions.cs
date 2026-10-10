@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Linq;
+using NoaChess.Engine.Search;
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
@@ -14,6 +16,9 @@ namespace NoaChess.UCI.Options;
 public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
+    // Transposition table in large pages when the OS grants them (Windows,
+    // "Lock pages in memory"); falls back to normal pages silently.
+    public bool LargePages { get; private set; } = true;
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
@@ -146,7 +151,19 @@ public sealed class UciOptions
     // games, with zero time forfeits - it lost on chess, not on the clock.
     // Kept inert; the full record is in AlphaBetaSearch.ApplyClockLimits.
     public bool PonderInPlace { get; private set; }
-    public bool PonderContinue { get; private set; }
+    // ON by default since 5.9.25: on the Lichess bots it took the instant
+    // ponderhit replies from 11 of 32 to 0 of 13 in the first game, and the
+    // 180+2 ponder gauntlet against three foreign engines read +8 Elo for it
+    // (inside the noise) with no time forfeit.
+    public bool PonderContinue { get; private set; } = true;
+    // The clock lead PonderContinue needs, in percent of the opponent's clock
+    // (125 = a quarter more; 100 = equal clocks or better).
+    public int PonderContinueLead { get; private set; } = 125;
+    // Cap the clock optimum at half the move's hard maximum (see
+    // TimeManager.FromClock). Off until a ponder-on clock match against
+    // foreign engines on a quiet machine says otherwise; fixed-node SPRTs
+    // cannot see it.
+    public bool ClockOptimumHalfMax { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -164,7 +181,13 @@ public sealed class UciOptions
     // as plain wins and losses (used for analysis where the rule is ignored).
     public string SyzygyPath { get; private set; } = "";
     public int SyzygyProbeDepth { get; private set; } = 1;
-    // ---- DEFAULT LOWERED 7 -> 5 (2026-08-22), and the reason is not storage ----
+    // ---- HISTORY: lowered 7 -> 5 on 2026-08-22, RESTORED TO 7 the next day ----
+    // (v5.0.2.1: the 4.4x probe cost below was measured with the tables on a
+    // mechanical drive while the bot ran them from an SSD, and v5.0.3 had never
+    // been measured against v5.0.1; see CHANGELOG.md, 2026-08-23). The default
+    // is 7. The record of why it was lowered is kept below because the cost
+    // question it raises is real; v6.0.2 re-measures it with the tables on the
+    // SSD.
     //
     // THE COMPLAINT THAT STARTED IT. Two bot games where the engine gave away a
     // QUEEN for a pawn and, in another, a BISHOP for a pawn. Both moves won, but
@@ -205,6 +228,7 @@ public sealed class UciOptions
     public void Print(TextWriter output)
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
+        output.WriteLine("option name LargePages type check default true");
         output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
@@ -288,12 +312,18 @@ public sealed class UciOptions
         output.WriteLine("option name UCI_Opponent type string default <empty>");
         output.WriteLine("option name CaptureLmr type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
-        output.WriteLine("option name PonderContinue type check default false");
+        output.WriteLine("option name PonderContinue type check default true");
+        output.WriteLine("option name PonderContinueLead type spin default 125 min 0 max 1000");
+        output.WriteLine("option name ClockOptimumHalfMax type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
         output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
+        // The search constants open to a joint retune (see SearchParams), one
+        // spin each, defaulting to the engine's value (the 2026-10-05 SPSA).
+        foreach (SearchParams.Param p in SearchParams.All)
+            output.WriteLine($"option name Tune_{p.Name} type spin default {p.Default} min {p.Min} max {p.Max}");
     }
 
     // Applies "setoption name <name> value <value>". Returns the canonical
@@ -306,6 +336,10 @@ public sealed class UciOptions
             case "hash" when int.TryParse(value, out int hash):
                 Hash = Math.Clamp(hash, 1, 1024);
                 return "Hash";
+
+            case "largepages" when bool.TryParse(value, out bool largePages):
+                LargePages = largePages;
+                return "LargePages";
 
             case "threads" when int.TryParse(value, out int threads):
                 Threads = Math.Clamp(threads, 1, 32); // Lazy SMP parallel search.
@@ -592,6 +626,12 @@ public sealed class UciOptions
             case "pondercontinue" when bool.TryParse(value, out bool pcn):
                 PonderContinue = pcn;
                 return "PonderContinue";
+            case "pondercontinuelead" when int.TryParse(value, out int pcl):
+                PonderContinueLead = Math.Clamp(pcl, 0, 1000);
+                return "PonderContinueLead";
+            case "clockoptimumhalfmax" when bool.TryParse(value, out bool ohm):
+                ClockOptimumHalfMax = ohm;
+                return "ClockOptimumHalfMax";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;
@@ -614,6 +654,21 @@ public sealed class UciOptions
                 return "Debug Log File";
 
             default:
+                // "Tune_<Name>": a SearchParams constant, clamped to its range
+                // and applied at once - they are statics every search thread
+                // reads, so there is nothing to push to the engine or its
+                // helpers. A fractional value (a tuner's raw theta) rounds to
+                // the nearest integer.
+                if (name.StartsWith("tune_", StringComparison.OrdinalIgnoreCase)
+                    && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                       out double tuned)
+                    && SearchParams.Find(name[5..]) is { } param)
+                {
+                    int v = (int)Math.Clamp(Math.Round(tuned, MidpointRounding.AwayFromZero),
+                                            param.Min, param.Max);
+                    param.Set(v);
+                    return "Tune_" + param.Name;
+                }
                 return null;
         }
     }

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
@@ -52,6 +53,7 @@ public sealed class NnueCoarseLane
     }
 
     // outStm/outOpp receive accumulator + lane; they must be FtOutputs long.
+    [SkipLocalsInit]
     public void Apply(NnueNetwork net, Board board,
                       short[] stmAcc, short[] oppAcc,
                       short[] outStm, short[] outOpp)
@@ -61,23 +63,61 @@ public sealed class NnueCoarseLane
 
         short[] weights = net.CoarseWeights!;
         bool[]? dead = net.CoarseRowDead;
-        for (int pair = 0; pair < Buckets; pair++)
+
+        // The histogram diff, vectorised (audit of 2026-10-04): 144 = 4 x 32
+        // + 16 bytes compared a block at a time, the signed deltas stored in
+        // one go, a mask of the changed buckets kept, and the new histogram
+        // copied over the old wholesale. Then the changed buckets are walked
+        // in ascending order, as the scalar loop did. A byte delta is exact as
+        // a signed byte because a count never exceeds 127: a bucket counts
+        // relations between one attacker class and one victim class, at most
+        // ten pieces each (two plus eight promotions), plus at most eight
+        // pawns stopped by a pawn.
+        ref byte cur = ref MemoryMarshal.GetArrayDataReference(_counts);
+        ref byte prev = ref MemoryMarshal.GetArrayDataReference(_previous);
+        Span<sbyte> deltas = stackalloc sbyte[Buckets];
+        ref sbyte dRef = ref MemoryMarshal.GetReference(deltas);
+        ulong m0 = 0, m1 = 0, m2;
+        for (int block = 0; block < 4; block++)
         {
-            int delta = _counts[pair] - _previous[pair];
-            if (delta == 0)
-                continue;
-            _previous[pair] = _counts[pair];
-            // Both this bucket's row and its mirror are all zero: the two
-            // AddRows passes below would add nothing over 2 x ftOut lanes. 62
-            // of the 144 buckets are dead this way in the shipping net, so
-            // this is the common case, not a corner. _previous is still kept
-            // in step above, so nothing downstream can tell the difference.
-            if (dead is not null && dead[pair])
-                continue;
-            int attCode = pair / 12, vicCode = pair % 12;
-            int whiteRow = pair * ftOut;
-            int blackRow = (((attCode + 6) % 12) * 12 + (vicCode + 6) % 12) * ftOut;
-            NnueCoarse.AddRows(_laneWhite, _laneBlack, weights, whiteRow, blackRow, delta, ftOut);
+            int baseIdx = block * 32;
+            var c = Vector256.LoadUnsafe(ref cur, (nuint)baseIdx);
+            var pv = Vector256.LoadUnsafe(ref prev, (nuint)baseIdx);
+            ulong changed = ~Vector256.ExtractMostSignificantBits(Vector256.Equals(c, pv)) & 0xFFFFFFFFUL;
+            (c - pv).AsSByte().StoreUnsafe(ref dRef, (nuint)baseIdx);
+            c.StoreUnsafe(ref prev, (nuint)baseIdx);
+            if (block < 2)
+                m0 |= changed << (32 * block);
+            else
+                m1 |= changed << (32 * (block - 2));
+        }
+        {
+            var c = Vector128.LoadUnsafe(ref cur, 128);
+            var pv = Vector128.LoadUnsafe(ref prev, 128);
+            m2 = ~Vector128.ExtractMostSignificantBits(Vector128.Equals(c, pv)) & 0xFFFFUL;
+            (c - pv).AsSByte().StoreUnsafe(ref dRef, 128);
+            c.StoreUnsafe(ref prev, 128);
+        }
+        for (int w = 0; w < 3; w++)
+        {
+            ulong mask = w == 0 ? m0 : w == 1 ? m1 : m2;
+            while (mask != 0)
+            {
+                int pair = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(mask);
+                mask &= mask - 1;
+                // Both this bucket's row and its mirror are all zero: the two
+                // AddRows passes below would add nothing over 2 x ftOut lanes.
+                // 62 of the 144 buckets are dead this way in the shipping net,
+                // so this is the common case, not a corner. _previous is
+                // already in step above, so nothing downstream can tell.
+                if (dead is not null && dead[pair])
+                    continue;
+                int delta = deltas[pair];
+                int attCode = pair / 12, vicCode = pair % 12;
+                int whiteRow = pair * ftOut;
+                int blackRow = (((attCode + 6) % 12) * 12 + (vicCode + 6) % 12) * ftOut;
+                NnueCoarse.AddRows(_laneWhite, _laneBlack, weights, whiteRow, blackRow, delta, ftOut);
+            }
         }
 
         bool stmIsBlack = board.SideToMove == Color.Black;

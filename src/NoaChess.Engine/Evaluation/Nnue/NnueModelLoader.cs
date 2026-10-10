@@ -363,6 +363,25 @@ public static class NnueModelLoader
             }
         }
 
+        // The arch 1 L1 block again, column-major by input pair, for the
+        // sparse-input kernel: one pair's weights for every output sit next to
+        // each other, so a nonzero pair is one broadcast and L1Outputs / 8
+        // contiguous loads (see NnueInference.EvaluateInt16Sparse).
+        short[]? l1ByPair = null;
+        if (l1Weights is not null && !archFive && l1Outputs % 8 == 0)
+        {
+            int pairsPer = l1Inputs / 2;
+            l1ByPair = new short[l1Weights.Length];
+            for (int b = 0; b < buckets; b++)
+            {
+                int src = b * l1Outputs * l1Inputs;
+                for (int p = 0; p < pairsPer; p++)
+                    for (int o = 0; o < l1Outputs; o++)
+                        for (int k = 0; k < 2; k++)
+                            l1ByPair[src + (p * l1Outputs + o) * 2 + k] = l1Weights[src + o * l1Inputs + 2 * p + k];
+            }
+        }
+
         // Built once at load: see NnueNetwork.SquaredActivation for why the
         // activation must not divide at evaluation time.
         var squared = new byte[qa + 1];
@@ -388,6 +407,7 @@ public static class NnueModelLoader
             FtBias = ftBias,
             L1Weights = l1Weights,
             L1WeightsI8 = l1WeightsI8,
+            L1WeightsByPair = l1ByPair,
             L1Bias = l1Bias,
             L2Weights = l2Weights,
             L2Bias = l2Bias,

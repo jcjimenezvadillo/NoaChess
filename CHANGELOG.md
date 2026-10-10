@@ -1,5 +1,704 @@
 # CHANGELOG
 
+## 2026-10-10 (v6.0.2) - tablebase probes 1.32x faster in six-man endings, and an outside review answered
+
+**The review.** An outside team sent three points: measure `PonderContinue` (published off for want of a
+ponder-on match at a real control), the losing band (-500 to -1000: 4.7% of moves lose 300 cp or more
+against 0.4% overall, an evaluation problem), and the 5-man tablebases (-20.2 Elo at 10+0.1). All three
+were read on GitHub's `main`, which still holds v5.9.2 of 2026-09-12; checked against the current code:
+
+- `PonderContinue` has been ON by default since v5.9.25 and in both bots since 2026-10-01. What is
+  still unmeasured is its corrected gate (the audit's fix of v5.9.25) and its overlap with v6.0.1. The
+  bot's own log since the v6.0.1 restart (3,870 ponderhits) shows the gate at work: with the clock lead
+  below 1.25, 46-47% of ponderhits are answered within 150 ms; from 1.25 up, 15-19%. Below about 5 s of
+  soft budget (bullet) the instant reply is by design (v6.0.1); above it, when PonderContinue fires it
+  overrides the ponder's own verdict, so a forced recapture is not answered at once there. A clock match
+  that can price it needs foreign engines with ponder and several thousand games per arm on a quiet box;
+  not run.
+- The 4.7% comes from builds of July to 12 September judged at depth 11 without tablebases, and its
+  "live" 0.4% includes winning positions; the mirror winning band runs at 1.76% on the same games (an
+  [Update] note now says so at the original sentence). The saturation behind it is real and is now
+  measured directly on the blind-spot exam (`gate_probe.py curve`): every net up to `fqgen7` flattens
+  at about 500-650 cp once the judge is past 750 (median net/judge 0.82 at -1000..-750, 0.66 at
+  -1500..-1000, 0.27 beyond, the same on the winning side), where the 240/145 loss gives almost no
+  gradient. Not acted on here.
+- The -20.2 was measured on v5.0.3 (2026-08-22) with the 6-man DTZ files on a mechanical drive and the
+  old reader; nothing re-measured it since. Re-measured now (below).
+
+**Faster probes, identical results.** `Syzygy.Search`, the capture recursion every WDL and DTZ probe
+runs, generated the full legal move list at every level: a make, a king-attack test and an unmake for
+every non-capture, only to skip it. It now generates pseudo-legal moves, tests legality only for the
+captures it searches (and for DTZ the pawn moves), and checks for a legal skipped move only when a
+capture was searched, stopping at the first. The legal filter keeps the pseudo-legal order, so the
+captures are visited in the same order and every result is the same: 13,784 positions of 3 to 7 men
+(9,784 from real games, 4,000 random) give identical WDL and DTZ before and after, and searches with
+the tables loaded give identical nodes and tbhits. **1.32x faster to a fixed depth on 40 six-man roots**
+(depth 16, four alternated repetitions, 191,910,816 nodes on both sides, 114.5 s against 87.0 s); on
+7-9 man roots, where probes are rarer, no measurable change (0.997). CI node count 134088, unchanged.
+
+**The tables moved off the mechanical drive.** The 6-man DTZ files (365 files, 81 GB) lived only on
+the F: hard disk, and the root DTZ ranking read them at every six-man root: in a first 10+0.1 match
+with that layout the tablebase side played depth-1 moves of 0.13-0.63 s at six-man roots and lost one
+won ending on time. They are now on the SSD next to the WDL files (a host change, no code change; the
+engines' `SyzygyPath` already lists the SSD first). The Mac bot keeps its tables on its internal SSD.
+
+**Tablebases on against off, re-measured.** Tablebases on against off at 10+0.1 (one thread, every table on the SSD, the 6.0.2 build on both sides, the usual opening book): 139-154-510 over 803 games, -6.5 +/- 14.6 Elo, undecided on [-10, 0] and still running; with the 6-man DTZ on the hard disk the same match had read -9.5 +/- 27.7 over 222 games. Most of the decisive games are decided with 12 or more men on the board, where the search cannot reach a table (tablebase side 151 such losses, the other side 133), and in the games that reach six men or fewer the side with tables scores 0.63 (a selected subset: the side ahead chooses whether to simplify), so the full-game match is mostly noise around a small effect. The same comparison from 3,347 balanced 7-9 man starting positions, where the tables act in every game, follows, then SyzygyProbeLimit 6 against 7 and TbDrawProbeAlways off against on. The defaults stay as they are.
+
+The `UciOptions` comment that still said `SyzygyProbeLimit` had been lowered to 5 now records that it
+was restored to 7 the next day (v5.0.2.1). 496 tests, CI node count 134088.
+
+## 2026-10-09 (v6.0.1) - the ponderhit relaunch no longer answers at once on table-inherited confidence
+
+**The symptom, measured.** The user watched the bot answer in a fraction of a second with minutes on
+its clock and asked for every move of the games of 2026-10-08 and 09 to be reviewed. All 110 games
+(7,852 NoaChess moves, Lichess clocks at centisecond resolution; the 701 games of October 1-7 as
+the control): 37% of the engine's moves took 0.2 s or less against 11% of the opponents'. About
+eight per game are the opening book; the other 1,896 are the engine's: 608 in six-man tablebase
+positions (the root resolved by the tables, which is correct), 86 only moves, 111 recaptures, 96
+check evasions, 53 within six plies of the end, and 942 ordinary middlegame and endgame positions
+with 16 to 32 men and the opponent thinking 1 to 10 s. On the non-book moves the engine spent a
+median 0.25 of the optimum its own time manager computes (TimeManager plus ClockLead, with the
+lichess-bot overhead), a third of them under 0.10. With the clocks within 25% of each other, where
+PonderContinue does not fire, 43-45% of the replies to an opponent think of 1-10 s were instant,
+at 600+1 included (UxVuSRT1, moves 22 to 46: 40 ms each with 500 s on the clock and the opponent
+thinking 8-40 s). The engine ended the games with more clock than the opponent at every control
+(60+1/2: 37.5 s against 29.4 s; 180+1/2: 71.9 against 52.2; 600+1/2: 160 against 102). The control
+week shows the same shares (34%, 31% and 26% instant by base clock), so this is not a regression
+of v6.0.0: it is the standing behaviour since the obvious-move cut shipped.
+
+**The mechanism, reproduced.** After a ponderhit the engine stops the ponder and relaunches over
+the table the ponder filled. The table move IS the pondered best move, so the root "settles" at
+depth 1, every iteration up to the pondered depth replays it in milliseconds, and the whole tree
+goes into that one move (node share 0.95 and above). Twelve agreeing iterations in 20 ms, settled
+by depth 1, unanimous: the obvious-move rule, written to recognise a forced recapture (v5.8.x,
+E6wD3ggu), sees that shape on EVERY relaunch, whatever the position, and the easy-move rule sees
+the same stability. PonderContinue (v5.9.25) only steps in with a clock lead of 125% or more, and
+then only forces one iteration past the pondered depth. A faithful replay harness (the previous
+NoaChess move searched on its real clock so the table is warm as in a game, the engine pondering
+on its own hint as lichess-bot does, the opponent's real think time slept, then "ponderhit")
+reproduces the games move for move on the v6.0.0 binary: of 28 ponderhits among the first 35 real
+positions replayed, 20 ended on the obvious-move cut and 19 answered within 150 ms (median 57 ms)
+against a mean soft budget of 10.3 s, the relaunch stopping at a mean depth 17 while the ponder had
+reached 27 (NU325Ecd move 52 at 600+1: the opponent thought 10 s, the ponder reached depth 22, the
+relaunch answered in 21 ms at depth 13 with a 15 s budget; s5TOMeKZ move 37: 22 ms with 24 s).
+Ponder misses spent their budget (median 10 s). The bot's own log for 2026-10-09 (lichess-bot at
+DEBUG level, the full UCI traffic of 884 timed replies) says the same about production: of 465
+ponderhits, 39% were answered within 150 ms (median reply 1.08 s, the relaunch stopping at a mean
+depth 24 while the ponder had reached 36); with the opponent having thought 0.5-2 s, 53% (median
+70 ms); the 419 fresh searches after a ponder miss spent a median 4.8 s.
+
+**The fix.** The relaunch now inherits the ponder's OWN stability record - the depth where its
+root last changed, its decayed root-change count, its node share and its score at the last
+completed iteration (`AlphaBetaSearch`, `_lastIter*` recorded on every completed iteration of
+every search, copied into `_carried*` when a search starts with a pondered credit). The easy-move
+and obvious-move cuts may fire on a relaunch only when the ponder itself already satisfied that
+cut's conditions (`PonderWasEasy`, `PonderWasObvious`: the cuts' own thresholds applied to the
+ponder's record), or once the relaunch has gone the cut's own stability distance PAST the pondered
+depth on iterations that are not table replays. A forced recapture pondered to depth 20 still
+answers at once; a position the ponder was still changing its mind about now gets the budget the
+clock already allots to it (the soft budget minus the pondered credit, bounded as before by the
+hard maximum and the sustainability guard). Ponder misses, fresh searches, the in-place conversion
+and fixed-depth searches are untouched: CI node count 134088, unchanged. PonderContinue stays as it
+was. Two new tests pin the carried verdicts (`RelaunchStabilityTests`); 496 tests.
+
+**Not below 5 s of soft budget.** The first clock match of the fix, without that gate, said bullet
+wants the instant reply: at 60+1 with ponder on both sides the fixed side spent 1.62 s per move
+against 1.47, ended with a mean 23.5 s against 32.2 (one game at 5.7 s) and started 3-6-14 over 23
+games (noise at that size, but the clock profile is not). A bullet budget is the opponent's think
+plus a little, and that little is worth more banked for the scramble than spent now. The carried
+record therefore governs the cuts only above `SlowTcDampFloorMs` (5,000 ms of soft budget) - the
+boundary the slow-control damp already uses as "the regime the cut fractions were measured in" -
+so 60+1 and 60+2 play exactly as before, 180+1 and 180+2 get the fix from the opening and lose it
+on their own as the clock runs down and the budget falls under the floor, and 600+1 and slower get
+it everywhere; a 2x clock lead at 60+1 also opens it, which is where PonderContinue already adds
+an iteration.
+
+**Measured on the same positions.** The replay harness run again with the fix, paired on 37 ponderhits of the real positions (the opponent's real think, a mean 4.5 s): the v6.0.0 binary answered 24 of them within 150 ms (median 61 ms, 25 on the obvious-move cut, mean depth 17.9); the fix answered 7 within 150 ms (median 0.83 s, mean 3.72 s, 9 on the cut, mean depth 24.0 against the ponder's 25.5), spending a mean 0.53 of the soft budget of fresh time; the move played was the same in 29 of the 37 positions. That run used the candidate without the bullet gate; the shipped build, replayed on the 60+1 and 60+2 positions, answered the ponderhits under 5 s of budget exactly as v6.0.0 did (3 of 6 within 150 ms on both, the same three) and the 30 s and 26 s fresh searches it found at 60+2 (a 6x clock lead scaling the budget to 11-15 s, then the dynamic factors) belong to v6.0.0 as much as to it.
+
+**Measured at the clock.** Self-play with ponder on both sides, one thread: at 180+1 the fix scored 77-87-629 (0.494) over 793 games, -4.4 +/- 11.0 Elo, H0 on the [0, 10] test, with no time forfeit, spending 2.09 s per move against 1.95; at 60+1 (the gated build, bullet unchanged by design) 13-16-91 over 120 games, no forfeit, 1.42 s per move on both sides. So the fix is a correction of behaviour, not a measured Elo gain: self-play cannot show it (the same engine pondering the same way, a 79% draw ratio), it only shows that nothing was lost. In the bot's own log (3,338 ponderhits after the restart, 465 before) the instant replies fall from 41% to 36% at increments of 1 s or less and from 48% to 31% at 2 s, and 91 games ran with no time forfeit against the bot. Both bots run it since 2026-10-09.
+
+In production, 2026-10-09 11:27 to 2026-10-10 08:34 (the bot's DEBUG log with the full UCI traffic), the same measure on the 3,338 ponderhits of v6.0.1 against the 465 of v6.0.0 of the morning before: answered within 150 ms 34% against 39%; by increment, 1 s or less 36% against 41% (median reply 0.68 s against 0.81 s), 2 s 31% against 48% (median 1.43 s against 0.19 s); the relaunch stops at a mean depth 26.0 with the ponder at 34.5 (24.3 against 35.9 before). The bot played 91 games on v6.0.1 (+12 =57 -22 against 2,700-3,000 bots) with no time forfeit against it and its ratings did not move over the day (blitz 2851 -> 2841, bullet 2825 -> 2822, rapid 2843 -> 2840), which a single day cannot resolve either way (+-100).
+
+## 2026-10-07 (v6.0.0) - fqgen7 embedded: deeper blind-spot labels, +15.9 Elo over fqblind
+
+**Why 6.0.0.** The road to 6.0.0 agreed on 2026-10-05 had three conditions, and the last one closed
+today: (1) a jointly tuned search passes its SPRTs - v5.9.27, +16.4 at 100,000 fixed nodes and
++18.3 at 10+0.1; (2) the next-generation net with improved labels ships - this release; (3) a CCRL
+gauntlet shows +30 or more over v5.9.23's 3368, or above 3400 - v5.9.27 measured 3420 +/- 50.
+The search is unchanged from v5.9.27 (CI node count 134088, the classical path); the release is the
+net. The reading of 3420 belongs to v5.9.27 with `fqblind`; the gauntlet of 6.0.0 itself followed on 2026-10-10 and read 3461 +/- 55 (below).
+
+**The net.** `fqgen7` is a 14-epoch re-entry from `fqblind`, the same form that gave `fqco5912`
+(+34.3 over fqco592): a warm start from the finished net and a real cosine from lr 1.371433e-4 (the
+60-epoch schedule evaluated at epoch 46) down to 1e-5, lambda 0.735 -> 0.7, batch 16384,
+`--val-split tail-dedup`, the loader process, quantization-aware training, the factorized 128-wide
+transformer with the coarse lane (architecture unchanged). The data is `fqblind`'s corpus with one
+change: the blind-spot label-book files, the elite positions mined in six groups and labelled at
+6,000 nodes by our own search, are replaced by the same positions relabelled at 40,000 nodes by
+`fqblind` with the tablebases probed inside the search (the v5.9.25 fix), up-weighted 4x; the
+blind-spot self-play files stay at 1.5x. About 1.25 billion rows drawn per epoch, 19-20 steps/s, the
+last epochs interrupted twice by whole-machine disk stalls that only delayed them. Best epoch 14 of 14
+(validation 0.006150 on the tail-dedup split; the split is a function of the corpus, so this is not
+comparable to `fqblind`'s 0.005989). The export is bit-exact against the engine (42 cp on the start
+position, from the trainer's check and from `NoaChess.DataGen --nnueprobe`), payload sha256
+`7a70aeab...9c39c6`, checked again from the "NNUE embedded model loaded" line of the built engine.
+
+**The SPRT.** Against `fqblind` on the same binary, one thread, 100,000 fixed nodes per move, the
+8moves_v3 book, `fqgen7` listed first, [0, 10]: **+15.9 +/- 11.9 Elo, 313-251-790 (0.523) over 1,354
+games, LOS 99.5%, LLR 2.95, H1 accepted**, no time losses, no anomalies (ten games that were still
+running when the test stopped are not counted). Like every early H1 the point estimate leans high.
+
+**What did not move: the blind-spot exam.** Each net's static evaluation against an independent
+judge at depth 20 on the held-out blind-spot positions (1,401 points, scale k = 0.810), mean absolute
+error in cp: opposite-coloured bishops 253 -> 252, same-coloured bishops 173 -> 175, rook endings
+369 -> 369, king attacks 173 -> 173, large material gaps 661 -> 665, pawn tension 70 -> 69
+(`fqblind` -> `fqgen7`). The signed bias in the compressed groups is a little larger (rook endings
+-71 -> -75, large gaps -74 -> -82). So the deeper labels did measure closer to the judge on paired
+positions, as predicted, but the net did not become closer to it on held-out ones, and the gain is
+not explained by the exam (the control of 2026-10-10, below, shows the labels do pay in play), and the
+blind spots themselves remain open (rook endings are still evaluated at about 0.7 of the judge's magnitude).
+
+**After the release.** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net.
+
+**The control, 2026-10-10: the deeper labels do pay.** `fqctl` is the same 14-epoch re-entry from `fqblind` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384, the same recipe and seed as `fqgen7`) on the `fqblind` corpus with the OLD 6,000-node blind-spot label files instead of the 40,000-node ones (best epoch 13, validation 0.005986 on the same split as `fqblind`'s 0.005989). At 100,000 fixed nodes on the 5.9.27 binary, one thread, 8moves_v3: `fqctl` against `fqblind` 1295-1205-3500 over 6,000 games, +5.2 +/- 5.7 Elo, LLR 0.25 (stopped at the 6,000-game cap, undecided); `fqgen7` against `fqctl` 854-756-2165 over 3,775 games, +9.0 +/- 7.2 Elo, LOS 99.3%, LLR 2.95, H1. So of `fqgen7`'s +15.9 over `fqblind`, about +5 is the re-entry itself (positive, not proven) and +9.0 (H1) is the deeper labels, and the two add up to the whole (5.2 + 9.0 = 14.2). The blind-spot exam under-measured them: the static evaluation on the six held-out groups did not move and play improved all the same. The inference drawn from the exam in the first version of this entry, that the gain might not belong to the labels, is withdrawn; the labels at 40,000 nodes with the tablebases in the search are the lever to push for the next net.
+
+**Gauntlet (2026-10-10): 3461 +/- 55 CCRL**, 69.8% over 250 games at 60+0.6 on field 2 (weighted field mean 3301), single-threaded, ponder off, the box quiet (training and datagen paused), `audit/gauntlet.py`: +41 over v5.9.27's 3420 +/- 50 and +93 over v5.9.23's 3368 +/- 46, the highest of the series; the first run was cut at 82 games when its window was closed and 168 more were played the same morning with the same engines, book and clock. Per opponent (20-22 games each), performance of 6.0.0 against 5.9.27: Renegade 3500 3500 vs 3483, Velvet 3420 3367 vs 3385, Reckless 3407 3407 vs 3390, Iris 3405 3422 vs 3475, Rice 3394 3464 vs 3394, Nalwald 3283 3498 vs 3410, Bitbit 3269 3505 vs 3396, Avalanche 3269 3396 vs 3437, Defenchess 3224 3581 vs 3371, Patricia 3206 3442 vs 3421, Princhess 3187 3476 vs 3428, Rubichess 3096 3749 (one draw in 22) vs 3478: the gain is in the weaker half of the field, the four strongest read the same as before. The gauntlet runs with ponder off, so v6.0.1's relaunch fix does not enter it: it is the reading of v6.0.0 and v6.0.1 alike.
+
+**Versioning from here.** 6.0.x for fixes and node-identical changes, 6.x.0 for a new net or a
+gauntlet-measured gain, 7.0.0 for a change of architecture (the threat features, a wider or different
+net). 493 tests, CI node count 134088 unchanged.
+
+## 2026-10-05 (v5.9.27) - the search retuned as a whole: 45 constants tuned jointly by SPSA
+
+**Why a joint retune.** Every search constant in the engine was a literal, ported from the reference
+under this project's unit rules (values x0.48, margins raw, history thresholds measured at the
+consumer) or hand-measured here, and each was settled one at a time against the others as they
+stood. Dozens of one-at-a-time ports have failed since (15 H0 in the night of the full-engine audit
+alone), which is what a set of constants stuck in a piecewise optimum looks like from the inside.
+Moving them together was the one lever left untried.
+
+**45 constants as UCI options.** `src/NoaChess.Engine/Search/SearchParams.cs` holds 45 search
+constants - reverse futility, null move, ProbCut, internal iterative reduction, singular extension,
+late move pruning, quiet and capture SEE pruning, futility, the LMR table and its adjustments,
+aspiration, quiescence, the history bonus and malus scales, the correction-history weights and the
+killer and counter-move bonuses - each exposed over UCI as a `Tune_<Name>` spin option, clamped to a
+range that bounds what a tuner may try. They are static fields, so every Lazy SMP helper reads the
+same values with nothing to copy, and UCI only sets them between searches. Fixed-point forms
+(`LmpScale`, `SeMargin`, the history scales, `AspGrowth`) give an integer tuner room to move a
+constant that was a small whole number, and each reproduces the old arithmetic exactly at its old
+value. Before any tuning, the build with every option at its old value was proven to search exactly
+as 5.9.25 did: CI node count 127139 and the bench identical.
+
+**The tune.** OpenBench-style SPSA: each iteration plays theta + c * delta against theta - c * delta,
+with delta +/-1 per parameter, and moves theta by the result. 5,000 iterations of 4 game pairs,
+40,000 games at 25,000 nodes per move, one thread, no tablebases, the 8moves_v3 book, about 7 hours.
+Each new default is the run's final value rounded to the nearest integer. The driver lives outside
+the repository.
+
+**What moved.** 36 of the 45. The biggest: `NmpMinDepth` 3 -> 4, `AspWindow` 50 -> 38,
+`CorrNonPawnW` 32 -> 40, `QuietSeeMargin` 23 -> 17, `LmrTtPv` 1024 -> 859, `NmpDepthDiv` 4 -> 3,
+`SeDepth` 8 -> 7, `RfpImproving` 85 -> 75, `NmpBase` 3 -> 4, `FutilityMargin` 100 -> 90, `RfpMargin`
+85 -> 78, `LmrBase` 75 -> 83, `ProbCutImproving` 40 -> 45, `LmrNonPv` 1024 -> 955. Read together:
+null move starts a ply later and reduces more (R = 4 + depth / 3 from depth 4, against 3 + depth / 4
+from depth 3), the reverse-futility, futility and quiet-SEE margins shrink, the aspiration window
+narrows and the non-pawn correction histories weigh more. The nine that stayed: `RfpDepth`,
+`IirDepth`, `LmpBase`, `LmpScale`, `QuietSeeDepth`, `FutilityDepth`, `CapSeeDepth`, `LmrMinMoves`,
+`CorrPawnW`. The full table is in `SearchParams.cs`, each changed field with a "was N" comment;
+setting every "was" value over UCI restores the old search.
+
+**Measured: the tuned defaults against the old ones, on the same binary.**
+- **100,000 fixed nodes** (the previous net, fqco5912, on both sides): **+16.4 +/- 12.2 Elo,
+  271-213-747 over 1,231 games, H1.**
+- **10+0.1** (the shipping net, fqblind, on both sides): **+18.3 +/- 13.1 Elo, 187-138-608 over 933
+  games, H1.** Time per move unchanged: mean 0.236 s against 0.237 s, p99 1.50 s on both sides. The
+  match had 10 time forfeits (7 tuned, 3 base), all in increment-only endings of 114 to 322 plies at
+  the 0.1 s increment, the pattern other fast matches on this machine have shown; they are not
+  attributable to the tuning.
+Both SPRTs stopped at H1 within about 1,200 games, so their point estimates carry some of the stopping
+rule's inflation; the two agree with each other.
+
+**The road to 6.0.0.** Condition (1), a jointly tuned search passing its SPRTs, is met. Condition
+(2), the next-generation net with improved labels, is in progress: the 12M mined blind-spot
+positions are being relabelled at 40,000 nodes by fqblind with the tablebases probed inside the
+search. Condition (3), a CCRL gauntlet at +30 or more over v5.9.23's 3368 or above 3400, is pending.
+See ROADMAP.md. [Condition (3) was met on 2026-10-07: 3420 +/- 50 CCRL, +52; see "Measured after
+release" below.]
+
+**Verified.** CI node count 127139 -> 134088 at the new defaults (`tools/ci/nodecount_ref.txt`
+regenerated; the SPSA test build gives the same 134088 with the tuned values set over UCI, and
+127139 at the old ones). `uci` now lists 138 options (93 + the 45 `Tune_` options). Net unchanged
+(`fqblind`). 493 tests (128 Core + 365 Engine): the new `SearchParamsTests` check that every
+parameter is declared at its default and inside its range, that `setoption` clamps, rounds and
+reaches the field, and that changing and restoring the LMR table restores the tree.
+
+**Still pending.** `ClockOptimumHalfMax` and the corrected PonderContinue gate (ponder-on clock
+matches against other engines on a quiet box). The quiet-box and 24-thread timing of v5.9.25's speed
+work. The reserves `ContHistByState` and `SharedCorrection`. The QAT rounding of factorized rows,
+WDL-versus-score row filtering and the tablebase relabel of the older corpora (NNUE_HISTORY.md). A
+gauntlet for the CCRL number [run on 2026-10-07, below].
+
+**Deployment.** Published (Windows + Mac, build tag `spsa`), and both bots run it: the Windows bot
+from its engine folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet:
+3420 +/- 50 CCRL (2026-10-07, below).
+
+**Measured after release (2026-10-07): the CCRL gauntlet.** Field 2, single-threaded, the project's
+series field (weighted field mean 3305), 240 games at 60+0.6, performance solved by
+`audit/gauntlet.py`: **64.6% (+95 =120 -25), 3420 CCRL +/- 50 (95%)**, against v5.9.23's 3368 +/- 46
+(58.1%, +82 =115 -43) on the same field and the same tool: **+52, the highest of the series**; the two
+error bands still overlap. No time forfeit or disconnect. The box ran only the gauntlet and a light
+background check (the bots were on the Mac). Between the two readings: 5.9.24 (tablebase speed under
+Lazy SMP), 5.9.25 (node-identical speed, +39.7 at 10+0.1 against 5.9.24), 5.9.26 (the `fqblind` net,
++8.0 at fixed nodes) and 5.9.27 (the SPSA retune, +18.3 at 10+0.1). Per opponent, 20 games each,
+performance of v5.9.27 against v5.9.23:
+
+| Opponent | Rating | v5.9.27 | v5.9.23 |
+|----------|--------|---------|---------|
+| Renegade | 3500 | 3483 | 3353 |
+| Velvet | 3420 | 3385 | 3312 |
+| Reckless | 3407 | 3390 | 3299 |
+| Iris | 3405 | 3475 | 3388 |
+| Rice | 3394 | 3394 | 3464 |
+| Nalwald | 3283 | 3410 | 3336 |
+| Bitbit | 3269 | 3396 | 3377 |
+| Avalanche | 3269 | 3437 | 3304 |
+| Defenchess | 3224 | 3371 | 3415 |
+| Patricia | 3206 | 3421 | 3259 |
+| Princhess | 3187 | 3428 | 3623 |
+| Rubichess | 3096 | 3478 | 3434 |
+
+The gain is concentrated against the four strongest opponents, all four up (by 73 to 130); against
+the other eight the readings move both ways, as 20-game readings do.
+
+**The road to 6.0.0 after the gauntlet.** Condition (3) is met: 3420 +/- 50, +52 over 3368 and above
+3400. With (1) met in this release, 6.0.0 ships when condition (2), the next-generation net, passes
+its SPRT against `fqblind`. That net, `fqgen7`, is in training: a 14-epoch re-entry from `fqblind`
+(lr 1.371433e-4) in which the `fqblind` corpus's 6,000-node blind-spot label files are replaced by the
+same mined elite positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed inside
+the search, at weight 4x. On the blind-spot exam positions those deeper labels measured closer to the
+independent judge in every group (paired positions, mean absolute error in centipawns, 6,000 ->
+40,000 nodes): large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops
+294 -> 273, king attacks 87 -> 77, same-coloured bishops 123 -> 116, pawn tension 48 -> 38. Also
+running: a second SPSA round at 60,000 nodes per move, starting from the 5.9.27 values. [Update 2026-10-07: finished. The second SPSA round (60,000 nodes per move, 2,400 iterations, 19,200 games, started from the 5.9.27 values) moved no parameter by more than one step and its values lost the SPRT against the 5.9.27 defaults, -17.4 +/- 17.0 over 580 games at 100,000 fixed nodes (H0): the 5.9.27 values stay and the SPSA route is exhausted for now.]
+
+## 2026-10-05 (v5.9.26) - fqblind embedded: a cold 60-epoch anneal pays, the blind-spot labels do not
+
+**`fqblind` embedded.** The cold form of the schedule experiment. fqco5912 (v5.9.20) re-entered the
+original 60-epoch cosine at its epoch 46 and measured +34.3; `fqblind` starts from scratch (no
+`--init-from`) and runs the whole schedule: 60 epochs of a cosine from lr 1e-3 down to 1e-5, lambda
+1.0 to 0.7, otherwise fqco5912's architecture and recipe (HalfKAv2_hm, 128-wide factorized
+transformer, coarse threat lane, one output bucket, QAT at QA 255, the reference-style loss with the
+240/145 constants, no weight decay on the transformer), seed 2, batch 16384. 282 files: the 263 of
+fqco5912's corpus (1,219,446,812 records: datascale2, datascale4, datascale5, selfplay-gen8 and the
+elite WDL shards) plus the 19 files of the blind-spot corpus, sampled at 1.5x their size
+(`--reweight`).
+
+**The blind-spot corpus.** 48,270,285 positions aimed at what the review of the Windows test
+(2026-09-27) found the net misjudging. Elite positions were mined in six groups - opposite-coloured
+bishops with a passed pawn, same-coloured bishops, rook endings with a passed pawn, king attacks,
+large material gaps and pawn tension - then labelled directly (DataGen's label-book mode) and used
+as starting points for self-play, played out with relaxed draw and resign adjudication and tablebase
+WDL results. About 4% of the training rows.
+
+**Training.** The first run on the trainer of v5.9.25. Validation on the leak-free `--val-split
+tail-dedup`: 12,068,759 of the 63,385,725 tail rows (19.04%) were dropped as positions the training
+rows contain, leaving 1,204,331,372 training rows and 51,316,966 validation rows. The run was stopped
+at the end of epoch 1 through `<out>.stop` and resumed exactly through `--resume-state` with the
+loader in its own process (`--loader-process`, `--loader-workers 3`): about 10.5 steps per second
+before, about 21 after; about 62 h in all. Best epoch 59 of 60, validation 0.005989 (on the
+tail-dedup split, so not comparable with the validation losses of earlier nets, read on the leaking
+tail cut). Exported 2026-10-05: `models\nnue\fqblind.noannue`, 5,820,956 bytes, sha256 starting
+cc65210c23bf26ec; verified bit-exact against the engine (44 cp on the start position on both sides).
+Architecture and file size unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco5912** (cutechess, the same 5.9.25 binary on both
+sides, only `EvalFile` differing, fqblind listed first, 8moves_v3 book, elo0=0 elo1=10). The first
+batch stopped at its 6,000-game cap undecided: 1448-1321-3231, +7.4 +/- 6.0, LLR 2.54. A second batch
+of 353 games (96-77-180) took the pooled count to **1544-1398-3411 over 6,353 games, +8.0 Elo, LLR
+3.40, H1**.
+
+**The blind-spot exam: the labels did not fix the evaluation.** Held-out positions, never in the
+training corpus, 300 per group (299 for K and L), each net's static evaluation against an independent
+judge at depth 20; mean absolute error in centipawns, fqco5912 -> fqblind:
+- B1, opposite-coloured bishops with a passer: 255 -> 253
+- B2, same-coloured bishops: 176 -> 173
+- R, rook endings with a passer: 371 -> 369
+- K, king attacks: 173 -> 173
+- L, large material gaps: 666 -> 661
+- P, pawn tension: 68 -> 70
+The rook-ending evaluations are still compressed to about 0.64-0.71 of the judge's. The +8.0 comes
+from the long cold anneal; the blind-spot labels did not move the static evaluation where they were
+aimed. Likely causes: the labels come from our own 6,000-node search, whose evaluation shares the blind
+spots it was meant to correct; the datagen search did not probe the tablebases in-tree (fixed in
+v5.9.25, the audit's item A9), so the endings closest to the tables were labelled blind to them; and
+the corpus is about 4% of the data. The next generation: deeper labels from our own search with the
+tablebases in the search, more weight for those files, and more weight on the game result for them.
+Detail in NNUE_HISTORY.md.
+
+**Also measured since v5.9.25 shipped.**
+- **v5.9.25 against v5.9.24 at the clock** (10+0.1, one thread, no tablebases, the new side first):
+  **+39.7 +/- 21.3 Elo, 78-39-226 over 343 games, LOS 100%, H1.** What separates the two there is
+  the audit's node-identical speed; an early H1 inflates the point estimate.
+- **The audit's remaining reserves**, at 100,000 fixed nodes, option on against off, new side first,
+  [0, 10], all H0: `TbPvCap` + `TbPvFloor` +1.3 +/- 6.9 over 3,753 games; `QuietUnderpromotions` -5.1
+  +/- 11.3 over 1,436; `PvExactHistory` -20.5 +/- 18.1 over 610; `LowPlyHistory` -16.6 +/- 16.8 over
+  711. `EvalDiffHistory` failed its own histstats gate and was not run. None of them is in the 5.9.26
+  code; `TbPvCap` stays the inert option it has been since v5.4.0.
+- **Shipped pruning rules switched off**, one at a time, the same conditions, all H0: `QuietSeePrune`
+  off -3.2 +/- 10.3 over 1,853; `LmpAllDepths` off -3.7 +/- 10.7 over 1,586; `StatScoreLmr` off +0.6
+  +/- 7.5 over 3,277; `CheckExemptFutility` off -5.9 +/- 11.8 over 1,407. With `NmpEvalR` off H0 in
+  v5.9.25, switching none of them off gains anything: the shipped pruning rules stay.
+
+**In progress.** A joint SPSA retune of 45 search constants (40,000 games at 25,000 nodes); its result
+goes to SPRTs before anything ships. [It shipped in v5.9.27: +16.4 at 100,000 fixed nodes and +18.3 at
+10+0.1, both H1.]
+
+**Versioning.** The next major version, 6.0.0, ships when three things hold: a jointly tuned search
+passes its SPRTs; the next-generation net, with the improved labels, ships; and a CCRL gauntlet shows
+a clear jump (+30 or more over v5.9.23's 3368, or above 3400). See ROADMAP.md.
+
+**Verified.** Search code untouched: only the embedded net and the version string changed. CI node
+count 127139, unchanged (the classical path, which a net swap never moves). 490 tests (128 Core + 362
+Engine).
+
+**Still pending.** `ClockOptimumHalfMax` and the corrected PonderContinue gate (ponder-on clock
+matches against other engines on a quiet box). The quiet-box and 24-thread timing of v5.9.25's speed
+work. The reserves `ContHistByState` and `SharedCorrection` (an NPS A/B and a multi-thread SPRT on a
+quiet box). The QAT rounding of factorized rows, WDL-versus-score row filtering and the tablebase
+relabel of the older corpora (NNUE_HISTORY.md). A gauntlet for the CCRL number.
+
+**Deployment.** Published (Windows + Mac), and both bots run it: the Windows bot from its engine
+folder on the SSD, `C:\NoaData\bot-engine`; the Mac bot restarted with it. Gauntlet not run for this
+version (5.9.23's 3368 CCRL stands).
+
+## 2026-10-04 (v5.9.25) - node-identical speed and correctness from a full-engine audit, PonderContinue on by default
+
+**Where these came from.** An overnight audit of the whole engine (2026-10-03/04): 66 findings, 30
+of them surviving an independent check against the code and the reference, merged into 29 items.
+Those that keep the search node-identical were implemented and gated on that identity (CI node
+count, bench60 at depth 12 and bench150 at depth 11 identical to 5.9.24 in every position's nodes
+and best move); those that change the search went to fixed-node SPRTs, and none passed (below).
+
+**Speed, node-identical.** Provisional: every timing below is paired and interleaved on bench150,
+but taken on a box loaded by a training run.
+- **A sparse first layer** (`NnueInference.EvaluateInt16Sparse`, weights re-laid out by input pair
+  at load). About 79% of the feature transformer's clipped outputs are zero, and the dense L1 kernel
+  multiplied every one of them. On AVX2 the kernel now builds a mask of the nonzero input pairs and
+  walks only those, each pair broadcast against its weight rows (VPMADDWD) into accumulators that
+  start at the bias; the output stage is unchanged and the integer sum is the same, so the result is
+  exact. **-8.0% time per position.** New tests `SparseKernel_MatchesScalar` (all-zero, all-QA and
+  single-pair inputs, a bucketed net) and `SparseKernel_MatchesScalar_OnTheShippingNet`.
+- **The accumulator updated in one pass** (`NnueAccumulator.FusedFrom`) for ordinary moves on nets
+  like the shipping one (no full threat features, no PSQT head; king moves and null moves keep the
+  old path), and **the coarse-lane diff vectorised** (block compare, byte deltas, the existing
+  dead-row skip). **A further -6.9% on top of the sparse kernel; the two together -14.2% [-14.7,
+  -13.7]**, against +1.0% for the same binary timed against itself.
+- **Moves that cannot answer a check dropped before they are scored or made** (`EvasionTargets`,
+  `CannotEvade`): in check, a non-king move that neither captures the checker nor blocks its line
+  (any non-king move under double check) is skipped, in the main search and in quiescence; en
+  passant is exempt. The sort is stable, so the remaining moves keep their order. **-3.7% [-4.3,
+  -3.2].**
+The release is about -14% time per position on bench150 as a whole. The separate readings are not
+multiplied together, and the quiet-box and 24-thread confirmation is still to come.
+
+**Fixes, node-identical at the shipping settings.**
+- **A tablebase loss the fifty-move clock has already saved.** The tables score a position for a
+  zeroed counter, so a "loss" whose next zeroing move the counter reaches first is a draw. The root
+  filter left a plainly lost root unfiltered, and in 11 to 12 of 30 such test endings the engine
+  threw the draw away with a capture, a pawn move or a move too short to reach the counter. Such a
+  root is now ranked by DTZ and the counter (allowing for DTZ being off by one) and only the
+  best-ranked group is kept: a real draw ranks above any save, and among saves the one with the
+  widest margin. In that ranking, and in the pawnless resistance band, a repetition counts as a draw
+  only as a threefold, as in the reference: with a twofold, 2 of 60 histories returning to the test
+  positions lost the save; 0 of 60 now. New tests `ALossTheClockHasSaved_PlaysASavingMove` (the 30
+  endings), `ATwofoldIsNotASave_AThreefoldIsADraw` (3 rows) and
+  `APawnlessLossWithASave_IsNotTreatedAsLost` (2 rows). The v5.9.19 entry below carries a correction
+  of the premise that hid this.
+- **The stop is checked right after a tablebase probe that went to disk** (`ProbeWdlCached` now
+  reports whether it reached the file). The tables are memory-mapped, so a cold page is a blocking
+  read, while the regular stop check only runs on a node interval. After such a probe the search now
+  checks the stop request and the clock, as the reference forces a time check at the next node; not
+  the node limit, so fixed-node and fixed-depth searches stay identical. **Stop overshoot at
+  movetime 300 with the tables on the mechanical disk, mean / max: 23 / 143 ms -> 3 / 19 ms at one
+  thread, 70 / 289 -> 25 / 99 ms at four.** Nodes, tbhits and moves are identical on 20
+  tablebase-dense positions. At the hard deadline it can cut depth 1 short, as the reference does;
+  the partial move is played.
+- **A clamped clock budget stays in clock mode** (`SearchLimits.ClockManaged`). A large clock lead
+  or a very low clock can clamp the soft budget onto the hard one, and the search inferred clock
+  mode from soft < hard, so it took soft == hard for a fixed movetime and spent all of it: a
+  position with one legal move took 6.3 s at `go wtime 8000 btime 1300 winc 1000 binc 1000`, and now
+  answers in under 50 ms. An explicit `movetime` is still spent in full. By the audit's estimate
+  about 0.25% of the moves of a clock game reach that clamp. New tests in `TimeManagerTests` and
+  `UciSearchLimitsTests`.
+- **A main worker that throws no longer leaves its helpers searching**
+  (`ChessEngine.FindBestMoveParallel`). The `try` now opens before the helpers are woken, so the
+  `finally` cancels and gathers them on every path (`QuarantineStragglers`); before, an exception in
+  the main worker, for example from a progress callback, left helpers on unlimited limits running
+  for good. Test `AMainWorkerThatThrowsStillStopsItsHelpers`.
+- **The shared root tablebase ranking of v5.9.24 can no longer be stamped by another search.** A
+  helper receives the search serial only when it is woken, the serial is read once for both the
+  compare and the store, a memo that keeps none of this root's moves gives way to a fresh ranking,
+  and an empty root list returns the static fallback move instead of spinning the aspiration loop
+  forever. Test `ARootRankingFromAnotherPosition_DoesNotEmptyTheRoot`.
+- **`PonderInPlace` budgets from the side that pondered.** At one thread the UCI thread read the
+  side to move from the live search board, on which the search makes and unmakes moves, so the
+  budget could come from the wrong clock; the `go ponder` root is now captured and passed to the
+  limits. The option is off by default, and its earlier one-thread flag tails are confounded by this
+  race. Test `PonderRoot_BudgetsFromThatSidesClock`.
+- Smaller: `ShutdownPool` bumps the pool generation first; the `SmpVoteAll` vote depth is capped at
+  the main worker's depth (it could throw a KeyNotFoundException; new `VoteBestResultTests` case);
+  the dead `ResetBestMoveChangesTotal` is deleted and its comment corrected.
+
+**`NoaChess.DataGen --tb-path` probes the tables inside the search.** The tool relabelled the WDL of
+tablebase positions but never set the engine's in-tree probe limit (`RefreshTablebaseLimit`), so its
+search saw the tables only through the root filter: K+N+N against K scored +361 instead of 0. Both
+worker paths now set it, and a startup self-check on that ending refuses to run unless it scores 0.
+Every corpus generated with `--tb-path` before this, the blind-spot corpus included, carries score
+labels from a search blind to the tables; the consequences for the data are in NNUE_HISTORY.md.
+
+**`PonderContinue` ON by default, and `PonderContinueLead`.** The option of v5.9.2 (after a
+ponderhit, with a clock lead, the easy-move and obvious-move cuts wait until the relaunch has gone
+one iteration past the ponder) is now on, and the lead it needs is a new spin option,
+`PonderContinueLead`, in percent of the opponent's clock (default 125, a quarter more; 100 means
+equal clocks or better). Measured:
+- **Gauntlet at 180+2 with ponder**, 4 threads and tablebases, the 5.9.24 binary with the option on
+  and off against Nalwald 19, Iris 2.0 and Rice 8.0.0, 120 games per arm: **52.1% (+14) against
+  50.8% (+6), +8 Elo, inside the noise**. The only time forfeit was in the arm without it.
+- **On the Lichess bot**, instant ponderhit replies went from 11 of 32 to 0 of 13 in the first game
+  with it.
+- **`PonderContinueLead` 100 against 125** at 60+1 with ponder, one thread: **flat, 50.2% over 647
+  games**. That match lost 41 of its 647 games on time, in both arms; they were traced to
+  whole-machine stalls and to tablebases read from a mechanical disk, not to PonderContinue (an
+  on/off diagnostic under the same conditions: 4 time losses against 3).
+All three readings used the gate as it was before the audit, which read the opponent's clock as
+`go ponder` had sent it, without the time that ran during the ponder: that overstated their clock
+and made the gate fire less often. The audit corrected it (`PonderContinueFires` subtracts the
+pondered time, as `ParseLimits` already did for ClockLead, and fires whenever this side has time
+once the corrected clock reaches zero; test
+`PonderContinueGate_CorrectsTheOpponentsClockForThePonder`). The corrected gate fires more often
+than the one measured, and it has not been measured yet.
+
+**The trainer** (`tools/training/nnue/train_nnue.py`, `dataset.py`).
+- **A validation split without the leak**, `--val-split tail-dedup`: the tail cut minus every tail
+  row whose position is a training row of any file, the position taken as the HalfKA feature sets of
+  both perspectives, order-free, so a mirrored or colour-flipped duplicate counts; the training rows
+  are exactly the tail split's. The plain tail cut leaked: in the current corpus 19% of the
+  validation tail also occurs among the training rows, which steers the choice of the best
+  checkpoint toward memorisation. A position-hash split (`--val-split hash`) was built first and is
+  kept only for comparison: it puts nearly every validation row next to training rows of its own
+  game. The default stays `tail`.
+- **Exact resume at an epoch boundary.** Every epoch writes `<out>.state` (weights, optimizer,
+  scheduler, lambda ramp, best so far and every RNG), and `--resume-state` continues the run
+  exactly; `--init-from` only approximated it, restarting the optimizer (fqco5912's resume).
+  `--data` may gain files at the boundary, and dropping or shortening one is refused where it would
+  leak trained rows into validation (`--accept-val-leak` overrides). `--stop-after-epoch N`, or
+  creating `<out>.stop`, ends a run cleanly at an epoch boundary.
+- **Memory-mapped coarse caches.** `np.load` ignores `mmap_mode` for an `.npz` and read every member
+  whole, about 52 GB of RAM; each member is now mapped in place.
+- **The loader in its own process** (`--loader-process`, with `--loader-workers` reader threads),
+  off the trainer's GIL: the batches are byte-identical and in the same order, and so is the RNG a
+  resume saves. The running anneal went from about 10.5 to about 21 steps per second.
+
+**Measured and removed: the audit's eight search ports and one reserve.** Fixed nodes (100,000), one
+thread, the same binary with the option on against off, the new side first, [0, 10]:
+- `TtMoveOnKeep` (a same-key store refused by the depth rule still keeps the new best move): +2.3
+  +/- 6.7 over 4,000 games, LLR -2.32, undecided at the cap.
+- `AlphaRaiseReduction` (at a PV node, three plies less for the remaining moves after an alpha raise
+  that does not cut): **H0, -23.1 +/- 19.2 over 558**.
+- `QuietSeeTight` (the quiet SEE prune at the reference's constant in this engine's units, about -11
+  per depth^2 instead of -23; an earlier audit had compared the two as if the units were equal):
+  **H0, 0.0 +/- 8.0 over 2,938**.
+- `TtPvFailLow` (a fail-low node inherits the parent's ttPv before its store): **H0, -5.7 +/- 11.7
+  over 1,402**.
+- `PostLmrContHist` (continuation history credited when a later move's null-window probe beats
+  alpha): +2.6 +/- 7.0 over 4,000, LLR -1.90, undecided at the cap.
+- `QsMoveCountPrune` (quiescence prunes the captures after the second move tried, recaptures and
+  direct checks exempt): **H0, -5.0 +/- 11.3 over 1,465**.
+- `HindsightBeforeTt` (the hindsight depth rules applied before the transposition cutoff test):
+  **H0, -13.1 +/- 15.2 over 820**.
+- `IirReference` (the reduction for a missing table move after the null move, at depth 6 or more, PV
+  and expected-cut nodes only): **H0, -1.7 +/- 9.3 over 2,311**. The reference exempts the previous
+  iteration's PV nodes, which this engine does not mark, so this does not close the reference's
+  form.
+- The reserve `QsCheckSeePrune` (quiet checks in quiescence pruned when the exchange loses
+  material): **H0, -3.8 +/- 10.6 over 1,654**, measured on a separate tree.
+None reached LLR +1.5, so none stays as an option: the eight are deleted from the engine, their
+numbers kept as comments where they acted, and the reserve never entered it.
+
+**Shipped terms switched off, one at a time,** to ask whether any of them hides refutations (in the
+game UWeztPu1 of the 2026-09-27 review, 38.Qf3 never becomes the best move by depth 24 with the
+quiet SEE prune on, and appears at depth 18 with it off): at 100,000 fixed nodes `NmpEvalR` off is
+**H0, -33.0 +/- 22.4 over 401 games**, so `NmpEvalR` stays. `QuietSeePrune`, `LmpAllDepths` and
+`StatScoreLmr` off are still running: pending. [Closed after the release, with `CheckExemptFutility`
+off as well: all H0, the rules stay; see v5.9.26.]
+
+**Verified.** CI node count 127139, unchanged; bench60 at depth 12 (8,453,908 nodes) and bench150 at
+depth 11 (11,593,960) identical to 5.9.24 in every position's nodes and best move. Net unchanged
+(`fqco5912`, the same embedded hash as 5.9.24); the 60-epoch `fqblind` anneal that runs on the new
+trainer is still training and is not part of this release (NNUE_HISTORY.md). 490 tests (128 Core +
+362 Engine). The node-identical items ship on judgment; `PonderContinue` on the measurements above.
+
+**Still pending.** `ClockOptimumHalfMax`, a new option, off: the clock optimum capped at half the
+move's maximum, so the dynamic factors keep room to extend a move that turns dangerous; it needs a
+ponder-on clock match against other engines on a quiet box, which a fixed-node SPRT cannot see. The
+corrected PonderContinue gate. The quiet-box and 24-thread timing of the speed work. The audit's
+remaining reserves (`EvalDiffHistory`, `PvExactHistory`, `QuietUnderpromotions`, `LowPlyHistory`,
+`TbPvFloor`, `ContHistByState`, `SharedCorrection`). Quantization of the factorized rows and
+WDL-versus-score row filtering in the trainer (NNUE_HISTORY.md). The score shown for a root the
+clock has saved, which stays the net's evaluation until the search sees the counter reach 100
+(display and time management only, not the move). A gauntlet for the CCRL number (5.9.23's 3368
+stands).
+
+**Deployment.** Published (Windows + Mac). Gauntlet not run for this version.
+
+## 2026-10-01 (v5.9.24) - tablebase endgames faster under Lazy SMP, and the review's rules that did not pass
+
+**Three node-identical changes for the multi-thread bot**, the remaining items of the SMP diagnosis
+of 2026-09-28:
+- **A per-worker memo of the in-search WDL probe** (`ProbeWdlCached` in `AlphaBetaSearch`): a
+  direct-mapped table of 4,096 position keys and results. The same tablebase position is probed
+  again and again - on every table miss, and every time a WIN is skipped under the fifty-move gate,
+  which stores nothing - and each probe walks the compressed file. A WDL result depends only on the
+  position, so the memo returns exactly what the probe would; it is cleared when the tables are
+  reloaded (`Syzygy.Generation`). **Measured at one thread on 20 tablebase-dense positions from the
+  bot's games, bot SyzygyPath, depth 10: 1.51x faster, with identical nodes, tbhits and best moves.**
+- **The root tablebase ranking computed once per pool search** (`RootTablebaseMemo`,
+  `FilterRootMovesShared`): every worker used to rank the root by DTZ on its own, so 28 identical
+  rankings per move at 29 threads, all walking the same files at once. The first worker to get there
+  ranks and stores the result; the others apply it as a set over their own root list, which every
+  worker generates identically. A single-thread search ranks alone, as before.
+- **The helper pool built off the clock** (`ChessEngine.PrepareSearchThreads`, called at
+  `ucinewgame` and at `isready` when no search is running): the first search of every game used to
+  rebuild the helpers inside its own budget, a median 41 ms to reach depth 1 at 24 threads against
+  1 ms on later moves.
+
+**Measured together at 24 threads**, 12 tablebase-dense positions, fixed depth 13, two rounds, the
+two binaries run alternately twice: **5.9.24 took 58.7 and 69.5 s against 104.4 and 106.3 s for
+5.9.23, 1.64x faster.** CI node count 127139, unchanged; net unchanged (`fqco5912`); 469 tests
+(128 Core + 341 Engine), with a new `RootFiltering_IsSharedAcrossThePool` (two tablebase roots in a
+row on a 4-thread pool, each keeping only winning moves).
+
+**The review's three rules measured by SPRT, none adopted** (same binary on both sides, the rule on
+against off, new side first, [0, 10]):
+- `ObviousFallingGuard` (no obvious-move cut while the evaluation is falling), 60+1 with ponder, one
+  thread: **-6.4 +/- 21.8 after 274 games**, LLR -0.92; stopped trending down.
+- `PonderDisagreeBlock` (when the relaunch disagrees with the pondered move, no easy or obvious cut
+  before passing the ponder's depth), same conditions: **-5.1 +/- 22.6 after 276 games**, LLR -0.76;
+  stopped trending down.
+- `VoteLostGuard` (the main thread's move stands when it already scores -300 or worse), 60+1 without
+  ponder: 48 games at 4 threads (+17.4 +/- 41.6), then at 8 threads **H0: -4.2 +/- 10.7 after 751
+  games** (LLR -3.07); with the 326 games of an interrupted first run, 1,077 games at essentially zero.
+All three were removed from the code rather than left switched off.
+
+**The Windows bot's host, and an open problem.** Recurring whole-machine freezes, a few times a day:
+on 2026-09-29 at 08:33-08:35 the bot's helper threads failed to honour the stop 89 times, returning
+up to 33 s late, and the bot lost a game on time; the VoteLostGuard SPRT lost 11 games to engines
+that stopped responding, in three bursts that hit all the games in progress at once, some at the
+first move out of the book with all 32 pieces on the board. Windows logs nothing, the tablebases are
+not involved, and the disks are set never to power down. The engine binaries lived on a mechanical
+disk, so the bot's engine now runs from the SSD as a first experiment. Also on the host: the bot's
+launcher no longer kills every NoaChess process on the machine by name (it took down an SPRT's
+engines), `Threads` 29 (the engine at about 90% of the machine, at the user's request) with
+`MoveOverhead` back to 200 as the timing analysis required above 24 threads, and a fixed 16 GB page
+file on the SSD (the machine had none, so it could not write a crash dump).
+
+**Deployment.** Published (Windows + Mac). The Windows bot restarts with 5.9.24, its engine on the
+SSD; the Mac bot is stopped with 5.9.24 in place, by the user's call. Gauntlet not run for this
+version (5.9.23's 3368 CCRL stands: the gauntlet runs one thread without tablebases, where nothing
+of this acts).
+
+## 2026-09-27 (v5.9.23) - large pages for the table, and tablebase reads without a shared counter
+
+**Where these came from.** A full review of the Windows bot's clean-machine test (203 games, every
+engine move judged by an independent engine, candidate errors re-judged at depth 24-30) found no
+blunder and no Windows-specific evaluation defect: the same net loses the same per move at the
+same depth on both hosts, and the Ryzen simply does not turn its extra cores into depth (the main
+thread 28% slower with 24 threads busy, Lazy SMP turning 2.8x the raw nodes into 1.2-1.6x faster
+time to depth). A separate read-only diagnosis of the SMP code, with each hypothesis checked by
+skeptics, named the two memory-side defects below. Both keep the search node-identical.
+
+**Large pages for the transposition table** (`Transposition/TableMemory.cs`, new `LargePages`
+option, default on). A 1 GB table in 4 KB pages spans 262,144 pages, far beyond what the TLB
+covers, so nearly every probe (a random access by construction) also paid a page walk. With the
+option on and "Lock pages in memory" granted to the account, the table is committed in 2 MB pages
+(VirtualAlloc with MEM_LARGE_PAGES after enabling the privilege in the process token), as the
+reference engine does; otherwise it falls back silently to the pinned array used before. The engine
+reports which one it got: `info string Hash N MB in large pages` or `in normal pages`. **Measured on
+the Ryzen, one thread, Hash 1024, depth 16, 20 positions from the bot's games, 3 rounds with the arms
+alternated: +8.6% speed (1.081-1.086 per round), identical node counts.** Not yet measured at 24
+threads. A table replaced while a worker might still read it (a search in flight, or a helper
+quarantined for missing a stop) is kept alive until the table itself goes.
+
+**Syzygy tables read through one pointer** (`Tablebases/SyzygyTable.cs`). Every byte went through
+the view accessor's `ReadByte`, which acquires and releases the view's SafeHandle: two interlocked
+operations on one counter shared by every thread probing that table. Under Lazy SMP in
+tablebase-dense endgames that cache line bounced between all the workers, and the main thread's
+speed fell to about 6% of normal at 24 threads on the Windows bot (22% on the Mac with 5). The base
+address is now acquired once when the table is mapped; reads stay bounds-checked and throw on a bad
+offset as before, and the mapping is still released at once when the tables are reloaded (a test
+deletes a table file right after). **Measured at one thread on 12 tablebase-dense positions from the
+bot's games, bot SyzygyPath, depth 9, warm pages: 3.27x faster, with identical nodes, tbhits and
+best moves on every position.** The multi-thread gain, where the contention was, is expected to be
+larger; not yet measured.
+
+**Diagnostic.** `info string vote chose X (depth D, score S) over the main thread's Y (...)` when the
+Lazy SMP vote overrules the main thread, so the bot logs record how often and where it happens
+(the review could not compare the two hosts for lack of it).
+
+**Verified.** New test `TableMemoryTests` (store, probe, resize keeping the old block, clear, in
+both modes; node-identical search with large pages allowed). CI node count 127139, unchanged.
+Net unchanged (`fqco5912`). 468 tests (128 Core + 340 Engine). Shipped on judgment, no SPRT: both
+changes are node-identical speed fixes.
+
+**Also from the review, and deliberately NOT done.** Narrowing the "keeping the pondered move" rule
+looked worth 0.62 points per 100 games with the judge at depth 20, but the verification at depth 24
+and beyond put its cost at zero (depth 20 and 22 agreed on which move was better in only 117 of 262
+firings), so the rule stays. Choosing the repetition rule from the previous search score was
+refuted on the catalogued cases. Still open, each needing an SPRT: blocking the easy and obvious
+cuts when the relaunch disagrees with the ponder, a fallingEval condition on the obvious-move cut,
+the vote in lost positions, and training aimed at the net's blind spots (opposite-coloured-bishop
+endings with passed pawns, same-coloured bishop endings, king attacks).
+
+**Deployment.** Published (Windows + Mac). The Windows bot restarts with 5.9.23 and the Mac bot is
+stopped, by the user's call. Thread-count and SMP scaling measurements are scheduled for after a
+memory change on the Windows host (the RAM runs at DDR4-2133 without its XMP profile).
+
+**Measured afterwards (2026-09-28/29, Windows host with its memory now at DDR4-2933).** The Windows
+host lost its four slower modules and runs the remaining four at 2933 (3200, the kit's rating,
+does not boot with four dual-rank modules on this CPU; AMD's official figure is 2666). Six and a
+half hours of full load afterwards showed no hardware error, crash or disconnect.
+- **Deployment SPRT against 5.9.22** (60+1, ponder on, 4 threads, Hash 1024, the bot's tablebases,
+  new engine first, [0, 10]): **+18.5 +/- 27.2 after 154 games (23-14-119 after 156), LOS 90.9%,
+  LLR 0.70**. Stopped unfinished to free the machine for the measurements below; not concluded.
+- **Gauntlet** on field 2, single-threaded, the same field as v5.3.0 to v5.9.19: **58.1% over 240
+  games, 3368 CCRL +/- 46**, against v5.9.19's 3364 +/- 40: a tie, as expected, since the gauntlet
+  runs one thread with a small table and no tablebases, where neither fix has much to act on. No
+  time forfeit, crash or illegal move.
+- **Large pages at 24 threads:** main-thread speed **+8.0% (95% CI 5.4-10.7)** at 4 s per move,
+  +10.6% at a fixed depth; the same size as at one thread (+8.9%, CI 8.4-9.4, 40 of 40 searches
+  node-identical). Time to a fixed depth is too noisy at 24 threads to show it.
+- **Syzygy reader at 8 and 24 threads**, 12 tablebase-dense positions at 5 s per move, warm pages:
+  the old reader was **about 26-35x slower at 8 threads and 80-110x slower at 24** (main thread
+  9.1k nps against 713k at 24 threads), which cost 4-5 plies of depth (9.5 against 14.5 at 24
+  threads) and late answers of up to 1.4 s past the move's time. The cost of the shared counter grew
+  with the thread count: 3x at one thread, about 30x at 8, 50-110x at 24. Every multi-thread bot
+  running 5.9.22 or earlier was crippled in tablebase endgames.
+- **Thread scaling against the reference engine on the same machine** (30 bot positions, 8 s per
+  move, time to depth against each engine's own single thread): NoaChess 1.49x / 1.87x / 2.23x /
+  2.28x / 2.28x at 4 / 8 / 16 / 24 / 32 threads; the reference 1.58x / 2.31x / 2.76x / 2.57x /
+  2.20x. The reference/NoaChess ratio is 1.24 (CI 0.98-1.55) at 16 threads, 1.13 at 24 and 0.96 at
+  32, and per-thread speed falls identically in both (0.81 / 0.65 / 0.56 of one thread at 16 / 24
+  / 32): the ceiling is the machine (16 cores, SMT beyond them), not a NoaChess SMP defect. Depth
+  reached in 8 s does not differ between 16, 24 and 32 threads for either engine.
+- **SmpDiversify** (the helper depth-skip pattern): 16-20% faster time to depth at 8 and 16 threads,
+  neutral at 24, 12% slower at 32; depth in 8 s unchanged at every count. It stays off for the
+  24-thread bot; at 16 threads it is a candidate for an SPRT.
+- **MoveOverhead on the Windows bot: 200 -> 100** (host configuration). Over 315 games at 24
+  threads no move was ever charged more than (clock - 1 s) and there was no time loss; with 5.9.23
+  the worst overrun past the engine's own hard limit fell from +1.13 s to +336 ms, almost all of
+  the earlier ones in tablebase endgames. Modelled flag rate 0.18 -> 0.19 per 1000 games for about
+  1-2% more budget per move; to be revisited if the thread count rises or after 100 games if any
+  move overruns by more than 300 ms or ends under 1 s.
+
 ## 2026-09-27 (v5.9.22) - the ponder move no longer comes from the first legal reply
 
 **Found reviewing the bot's games.** After a search, the UCI loop sends `bestmove X ponder Y`, and Y
@@ -163,6 +862,14 @@ The root move selection itself was never in danger - a separate, unconditional f
 the root restricted to game-theoretically optimal moves regardless of the clock, which is why the
 flagged game still ended in the draw the tables call it. What this fixes is the search staying
 truthfully anchored to that draw instead of playing the rest of the game convinced it was losing.
+
+*Correction (2026-10-04).* Two premises above are wrong for losses. The fifty-move rule turns a
+LOSS into a draw as readily as a win: the tables score a position for a zeroed counter, so a loss
+whose next zeroing move the counter reaches first is a draw. And the root filter did not rank such
+losses by the clock: it left a plainly lost root unfiltered, and in 11 to 12 of 30 test endings
+where the counter had already saved the game the engine played a capture, a pawn move or a move
+too short to reach it. The root now ranks a lost root by DTZ and the counter like any other (see
+v5.9.25). The behaviour of `TbDrawProbeAlways` is unchanged.
 
 **Gauntlet (2026-09-23).** Gauntlet on field 2, single-threaded, the same field as v5.3.0 to v5.9.2:
 **57.7% over 313 games, 3364 CCRL +/- 40**, the highest of the series (previous best v5.8.2's 3353,
@@ -775,7 +1482,7 @@ CUDA context cannot be caught, so the check runs before the forward pass, under 
 **Also since v5.9.1.** The bot's games are now reviewed systematically with an independent judge (4,246
 games, 264,946 moves): 0.4% of moves in live positions lose 300 cp or more, the rate halved since July,
 and the one place it stays high is the losing band (-500 to -1000: 4.7%), which is an evaluation problem
-(the net saturates below -750) and now has a measured gate of 602 real positions for the next idea. Two
+(the net saturates below -750) and now has a measured gate of 602 real positions for the next idea. [Update 2026-10-10: this figure is from builds of July to 12 September judged at depth 11 without tablebases; 'live' includes winning positions, and the mirror winning band (+500 to +1000) ran at 1.76% on the same games, so the losing side errs about 2.7x more than the winning side at the same distance from zero, not 12x. The review of 2026-09-27 traced 11 of its 46 confirmed errors at -300 or worse to the net and the rest to depth, ponder, the SMP vote and low clocks. The saturation is real: on the blind-spot exam every net up to fqgen7 flattens at about 500-650 cp for judge scores beyond -750 (median net/judge 0.82 at -1000..-750, 0.66 at -1500..-1000, 0.27 beyond). Nothing from v5.9.11 on has been re-judged with this method.] Two
 apparent collapses reported from the board turned out, on the judge, to be the only move and a rook trade.
 The bot no longer offers or accepts draws by agreement: it offered in 12 of 25 recent draws, always at an
 exact 0.00 that a stronger judge confirmed, so nothing was lost, but nothing is gained either. **Tests:
