@@ -280,8 +280,16 @@ public static class Syzygy
     {
         WdlScore bestValue = WdlScore.Loss;
         MoveList moves = SearchList(level);
-        MoveGenerator.GenerateLegalMoves(board, moves);
-        int totalCount = moves.Count, moveCount = 0;
+        // Pseudo-legal moves, legality tested only where it is needed (v6.0.2).
+        // The full legal list made, tested and unmade every non-capture just to
+        // skip it, at every level of every probe; the only use of the non-
+        // captures is the noMoreMoves test below, which needs one legal one at
+        // most and only when a capture was searched. The legal filter keeps the
+        // pseudo-legal order, so the captures are visited in exactly the same
+        // order and every result is identical.
+        MoveGenerator.GeneratePseudoLegalMoves(board, moves);
+        Color us = board.SideToMove;
+        int moveCount = 0;
 
         for (int i = 0; i < moves.Count; i++)
         {
@@ -289,8 +297,13 @@ public static class Syzygy
             if (!m.IsCapture && (!checkZeroing || board.PieceTypeAt(m.From) != PieceType.Pawn))
                 continue;
 
-            moveCount++;
             board.MakeMove(m);
+            if (board.IsSquareAttacked(board.KingSquare(us), board.SideToMove))
+            {
+                board.UnmakeMove();
+                continue;
+            }
+            moveCount++;
             WdlScore v = (WdlScore)(-(int)Search(board, false, ref state, level + 1));
             board.UnmakeMove();
 
@@ -310,7 +323,7 @@ public static class Syzygy
 
         // With every legal move already searched the table must not be probed:
         // its stored score would be wrong (tables carry no en-passant rights).
-        bool noMoreMoves = moveCount > 0 && moveCount == totalCount;
+        bool noMoreMoves = moveCount > 0 && !HasLegalSkippedMove(board, moves, checkZeroing, us);
 
         WdlScore value;
         if (noMoreMoves)
@@ -333,6 +346,24 @@ public static class Syzygy
 
         state = ProbeState.Ok;
         return value;
+    }
+
+    // Whether any legal move was skipped by Search (a non-capture, or for DTZ a
+    // non-capture that is not a pawn move). Stops at the first one.
+    private static bool HasLegalSkippedMove(Board board, MoveList moves, bool checkZeroing, Color us)
+    {
+        for (int i = 0; i < moves.Count; i++)
+        {
+            Move m = moves[i];
+            if (m.IsCapture || (checkZeroing && board.PieceTypeAt(m.From) == PieceType.Pawn))
+                continue;
+            board.MakeMove(m);
+            bool legal = !board.IsSquareAttacked(board.KingSquare(us), board.SideToMove);
+            board.UnmakeMove();
+            if (legal)
+                return true;
+        }
+        return false;
     }
 
     // Reference do_probe_table(): maps the position to a table index.

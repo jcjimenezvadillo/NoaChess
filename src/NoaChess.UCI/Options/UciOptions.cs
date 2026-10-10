@@ -181,7 +181,13 @@ public sealed class UciOptions
     // as plain wins and losses (used for analysis where the rule is ignored).
     public string SyzygyPath { get; private set; } = "";
     public int SyzygyProbeDepth { get; private set; } = 1;
-    // ---- DEFAULT LOWERED 7 -> 5 (2026-08-22), and the reason is not storage ----
+    // ---- HISTORY: lowered 7 -> 5 on 2026-08-22, RESTORED TO 7 the next day ----
+    // (v5.0.2.1: the 4.4x probe cost below was measured with the tables on a
+    // mechanical drive while the bot ran them from an SSD, and v5.0.3 had never
+    // been measured against v5.0.1; see CHANGELOG.md, 2026-08-23). The default
+    // is 7. The record of why it was lowered is kept below because the cost
+    // question it raises is real; v6.0.2 re-measures it with the tables on the
+    // SSD.
     //
     // THE COMPLAINT THAT STARTED IT. Two bot games where the engine gave away a
     // QUEEN for a pawn and, in another, a BISHOP for a pawn. Both moves won, but
