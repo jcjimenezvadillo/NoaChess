@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## 2026-10-10 (v6.0.2) - tablebase probes 1.32x faster in six-man endings, and an outside review answered
+
+**The review.** An outside team sent three points: measure `PonderContinue` (published off for want of a
+ponder-on match at a real control), the losing band (-500 to -1000: 4.7% of moves lose 300 cp or more
+against 0.4% overall, an evaluation problem), and the 5-man tablebases (-20.2 Elo at 10+0.1). All three
+were read on GitHub's `main`, which still holds v5.9.2 of 2026-09-12; checked against the current code:
+
+- `PonderContinue` has been ON by default since v5.9.25 and in both bots since 2026-10-01. What is
+  still unmeasured is its corrected gate (the audit's fix of v5.9.25) and its overlap with v6.0.1. The
+  bot's own log since the v6.0.1 restart (3,870 ponderhits) shows the gate at work: with the clock lead
+  below 1.25, 46-47% of ponderhits are answered within 150 ms; from 1.25 up, 15-19%. Below about 5 s of
+  soft budget (bullet) the instant reply is by design (v6.0.1); above it, when PonderContinue fires it
+  overrides the ponder's own verdict, so a forced recapture is not answered at once there. A clock match
+  that can price it needs foreign engines with ponder and several thousand games per arm on a quiet box;
+  not run.
+- The 4.7% comes from builds of July to 12 September judged at depth 11 without tablebases, and its
+  "live" 0.4% includes winning positions; the mirror winning band runs at 1.76% on the same games (an
+  [Update] note now says so at the original sentence). The saturation behind it is real and is now
+  measured directly on the blind-spot exam (`gate_probe.py curve`): every net up to `fqgen7` flattens
+  at about 500-650 cp once the judge is past 750 (median net/judge 0.82 at -1000..-750, 0.66 at
+  -1500..-1000, 0.27 beyond, the same on the winning side), where the 240/145 loss gives almost no
+  gradient. Not acted on here.
+- The -20.2 was measured on v5.0.3 (2026-08-22) with the 6-man DTZ files on a mechanical drive and the
+  old reader; nothing re-measured it since. Re-measured now (below).
+
+**Faster probes, identical results.** `Syzygy.Search`, the capture recursion every WDL and DTZ probe
+runs, generated the full legal move list at every level: a make, a king-attack test and an unmake for
+every non-capture, only to skip it. It now generates pseudo-legal moves, tests legality only for the
+captures it searches (and for DTZ the pawn moves), and checks for a legal skipped move only when a
+capture was searched, stopping at the first. The legal filter keeps the pseudo-legal order, so the
+captures are visited in the same order and every result is the same: 13,784 positions of 3 to 7 men
+(9,784 from real games, 4,000 random) give identical WDL and DTZ before and after, and searches with
+the tables loaded give identical nodes and tbhits. **1.32x faster to a fixed depth on 40 six-man roots**
+(depth 16, four alternated repetitions, 191,910,816 nodes on both sides, 114.5 s against 87.0 s); on
+7-9 man roots, where probes are rarer, no measurable change (0.997). CI node count 134088, unchanged.
+
+**The tables moved off the mechanical drive.** The 6-man DTZ files (365 files, 81 GB) lived only on
+the F: hard disk, and the root DTZ ranking read them at every six-man root: in a first 10+0.1 match
+with that layout the tablebase side played depth-1 moves of 0.13-0.63 s at six-man roots and lost one
+won ending on time. They are now on the SSD next to the WDL files (a host change, no code change; the
+engines' `SyzygyPath` already lists the SSD first). The Mac bot keeps its tables on its internal SSD.
+
+**Tablebases on against off, re-measured.** Tablebases on against off at 10+0.1 (one thread, every table on the SSD, the 6.0.2 build on both sides, the usual opening book): 139-154-510 over 803 games, -6.5 +/- 14.6 Elo, undecided on [-10, 0] and still running; with the 6-man DTZ on the hard disk the same match had read -9.5 +/- 27.7 over 222 games. Most of the decisive games are decided with 12 or more men on the board, where the search cannot reach a table (tablebase side 151 such losses, the other side 133), and in the games that reach six men or fewer the side with tables scores 0.63 (a selected subset: the side ahead chooses whether to simplify), so the full-game match is mostly noise around a small effect. The same comparison from 3,347 balanced 7-9 man starting positions, where the tables act in every game, follows, then SyzygyProbeLimit 6 against 7 and TbDrawProbeAlways off against on. The defaults stay as they are.
+
+The `UciOptions` comment that still said `SyzygyProbeLimit` had been lowered to 5 now records that it
+was restored to 7 the next day (v5.0.2.1). 496 tests, CI node count 134088.
+
 ## 2026-10-09 (v6.0.1) - the ponderhit relaunch no longer answers at once on table-inherited confidence
 
 **The symptom, measured.** The user watched the bot answer in a fraction of a second with minutes on
@@ -1435,7 +1482,7 @@ CUDA context cannot be caught, so the check runs before the forward pass, under 
 **Also since v5.9.1.** The bot's games are now reviewed systematically with an independent judge (4,246
 games, 264,946 moves): 0.4% of moves in live positions lose 300 cp or more, the rate halved since July,
 and the one place it stays high is the losing band (-500 to -1000: 4.7%), which is an evaluation problem
-(the net saturates below -750) and now has a measured gate of 602 real positions for the next idea. Two
+(the net saturates below -750) and now has a measured gate of 602 real positions for the next idea. [Update 2026-10-10: this figure is from builds of July to 12 September judged at depth 11 without tablebases; 'live' includes winning positions, and the mirror winning band (+500 to +1000) ran at 1.76% on the same games, so the losing side errs about 2.7x more than the winning side at the same distance from zero, not 12x. The review of 2026-09-27 traced 11 of its 46 confirmed errors at -300 or worse to the net and the rest to depth, ponder, the SMP vote and low clocks. The saturation is real: on the blind-spot exam every net up to fqgen7 flattens at about 500-650 cp for judge scores beyond -750 (median net/judge 0.82 at -1000..-750, 0.66 at -1500..-1000, 0.27 beyond). Nothing from v5.9.11 on has been re-judged with this method.] Two
 apparent collapses reported from the board turned out, on the judge, to be the only move and a rook trade.
 The bot no longer offers or accepts draws by agreement: it offered in 12 of 25 recent draws, always at an
 exact 0.00 that a stronger judge confirmed, so nothing was lost, but nothing is gained either. **Tests:
