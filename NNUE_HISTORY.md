@@ -14,7 +14,7 @@ fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus,
 `fqco592.pt.partial`. v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
 45 search constants) changed search, time management and the trainer, not the net (see
 CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
-on held-out positions, although its deeper labels were closer on paired ones (entry below). In
+on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). In
 preparation for the next generation (`fqgen8`): the `datascale6` corpus, autoplay at 6,000 nodes with
 `fqblind` as teacher and the tablebases probed in the search. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
@@ -104,7 +104,9 @@ bias (negative = the net is compressed towards zero against the judge):
 Nothing moved by more than a few centipawns, and the compression grew a little where the labels
 were deepest. The rate of positions the net gets wrong outright stays at 0-3% for all three nets.
 
-**A second re-entry does not repeat it (2026-10-08).** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net. A control re-entry from fqblind on the unchanged corpus (the old 6,000-node blind-spot labels, fqctl) is training to separate the deeper labels from the recipe.
+**A second re-entry does not repeat it (2026-10-08).** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net.
+
+**The control, 2026-10-10: the deeper labels do pay.** `fqctl` is the same 14-epoch re-entry from `fqblind` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384, the same recipe and seed as `fqgen7`) on the `fqblind` corpus with the OLD 6,000-node blind-spot label files instead of the 40,000-node ones (best epoch 13, validation 0.005986 on the same split as `fqblind`'s 0.005989). At 100,000 fixed nodes on the 5.9.27 binary, one thread, 8moves_v3: `fqctl` against `fqblind` 1295-1205-3500 over 6,000 games, +5.2 +/- 5.7 Elo, LLR 0.25 (stopped at the 6,000-game cap, undecided); `fqgen7` against `fqctl` 854-756-2165 over 3,775 games, +9.0 +/- 7.2 Elo, LOS 99.3%, LLR 2.95, H1. So of `fqgen7`'s +15.9 over `fqblind`, about +5 is the re-entry itself (positive, not proven) and +9.0 (H1) is the deeper labels, and the two add up to the whole (5.2 + 9.0 = 14.2). The blind-spot exam under-measured them: the static evaluation on the six held-out groups did not move and play improved all the same. The inference drawn from the exam in the first version of this entry, that the gain might not belong to the labels, is withdrawn; the labels at 40,000 nodes with the tablebases in the search are the lever to push for the next net.
 
 **Reading.**
 - The deeper labels were closer to the judge on the paired positions they replaced (6,000 -> 40,000
@@ -112,19 +114,16 @@ were deepest. The rate of positions the net gets wrong outright stays at 0-3% fo
   273, king attacks 87 -> 77), yet the trained net is not closer to it on positions it has not seen:
   the static evaluation does not generalise the deeper label from a few million examples in 4% of a
   1.2-billion-row corpus.
-- The +15.9 is therefore not credited to the blind-spot labels. What the run shares with `fqco5912`
-  (+34.3) is the recipe: a warm re-entry at a real point of the schedule, here with a changed share of
-  the data. Which part of the change pays (the deeper labels for play in the middlegame, the extra
-  14 epochs at a lower rate, the 4x weight) is not separated by this run and would need a control
-  re-entry on the unchanged corpus.
+- The +15.9 splits, by the control below, into about +5 for the re-entry itself (what `fqco5912` shares with it: a warm re-entry at a real point
+  of the schedule) and +9.0, H1, for the 40,000-node labels with the tablebases in the search. The exam did not see it; play did.
 - Rook endings are still evaluated at about 0.7 of the judge's magnitude. If they are to move, the
   next net needs them from a source that sees the answer (the tablebases in the label, the game
   result) rather than more of our own shallow labels.
 
 **The next generation (`fqgen8`).** The `datascale6` corpus (autoplay at 6,000 nodes, `fqblind` as
 teacher, the tablebases probed in the search, the four-source mix of datascale4 and 5), the QAT
-rounding of the factorized rows, WDL-versus-score row filtering, and a control re-entry on the unchanged
-`fqblind` corpus if the cause of the +15.9 needs separating.
+rounding of the factorized rows, WDL-versus-score row filtering, and more of the deep labels (the +9.0 says that is
+where the Elo is): the 40,000-node relabel of more positions than the mined 12M.
 
 ---
 
