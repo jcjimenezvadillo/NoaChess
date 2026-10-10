@@ -18,7 +18,7 @@ on held-out positions, although its deeper labels were closer on paired ones, ye
 preparation for the next generation (`fqgen8`): `datascale6/bulk` (130M positions of 6,000-node autoplay,
 `fqblind` as teacher, the tablebases probed in the search) and a second 40,000-node relabel, `deep2`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
-status entry further down). Last measured CCRL: **3420 +/- 50** (v5.9.27 with `fqblind`; 6.0.0 not yet measured; gauntlet on field 2,
+status entry further down). Last measured CCRL: **3461 +/- 55** (v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
 single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
 v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493 tests.
 
