@@ -50,6 +50,10 @@ public sealed class NnueNetwork
     public short[]? L1Weights { get; init; }           // arch 1: [Buckets * L1Outputs * 2*FtOutputs]
     public sbyte[]? L1WeightsI8 { get; init; }          // arch 2/3: same shape, int8
     public required int[] L1Bias { get; init; }        // [Buckets * L1Outputs]
+    // Arch 1 L1 weights re-laid out by input PAIR: [bucket][pair][output][2],
+    // built once at load for the sparse-input kernel (NnueInference); null
+    // when that kernel does not apply.
+    public short[]? L1WeightsByPair { get; init; }
     // ARCH 1-4: [Buckets * L1Outputs].
     // ARCH 5:   [Buckets * (2*L1Outputs + 2*L2Outputs)], because the output
     //           reads both hidden layers and both of their activations.
@@ -83,6 +87,18 @@ public sealed class NnueNetwork
     // LOCAL copy of the accumulator at evaluation time - the incremental
     // accumulator itself never learns about it, which is the whole design.
     public short[]? CoarseWeights { get; init; }
+
+    // One flag per coarse relation bucket: true when BOTH the bucket's own row
+    // and its colour-mirrored row are entirely zero, so adding or removing that
+    // relation cannot change the accumulator by a single unit.
+    //
+    // This is not a rare corner. In the shipping fqcohuman3 net 62 of the 144
+    // buckets are dead this way - 43% - because the trainer simply found no
+    // signal in those relation types. Every one of them was costing a full
+    // pass over 2 x FtOutputs int16 lanes adding zero. Built once at load,
+    // read on the hot path, and skipping is exact rather than approximate:
+    // the rows really are all zero, so the lane is bit-identical either way.
+    public bool[]? CoarseRowDead { get; init; }
     public int PsqtBuckets { get; init; }
 
     // Arch 4 belongs here, and leaving it out cost a NullReferenceException in

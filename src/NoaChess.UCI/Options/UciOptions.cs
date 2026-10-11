@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Linq;
+using NoaChess.Engine.Search;
 namespace NoaChess.UCI.Options;
 
 // The engine options exposed over UCI ("setoption name X value Y").
@@ -14,6 +16,9 @@ namespace NoaChess.UCI.Options;
 public sealed class UciOptions
 {
     public int Hash { get; private set; } = 64;
+    // Transposition table in large pages when the OS grants them (Windows,
+    // "Lock pages in memory"); falls back to normal pages silently.
+    public bool LargePages { get; private set; } = true;
     public int Threads { get; private set; } = 1;
     public int MoveOverhead { get; private set; } = 30;
     public bool Ponder { get; private set; }
@@ -22,10 +27,8 @@ public sealed class UciOptions
     public string EvalFile { get; private set; } = "";
     public string Profile { get; private set; } = "Default";
     public bool Optimism { get; private set; }
-    public bool NmpEvalGate { get; private set; }
     public bool PruningLadder { get; private set; }
     public bool PruningLadderFutility { get; private set; } = true;
-    public bool CorrectionBlend { get; private set; }
     public bool StatScoreLmr { get; private set; } = true;
     public bool NodeTimeFactor { get; private set; }
     public bool EvalStabilityTime { get; private set; }
@@ -34,16 +37,16 @@ public sealed class UciOptions
     public bool PonderMinThink { get; private set; }
     // Easy-move cut only when winning (see AlphaBetaSearch.UseEasyMoveWinOnly).
     public bool EasyMoveWinOnly { get; private set; } = true;
-    // Root static eval on the search stack (see AlphaBetaSearch.UseRootStaticEval).
-    public bool RootStaticEval { get; private set; }
+    // Damp the easy/obvious-move cuts at slow controls (see AlphaBetaSearch.UseSlowTcEasyMoveDamp).
+    public bool SlowTcEasyMoveDamp { get; private set; } = true;
     // Quiescence moves recorded on the search stack (see AlphaBetaSearch.UseQsStackMove).
     public bool QsStackMove { get; private set; } = true;
     // Checking quiets exempt from futility (see AlphaBetaSearch.UseCheckExemptFutility).
-    public bool CheckExemptFutility { get; private set; }
+    public bool CheckExemptFutility { get; private set; } = true;
     // Window clamped to the reachable mate scores (see AlphaBetaSearch.UseMateDistancePruning).
     public bool MateDistancePruning { get; private set; } = true;
     // Transposition cutoff refused at PV nodes (see AlphaBetaSearch.UseTtNoPvCutoff).
-    public bool TtNoPvCutoff { get; private set; }
+    public bool TtNoPvCutoff { get; private set; } = true;
     // Suspend the easy-move cut under fifty-move pressure (see AlphaBetaSearch).
     public bool EasyMoveFiftyGuard { get; private set; } = true;
     // Break ties between equal-scored root moves in drawn positions (see AlphaBetaSearch).
@@ -51,22 +54,19 @@ public sealed class UciOptions
     public bool SmpOvershootTaper { get; private set; }
     // The 2026-09-08 audit switches (see AlphaBetaSearch for each one).
     public bool RepetitionAfterRoot { get; private set; }
+    // The reference repetition rule only while the root is worse (see AlphaBetaSearch.UseRepetitionStrictWhenWorse).
+    public bool RepetitionStrictWhenWorse { get; private set; } = true;
     public bool NmpNonPvOnly { get; private set; }
+    public bool NmpCutNodeOnly { get; private set; }
     public bool TtEvalRefine { get; private set; } = true;
     public bool TtKeepMoveOnFailLow { get; private set; } = true;
-    public bool TtMateReuse { get; private set; }
     public bool RootScoreOrdering { get; private set; }
-    public bool Razoring { get; private set; }
     public bool LmpAllDepths { get; private set; } = true;
     public bool QuietSeePrune { get; private set; } = true;
     public bool PriorFailLowBonus { get; private set; }
-    public bool LmrDeeperResearch { get; private set; }
-    public bool RfpTtMoveGuard { get; private set; }
-    public bool LmpCountAllMoves { get; private set; }
-    public bool DrawRandom { get; private set; }
     public bool HindsightDepth { get; private set; } = true;
-    public bool CutoffCountLmr { get; private set; }
     public bool CaptureSeePruneDeep { get; private set; }
+    public int CaptureSeeHistK { get; private set; } = 42;
     // Percent multiplier on the clock optimum (see TimeManager.FromClock).
     public int TimeScale { get; private set; } = 100;
     // Move picker magnitudes (see MovePicker.CheckBonus / ThreatEscapeWeight).
@@ -75,10 +75,22 @@ public sealed class UciOptions
     // Skip the between-search history halving on a ponderhit relaunch (see AlphaBetaSearch).
     public bool NoDecayOnRelaunch { get; private set; }
     public bool QsChecks { get; private set; } = true;
-    public bool ProbCutAllowNull { get; private set; }
-    public bool FutilityFailSoft { get; private set; }
-    public bool CaptureFutility { get; private set; }
+    public bool FutilityFailSoft { get; private set; } = true;
     public bool HistoryPrune { get; private set; }
+    public int HistoryPruneScale { get; private set; } = 20;
+    // Search sweep of 2026-09-21 (see AlphaBetaSearch for each one).
+    public bool PruneLossGuard { get; private set; } = true;
+    public bool LosingCaptureOrder { get; private set; } = true;
+    public bool SmallProbCutExact { get; private set; } = true;
+    public bool ImprovingAboveBeta { get; private set; } = true;
+    public bool GoodCaptureSlack { get; private set; } = true;
+    // Re-investigation of 2026-09-21 (see AlphaBetaSearch for each one).
+    public bool HistoryPruneCounts { get; private set; }
+    public bool NmpEvalR { get; private set; } = true;
+    public bool TtCutoffHistory { get; private set; } = true;
+    public bool CutoffCountLmrAllNode { get; private set; }
+    public bool PvWindowEarly { get; private set; } = true;
+    public bool TtRule50Guard { get; private set; }
     public bool QsContCorrection { get; private set; }
     public bool SingularTight { get; private set; }
     public bool QsEntryKey { get; private set; }
@@ -86,36 +98,72 @@ public sealed class UciOptions
     // v5.8.1 at the user's explicit request: the bot ends games with up to twice
     // the opponent's clock, which is depth left unused.
     public bool ClockLead { get; private set; } = true;
+    // 12-09, SPRT candidate: ClockLead only ever SCALES UP when this side holds
+    // more clock than the opponent - there was no symmetric brake for the
+    // opposite case. Observed live (vs Bothev, a strong/sharp opponent): once
+    // slightly behind on the clock, nothing pulls back, and repeated
+    // "unstable position, extend" moves compound the deficit move after move.
+    // Mirrors ClockLead's own ratio/cap, just downward.
+    public bool ClockDeficitBrake { get; private set; } = true;
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
     public bool CutNodeLmr { get; private set; }
+    public bool CutNodeLmrTtPv { get; private set; }
     public bool FailLowCorrection { get; private set; }
-    public bool MoveCountLmr { get; private set; }
     public bool DynamicAspiration { get; private set; }
     public bool HistoryBonus { get; private set; }
     public bool CorrectionLmr { get; private set; }
     public bool KillerShallowing { get; private set; } = true;
     public bool TbPvCap { get; private set; }
     public bool TbResistance { get; private set; } = true;
+    public bool TbDrawProbeAlways { get; private set; } = true;
     // Progress tie-break in tablebase-won roots outside the tables (see AlphaBetaSearch.UseTbWinTieBreak).
     public bool TbWinTieBreak { get; private set; } = true;
     // Resistance tie-break in plainly lost roots (see AlphaBetaSearch.UseLostResistance).
     public bool LostResistance { get; private set; }
     public int LostResistanceBound { get; private set; } = 600;
+    // What a draw costs the side that started the search, in centipawns.
+    // Zero is the historical behaviour and the default. See
+    // AlphaBetaSearch.ContemptCp for why the mechanism exists and why it
+    // cannot be measured by self-play.
+    public int Contempt { get; private set; }
+    // Our own rating, which UCI has no way to tell the engine. Zero (the
+    // default) means "apply Contempt flat", which is the behaviour that
+    // existed before rating scaling. Set it and Contempt is scaled by how far
+    // we outrate the opponent - see UciLoop.EffectiveContempt for why.
+    public int ContemptOwnRating { get; private set; }
+    // The raw "UCI_Opponent" string the GUI sent, kept only so the rating can
+    // be parsed out of it. lichess-bot sends this for every game when the
+    // engine declares the option.
+    public string UciOpponent { get; private set; } = "";
+    // The opponent's rating parsed out of UciOpponent, or null when the GUI
+    // sent "none" or nothing at all.
+    public int? OpponentRating { get; private set; }
     // How near the tablebases the won-band tie-break may decide; 32 is the
     // 5.8.1 behaviour of always. See AlphaBetaSearch.WonBandMaxMen.
     public int WonBandMaxMen { get; private set; } = 8;
     public bool WonBandPromoGuard { get; private set; } = true;
     public bool CaptureLmr { get; private set; }
-    public bool NmpPackage { get; private set; }
     // Convert a pondered search in place on "ponderhit" instead of relaunching
     // it over the warm table. Affects nothing unless the GUI actually ponders.
     // MEASURED -23.7 [-41.2, -6.3] at 60+1 with ponder on both arms, H0 at 382
     // games, with zero time forfeits - it lost on chess, not on the clock.
     // Kept inert; the full record is in AlphaBetaSearch.ApplyClockLimits.
     public bool PonderInPlace { get; private set; }
-    public bool PonderContinue { get; private set; }
+    // ON by default since 5.9.25: on the Lichess bots it took the instant
+    // ponderhit replies from 11 of 32 to 0 of 13 in the first game, and the
+    // 180+2 ponder gauntlet against three foreign engines read +8 Elo for it
+    // (inside the noise) with no time forfeit.
+    public bool PonderContinue { get; private set; } = true;
+    // The clock lead PonderContinue needs, in percent of the opponent's clock
+    // (125 = a quarter more; 100 = equal clocks or better).
+    public int PonderContinueLead { get; private set; } = 125;
+    // Cap the clock optimum at half the move's hard maximum (see
+    // TimeManager.FromClock). Off until a ponder-on clock match against
+    // foreign engines on a quiet machine says otherwise; fixed-node SPRTs
+    // cannot see it.
+    public bool ClockOptimumHalfMax { get; private set; }
 
     // Must match EngineProfile.ByName and the combo declaration in Print().
     private static readonly string[] KnownProfiles =
@@ -133,7 +181,13 @@ public sealed class UciOptions
     // as plain wins and losses (used for analysis where the rule is ignored).
     public string SyzygyPath { get; private set; } = "";
     public int SyzygyProbeDepth { get; private set; } = 1;
-    // ---- DEFAULT LOWERED 7 -> 5 (2026-08-22), and the reason is not storage ----
+    // ---- HISTORY: lowered 7 -> 5 on 2026-08-22, RESTORED TO 7 the next day ----
+    // (v5.0.2.1: the 4.4x probe cost below was measured with the tables on a
+    // mechanical drive while the bot ran them from an SSD, and v5.0.3 had never
+    // been measured against v5.0.1; see CHANGELOG.md, 2026-08-23). The default
+    // is 7. The record of why it was lowered is kept below because the cost
+    // question it raises is real; v6.0.2 re-measures it with the tables on the
+    // SSD.
     //
     // THE COMPLAINT THAT STARTED IT. Two bot games where the engine gave away a
     // QUEEN for a pawn and, in another, a BISHOP for a pawn. Both moves won, but
@@ -174,6 +228,7 @@ public sealed class UciOptions
     public void Print(TextWriter output)
     {
         output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
+        output.WriteLine("option name LargePages type check default true");
         output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
@@ -181,80 +236,94 @@ public sealed class UciOptions
         output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet var WideWindow var EarlyLmr");
         output.WriteLine("option name Optimism type check default false");
-        output.WriteLine("option name NmpEvalGate type check default false");
         output.WriteLine("option name PruningLadder type check default false");
         output.WriteLine("option name PruningLadderFutility type check default true");
-        output.WriteLine("option name CorrectionBlend type check default false");
         output.WriteLine("option name StatScoreLmr type check default true");
         output.WriteLine("option name NodeTimeFactor type check default false");
         output.WriteLine("option name EvalStabilityTime type check default false");
         output.WriteLine("option name RootSafetyNet type check default false");
         output.WriteLine("option name PonderMinThink type check default false");
         output.WriteLine("option name EasyMoveWinOnly type check default true");
-        output.WriteLine("option name RootStaticEval type check default false");
+        output.WriteLine("option name SlowTcEasyMoveDamp type check default true");
         output.WriteLine("option name QsStackMove type check default true");
-        output.WriteLine("option name CheckExemptFutility type check default false");
+        output.WriteLine("option name CheckExemptFutility type check default true");
         output.WriteLine("option name MateDistancePruning type check default true");
-        output.WriteLine("option name TtNoPvCutoff type check default false");
+        output.WriteLine("option name TtNoPvCutoff type check default true");
         output.WriteLine("option name EasyMoveFiftyGuard type check default true");
         output.WriteLine("option name DrawTieBreak type check default false");
         output.WriteLine("option name SmpOvershootTaper type check default false");
         output.WriteLine("option name RepetitionAfterRoot type check default false");
+        output.WriteLine("option name RepetitionStrictWhenWorse type check default true");
         output.WriteLine("option name NmpNonPvOnly type check default false");
+        output.WriteLine("option name NmpCutNodeOnly type check default false");
         output.WriteLine("option name TtEvalRefine type check default true");
         output.WriteLine("option name TtKeepMoveOnFailLow type check default true");
-        output.WriteLine("option name TtMateReuse type check default false");
         output.WriteLine("option name RootScoreOrdering type check default false");
-        output.WriteLine("option name Razoring type check default false");
         output.WriteLine("option name LmpAllDepths type check default true");
         output.WriteLine("option name QuietSeePrune type check default true");
         output.WriteLine("option name PriorFailLowBonus type check default false");
-        output.WriteLine("option name LmrDeeperResearch type check default false");
-        output.WriteLine("option name RfpTtMoveGuard type check default false");
-        output.WriteLine("option name LmpCountAllMoves type check default false");
-        output.WriteLine("option name DrawRandom type check default false");
         output.WriteLine("option name HindsightDepth type check default true");
-        output.WriteLine("option name CutoffCountLmr type check default false");
         output.WriteLine("option name CaptureSeePruneDeep type check default false");
+        output.WriteLine("option name CaptureSeeHistK type spin default 42 min 0 max 1024");
         output.WriteLine("option name TimeScale type spin default 100 min 50 max 200");
         output.WriteLine("option name PickerCheckBonus type spin default 16384 min 0 max 65536");
         output.WriteLine("option name PickerThreatWeight type spin default 20 min 0 max 100");
         output.WriteLine("option name NoDecayOnRelaunch type check default false");
         output.WriteLine("option name QsChecks type check default true");
-        output.WriteLine("option name ProbCutAllowNull type check default false");
-        output.WriteLine("option name FutilityFailSoft type check default false");
-        output.WriteLine("option name CaptureFutility type check default false");
+        output.WriteLine("option name FutilityFailSoft type check default true");
         output.WriteLine("option name HistoryPrune type check default false");
+        output.WriteLine("option name HistoryPruneScale type spin default 20 min 1 max 8192");
+        output.WriteLine("option name PruneLossGuard type check default true");
+        output.WriteLine("option name LosingCaptureOrder type check default true");
+        output.WriteLine("option name SmallProbCutExact type check default true");
+        output.WriteLine("option name ImprovingAboveBeta type check default true");
+        output.WriteLine("option name GoodCaptureSlack type check default true");
+        output.WriteLine("option name HistoryPruneCounts type check default false");
+        output.WriteLine("option name NmpEvalR type check default true");
+        output.WriteLine("option name TtCutoffHistory type check default true");
+        output.WriteLine("option name CutoffCountLmrAllNode type check default false");
+        output.WriteLine("option name PvWindowEarly type check default true");
+        output.WriteLine("option name TtRule50Guard type check default false");
         output.WriteLine("option name QsContCorrection type check default false");
         output.WriteLine("option name SingularTight type check default false");
         output.WriteLine("option name QsEntryKey type check default false");
         output.WriteLine("option name ClockLead type check default true");
+        output.WriteLine("option name ClockDeficitBrake type check default true");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
         output.WriteLine("option name CutNodeLmr type check default false");
+        output.WriteLine("option name CutNodeLmrTtPv type check default false");
         output.WriteLine("option name FailLowCorrection type check default false");
-        output.WriteLine("option name MoveCountLmr type check default false");
         output.WriteLine("option name DynamicAspiration type check default false");
         output.WriteLine("option name HistoryBonus type check default false");
         output.WriteLine("option name CorrectionLmr type check default false");
         output.WriteLine("option name KillerShallowing type check default true");
         output.WriteLine("option name TbPvCap type check default false");
         output.WriteLine("option name TbResistance type check default true");
+        output.WriteLine("option name TbDrawProbeAlways type check default true");
         output.WriteLine("option name TbWinTieBreak type check default true");
         output.WriteLine("option name WonBandMaxMen type spin default 8 min 4 max 32");
         output.WriteLine("option name WonBandPromoGuard type check default true");
         output.WriteLine("option name LostResistance type check default false");
         output.WriteLine("option name LostResistanceBound type spin default 600 min 100 min 100 max 5000".Replace("min 100 min 100", "min 100"));
+        output.WriteLine("option name Contempt type spin default 0 min -100 max 100");
+        output.WriteLine("option name ContemptOwnRating type spin default 0 min 0 max 4000");
+        output.WriteLine("option name UCI_Opponent type string default <empty>");
         output.WriteLine("option name CaptureLmr type check default false");
-        output.WriteLine("option name NmpPackage type check default false");
         output.WriteLine("option name PonderInPlace type check default false");
-        output.WriteLine("option name PonderContinue type check default false");
+        output.WriteLine("option name PonderContinue type check default true");
+        output.WriteLine("option name PonderContinueLead type spin default 125 min 0 max 1000");
+        output.WriteLine("option name ClockOptimumHalfMax type check default false");
         output.WriteLine("option name SyzygyPath type string default <empty>");
         output.WriteLine("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         output.WriteLine("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
         output.WriteLine("option name Syzygy50MoveRule type check default true");
         output.WriteLine("option name Debug Log File type string default <empty>");
+        // The search constants open to a joint retune (see SearchParams), one
+        // spin each, defaulting to the engine's value (the 2026-10-05 SPSA).
+        foreach (SearchParams.Param p in SearchParams.All)
+            output.WriteLine($"option name Tune_{p.Name} type spin default {p.Default} min {p.Min} max {p.Max}");
     }
 
     // Applies "setoption name <name> value <value>". Returns the canonical
@@ -267,6 +336,10 @@ public sealed class UciOptions
             case "hash" when int.TryParse(value, out int hash):
                 Hash = Math.Clamp(hash, 1, 1024);
                 return "Hash";
+
+            case "largepages" when bool.TryParse(value, out bool largePages):
+                LargePages = largePages;
+                return "LargePages";
 
             case "threads" when int.TryParse(value, out int threads):
                 Threads = Math.Clamp(threads, 1, 32); // Lazy SMP parallel search.
@@ -305,10 +378,6 @@ public sealed class UciOptions
                 Optimism = optimism;
                 return "Optimism";
 
-            case "nmpevalgate" when bool.TryParse(value, out bool nmpGate):
-                NmpEvalGate = nmpGate;
-                return "NmpEvalGate";
-
             case "pruningladder" when bool.TryParse(value, out bool ladder):
                 PruningLadder = ladder;
                 return "PruningLadder";
@@ -316,9 +385,6 @@ public sealed class UciOptions
             case "pruningladderfutility" when bool.TryParse(value, out bool ladFut):
                 PruningLadderFutility = ladFut;
                 return "PruningLadderFutility";
-            case "correctionblend" when bool.TryParse(value, out bool corrBlend):
-                CorrectionBlend = corrBlend;
-                return "CorrectionBlend";
             case "statscorelmr" when bool.TryParse(value, out bool statLmr):
                 StatScoreLmr = statLmr;
                 return "StatScoreLmr";
@@ -337,9 +403,9 @@ public sealed class UciOptions
             case "easymovewinonly" when bool.TryParse(value, out bool emw):
                 EasyMoveWinOnly = emw;
                 return "EasyMoveWinOnly";
-            case "rootstaticeval" when bool.TryParse(value, out bool rse):
-                RootStaticEval = rse;
-                return "RootStaticEval";
+            case "slowtceasymovedamp" when bool.TryParse(value, out bool stcd):
+                SlowTcEasyMoveDamp = stcd;
+                return "SlowTcEasyMoveDamp";
             case "qsstackmove" when bool.TryParse(value, out bool qsm):
                 QsStackMove = qsm;
                 return "QsStackMove";
@@ -364,24 +430,24 @@ public sealed class UciOptions
             case "repetitionafterroot" when bool.TryParse(value, out bool rar):
                 RepetitionAfterRoot = rar;
                 return "RepetitionAfterRoot";
+            case "repetitionstrictwhenworse" when bool.TryParse(value, out bool rsw):
+                RepetitionStrictWhenWorse = rsw;
+                return "RepetitionStrictWhenWorse";
             case "nmpnonpvonly" when bool.TryParse(value, out bool nnp):
                 NmpNonPvOnly = nnp;
                 return "NmpNonPvOnly";
+            case "nmpcutnodeonly" when bool.TryParse(value, out bool ncn):
+                NmpCutNodeOnly = ncn;
+                return "NmpCutNodeOnly";
             case "ttevalrefine" when bool.TryParse(value, out bool ter):
                 TtEvalRefine = ter;
                 return "TtEvalRefine";
             case "ttkeepmoveonfaillow" when bool.TryParse(value, out bool tkm):
                 TtKeepMoveOnFailLow = tkm;
                 return "TtKeepMoveOnFailLow";
-            case "ttmatereuse" when bool.TryParse(value, out bool tmr):
-                TtMateReuse = tmr;
-                return "TtMateReuse";
             case "rootscoreordering" when bool.TryParse(value, out bool rso):
                 RootScoreOrdering = rso;
                 return "RootScoreOrdering";
-            case "razoring" when bool.TryParse(value, out bool rz):
-                Razoring = rz;
-                return "Razoring";
             case "timescale" when int.TryParse(value, out int ts):
                 TimeScale = Math.Clamp(ts, 50, 200);
                 return "TimeScale";
@@ -397,18 +463,48 @@ public sealed class UciOptions
             case "qschecks" when bool.TryParse(value, out bool qsc):
                 QsChecks = qsc;
                 return "QsChecks";
-            case "probcutallownull" when bool.TryParse(value, out bool pcn):
-                ProbCutAllowNull = pcn;
-                return "ProbCutAllowNull";
             case "futilityfailsoft" when bool.TryParse(value, out bool ffs):
                 FutilityFailSoft = ffs;
                 return "FutilityFailSoft";
-            case "capturefutility" when bool.TryParse(value, out bool cft):
-                CaptureFutility = cft;
-                return "CaptureFutility";
             case "historyprune" when bool.TryParse(value, out bool hpr):
                 HistoryPrune = hpr;
                 return "HistoryPrune";
+            case "historyprunescale" when int.TryParse(value, out int hps):
+                HistoryPruneScale = Math.Clamp(hps, 1, 8192);
+                return "HistoryPruneScale";
+            case "prunelossguard" when bool.TryParse(value, out bool plg):
+                PruneLossGuard = plg;
+                return "PruneLossGuard";
+            case "losingcaptureorder" when bool.TryParse(value, out bool lco):
+                LosingCaptureOrder = lco;
+                return "LosingCaptureOrder";
+            case "smallprobcutexact" when bool.TryParse(value, out bool spe):
+                SmallProbCutExact = spe;
+                return "SmallProbCutExact";
+            case "improvingabovebeta" when bool.TryParse(value, out bool iab):
+                ImprovingAboveBeta = iab;
+                return "ImprovingAboveBeta";
+            case "goodcaptureslack" when bool.TryParse(value, out bool gcs):
+                GoodCaptureSlack = gcs;
+                return "GoodCaptureSlack";
+            case "historyprunecounts" when bool.TryParse(value, out bool ri0):
+                HistoryPruneCounts = ri0;
+                return "HistoryPruneCounts";
+            case "nmpevalr" when bool.TryParse(value, out bool ri2):
+                NmpEvalR = ri2;
+                return "NmpEvalR";
+            case "ttcutoffhistory" when bool.TryParse(value, out bool ri5):
+                TtCutoffHistory = ri5;
+                return "TtCutoffHistory";
+            case "cutoffcountlmrallnode" when bool.TryParse(value, out bool ri8):
+                CutoffCountLmrAllNode = ri8;
+                return "CutoffCountLmrAllNode";
+            case "pvwindowearly" when bool.TryParse(value, out bool ri10):
+                PvWindowEarly = ri10;
+                return "PvWindowEarly";
+            case "ttrule50guard" when bool.TryParse(value, out bool ri11):
+                TtRule50Guard = ri11;
+                return "TtRule50Guard";
             case "qscontcorrection" when bool.TryParse(value, out bool qcc):
                 QsContCorrection = qcc;
                 return "QsContCorrection";
@@ -421,36 +517,27 @@ public sealed class UciOptions
             case "clocklead" when bool.TryParse(value, out bool cld):
                 ClockLead = cld;
                 return "ClockLead";
+            case "clockdeficitbrake" when bool.TryParse(value, out bool cdb):
+                ClockDeficitBrake = cdb;
+                return "ClockDeficitBrake";
             case "lmpalldepths" when bool.TryParse(value, out bool lad):
                 LmpAllDepths = lad;
                 return "LmpAllDepths";
             case "priorfaillowbonus" when bool.TryParse(value, out bool a0):
                 PriorFailLowBonus = a0;
                 return "PriorFailLowBonus";
-            case "lmrdeeperresearch" when bool.TryParse(value, out bool a1):
-                LmrDeeperResearch = a1;
-                return "LmrDeeperResearch";
-            case "rfpttmoveguard" when bool.TryParse(value, out bool a2):
-                RfpTtMoveGuard = a2;
-                return "RfpTtMoveGuard";
-            case "lmpcountallmoves" when bool.TryParse(value, out bool a3):
-                LmpCountAllMoves = a3;
-                return "LmpCountAllMoves";
-            case "drawrandom" when bool.TryParse(value, out bool a4):
-                DrawRandom = a4;
-                return "DrawRandom";
             case "hindsightdepth" when bool.TryParse(value, out bool b0):
                 HindsightDepth = b0;
                 return "HindsightDepth";
-            case "cutoffcountlmr" when bool.TryParse(value, out bool b1):
-                CutoffCountLmr = b1;
-                return "CutoffCountLmr";
             case "quietseeprune" when bool.TryParse(value, out bool qsp):
                 QuietSeePrune = qsp;
                 return "QuietSeePrune";
             case "captureseeprunedeep" when bool.TryParse(value, out bool csp):
                 CaptureSeePruneDeep = csp;
                 return "CaptureSeePruneDeep";
+            case "captureseehistk" when int.TryParse(value, out int cshk):
+                CaptureSeeHistK = Math.Clamp(cshk, 0, 1024);
+                return "CaptureSeeHistK";
             case "smpdiversify" when bool.TryParse(value, out bool sdv):
                 SmpDiversify = sdv;
                 return "SmpDiversify";
@@ -463,12 +550,12 @@ public sealed class UciOptions
             case "cutnodelmr" when bool.TryParse(value, out bool cutLmr):
                 CutNodeLmr = cutLmr;
                 return "CutNodeLmr";
+            case "cutnodelmrttpv" when bool.TryParse(value, out bool cutLmrTtPv):
+                CutNodeLmrTtPv = cutLmrTtPv;
+                return "CutNodeLmrTtPv";
             case "faillowcorrection" when bool.TryParse(value, out bool flc):
                 FailLowCorrection = flc;
                 return "FailLowCorrection";
-            case "movecountlmr" when bool.TryParse(value, out bool mcl):
-                MoveCountLmr = mcl;
-                return "MoveCountLmr";
             case "dynamicaspiration" when bool.TryParse(value, out bool dyna):
                 DynamicAspiration = dyna;
                 return "DynamicAspiration";
@@ -487,6 +574,9 @@ public sealed class UciOptions
             case "tbresistance" when bool.TryParse(value, out bool tbr):
                 TbResistance = tbr;
                 return "TbResistance";
+            case "tbdrawprobealways" when bool.TryParse(value, out bool tbd):
+                TbDrawProbeAlways = tbd;
+                return "TbDrawProbeAlways";
             case "tbwintiebreak" when bool.TryParse(value, out bool tbw):
                 TbWinTieBreak = tbw;
                 return "TbWinTieBreak";
@@ -502,18 +592,46 @@ public sealed class UciOptions
             case "lostresistancebound" when int.TryParse(value, out int lrb):
                 LostResistanceBound = Math.Clamp(lrb, 100, 5000);
                 return "LostResistanceBound";
+            case "contempt" when int.TryParse(value, out int cont):
+                Contempt = Math.Clamp(cont, -100, 100);
+                return "Contempt";
+
+            case "contemptownrating" when int.TryParse(value, out int own):
+                ContemptOwnRating = Math.Clamp(own, 0, 4000);
+                return "ContemptOwnRating";
+
+            // "UCI_Opponent value <title> <elo> <computer|human> <name>", where
+            // title and elo are both allowed to be the literal "none". Only the
+            // rating is used, and anything unparseable leaves it null rather
+            // than guessing - a wrong rating would silently mis-scale contempt,
+            // which is worse than not scaling it at all.
+            case "uci_opponent":
+                UciOpponent = value;
+                OpponentRating = null;
+                foreach (string token in value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (int.TryParse(token, out int elo) && elo is > 0 and <= 4000)
+                    {
+                        OpponentRating = elo;
+                        break;
+                    }
+                }
+                return "UCI_Opponent";
             case "capturelmr" when bool.TryParse(value, out bool clm):
                 CaptureLmr = clm;
                 return "CaptureLmr";
-            case "nmppackage" when bool.TryParse(value, out bool nmp):
-                NmpPackage = nmp;
-                return "NmpPackage";
             case "ponderinplace" when bool.TryParse(value, out bool pip):
                 PonderInPlace = pip;
                 return "PonderInPlace";
             case "pondercontinue" when bool.TryParse(value, out bool pcn):
                 PonderContinue = pcn;
                 return "PonderContinue";
+            case "pondercontinuelead" when int.TryParse(value, out int pcl):
+                PonderContinueLead = Math.Clamp(pcl, 0, 1000);
+                return "PonderContinueLead";
+            case "clockoptimumhalfmax" when bool.TryParse(value, out bool ohm):
+                ClockOptimumHalfMax = ohm;
+                return "ClockOptimumHalfMax";
 
             case "syzygypath":
                 SyzygyPath = value == "<empty>" ? "" : value;
@@ -536,6 +654,21 @@ public sealed class UciOptions
                 return "Debug Log File";
 
             default:
+                // "Tune_<Name>": a SearchParams constant, clamped to its range
+                // and applied at once - they are statics every search thread
+                // reads, so there is nothing to push to the engine or its
+                // helpers. A fractional value (a tuner's raw theta) rounds to
+                // the nearest integer.
+                if (name.StartsWith("tune_", StringComparison.OrdinalIgnoreCase)
+                    && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                       out double tuned)
+                    && SearchParams.Find(name[5..]) is { } param)
+                {
+                    int v = (int)Math.Clamp(Math.Round(tuned, MidpointRounding.AwayFromZero),
+                                            param.Min, param.Max);
+                    param.Set(v);
+                    return "Tune_" + param.Name;
+                }
                 return null;
         }
     }

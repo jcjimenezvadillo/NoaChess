@@ -41,6 +41,14 @@ public sealed class CorrectionHistory
     // of once per table.
     public int RawEntry(Board board, ulong key) => _entries[Index(board, key)];
 
+    // The update rule was measured three other ways on 2026-09-21/22 against
+    // v5.9.11/v5.9.12 at 100,000 nodes, and all three were removed: the
+    // reference's read weights and context tables (CorrectionBlend, flat
+    // +1.6 over 2,014), the reference's gravity integrator that corrects a
+    // shared bias almost fully instead of the ~69% this EMA settles at
+    // (CorrectionGravity, H0 -9.6 over 1,082), and this EMA with its
+    // per-update weight capped at 64/256 (CorrectionWeightCap, flat -1.4 over
+    // 1,209). Neither more correction nor gentler updates pay here.
     public void Update(Board board, ulong key, int errorCp, int depth)
     {
         int target = Math.Clamp(errorCp, -MaxCorrectionCp, MaxCorrectionCp) * Scale;

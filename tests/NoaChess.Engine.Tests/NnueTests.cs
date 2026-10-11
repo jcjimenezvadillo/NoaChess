@@ -874,4 +874,107 @@ public class NnueTests
         Assert.False(NnueModelLoader.TryParse(bytes, out _, out string error));
         Assert.Contains("bucket", error);
     }
+
+    // ---------- 2026-10-04: the sparse-input arch 1 kernel ----------
+    //
+    // EvaluateSimd takes the sparse kernel for an arch 1 net loaded with its
+    // pair-major L1 copy (on AVX2); EvaluateScalar is the reference. The nets
+    // go through the loader so its re-layout is what is tested. Widths cover
+    // one 32-output pass, a pass plus an 8-output tail, the tail alone, and a
+    // feature transformer two mask words wide.
+    [Theory]
+    [InlineData(32, 32)]
+    [InlineData(64, 40)]
+    [InlineData(32, 8)]
+    [InlineData(128, 32)]
+    public void SparseKernel_MatchesScalar(int ftOut, int l1Out)
+    {
+        Assert.True(NnueModelLoader.TryParse(Serialize(CreateTestNetwork(seed: 77, ftOut: ftOut, l1Out: l1Out)),
+                                             out NnueNetwork? net, out string error), error);
+        Assert.NotNull(net!.L1WeightsByPair);
+
+        var cases = new List<(short[] Stm, short[] Opp)>
+        {
+            // Every activation clipped to zero: hidden is the bias alone.
+            (Fill(ftOut, -300), Fill(ftOut, 0)),
+            // Every activation at or past QA.
+            (Fill(ftOut, (short)net.QA), Fill(ftOut, 900)),
+        };
+        // A single nonzero pair, at each end of both halves.
+        foreach ((bool stmSide, int index) in new[] { (true, 0), (true, ftOut - 1), (false, 1), (false, ftOut - 2) })
+        {
+            short[] s = Fill(ftOut, 0), o = Fill(ftOut, 0);
+            (stmSide ? s : o)[index] = 117;
+            cases.Add((s, o));
+        }
+        var rng = new Random(2026);
+        for (int trial = 0; trial < 40; trial++)
+        {
+            short[] s = new short[ftOut], o = new short[ftOut];
+            for (int i = 0; i < ftOut; i++)
+            {
+                // Mostly clipped away, as in play, with values past QA too.
+                s[i] = (short)(rng.Next(4) == 0 ? rng.Next(1, 400) : rng.Next(-400, 1));
+                o[i] = (short)(rng.Next(4) == 0 ? rng.Next(1, 400) : rng.Next(-400, 1));
+            }
+            cases.Add((s, o));
+        }
+
+        foreach ((short[] stm, short[] opp) in cases)
+            Assert.Equal(NnueInference.EvaluateScalar(net, stm, opp),
+                         NnueInference.EvaluateSimd(net, stm, opp));
+
+        static short[] Fill(int n, short v)
+        {
+            var a = new short[n];
+            Array.Fill(a, v);
+            return a;
+        }
+    }
+
+    // The same parity on the shipping net, which carries output buckets: real
+    // accumulators along a random game, every bucket the game passes through.
+    [Fact]
+    public void SparseKernel_MatchesScalar_OnTheShippingNet()
+    {
+        string? model = ShippingModelPath();
+        if (model is null)
+            return;
+        Assert.True(NnueModelLoader.TryLoad(model, out NnueNetwork? net, out string error), error);
+        if (net!.L1WeightsByPair is null)
+            return; // not an arch 1 net: the sparse kernel does not apply
+
+        var rng = new Random(41);
+        var board = new Board();
+        var acc = new NnueAccumulator(net.FtOutputs);
+        for (int plyCount = 0; plyCount < 160; plyCount++)
+        {
+            acc.Refresh(net, board, Color.White);
+            acc.Refresh(net, board, Color.Black);
+            int stm = (int)board.SideToMove;
+            int bucket = NnueModelHeader.BucketForPieceCount(
+                System.Numerics.BitOperations.PopCount(board.AllOccupancy), net.OutputBuckets);
+            Assert.Equal(
+                NnueInference.EvaluateScalar(net, acc.Values[stm], acc.Values[1 - stm], bucket),
+                NnueInference.EvaluateSimd(net, acc.Values[stm], acc.Values[1 - stm], bucket));
+
+            if (GameState.GetResult(board) != GameResult.Ongoing)
+                break;
+            var moves = MoveGenerator.GenerateLegalMoves(board);
+            board.MakeMove(moves[rng.Next(moves.Count)]);
+        }
+    }
+
+    private static string? ShippingModelPath()
+    {
+        string? dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 8 && dir is not null; i++)
+        {
+            string candidate = Path.Combine(dir, "src", "NoaChess.UCI", "Resources", "noa-embedded.noannue");
+            if (File.Exists(candidate))
+                return candidate;
+            dir = Path.GetDirectoryName(dir);
+        }
+        return null;
+    }
 }

@@ -105,6 +105,43 @@ public class TimeManagerTests
     }
 
     [Fact]
+    public void SustainabilityGuard_WidensWithAGenuineClockLead()
+    {
+        // Real game 2026-09-15 (lichess 3VOX5n7V, move 44): NoaBot held
+        // 10:27 against an opponent down to 0:29, a 21.6x lead ClockLead caps
+        // to 2x (timeScalePercent 200). Before this fix the guard only ever
+        // looked at OUR OWN clock, so it clawed the already-scaled optimum
+        // back down from ~79s to ~44s - barely more than the unscaled ~39s -
+        // which is why the bot kept playing at a normal pace despite a huge
+        // lead. The guard must scale with a genuine lead instead.
+        SearchLimits noLead = TimeManager.FromClock(remainingMs: 627_000, incrementMs: 5_000,
+            moveOverheadMs: 100, movesToGo: null, gamePly: 87, timeScalePercent: 100);
+        SearchLimits lead = TimeManager.FromClock(remainingMs: 627_000, incrementMs: 5_000,
+            moveOverheadMs: 100, movesToGo: null, gamePly: 87, timeScalePercent: 200);
+
+        Assert.True(lead.SoftTimeMs > noLead.SoftTimeMs * 1.8,
+            $"noLead={noLead.SoftTimeMs} lead={lead.SoftTimeMs}");
+    }
+
+    [Fact]
+    public void SustainabilityGuard_UnaffectedByAClockDeficit()
+    {
+        // ClockDeficitBrake shrinks `optimum` via timeScalePercent < 100; the
+        // guard ceiling itself must stay exactly as it was - only the widening
+        // path (a genuine lead) touches it. Same death-spiral clock as
+        // SustainabilityGuard_TimeTroubleSpendStaysNearTheIncrement, both
+        // ends of the scale must respect the identical unscaled ceiling.
+        long ceiling = 1_000 + 5_000 / 16;
+        SearchLimits noScale = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
+            moveOverheadMs: 30, movesToGo: null, gamePly: 100, timeScalePercent: 100);
+        SearchLimits deficit = TimeManager.FromClock(remainingMs: 5_000, incrementMs: 1_000,
+            moveOverheadMs: 30, movesToGo: null, gamePly: 100, timeScalePercent: 50);
+
+        Assert.True(noScale.SoftTimeMs <= ceiling, $"soft={noScale.SoftTimeMs}");
+        Assert.True(deficit.SoftTimeMs <= ceiling, $"soft={deficit.SoftTimeMs}");
+    }
+
+    [Fact]
     public void MovesToGo_TightensBudgetForTheNextControl()
     {
         // With only two moves to the next control the clock must be split over
@@ -146,5 +183,62 @@ public class TimeManagerTests
 
         Assert.Contains(result.BestMove, MoveGenerator.GenerateLegalMoves(board));
         Assert.True(sw.ElapsedMilliseconds < 1_500, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    // 2026-10-04: a six-fold clock lead (ClockLead's cap) on 8 s plus 1 s
+    // clamps the optimum onto the maximum. The budget is still a clock
+    // budget, and the search must know it: soft == hard alone used to read as
+    // an explicit movetime, and a position with one legal move then spent the
+    // whole 6.3 s instead of answering at once.
+    [Fact]
+    public void ClampedClockBudget_IsClockManaged()
+    {
+        SearchLimits limits = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        Assert.Equal(limits.SoftTimeMs, limits.HardTimeMs);
+        Assert.True(limits.ClockManaged);
+        Assert.True(limits.IsClockMode);
+        Assert.False(SearchLimits.Time(500).IsClockMode);
+    }
+
+    [Fact]
+    public void ClampedClockBudget_OneLegalMove_AnswersAtOnce()
+    {
+        // White's king on a1 is in check from the rook, a2 is defended by the
+        // black king, b1 is the only square.
+        var board = new Board("8/8/8/8/8/1k6/r7/K7 w - - 0 1");
+        Assert.Single(MoveGenerator.GenerateLegalMoves(board));
+        var engine = new ChessEngine();
+        engine.FindBestMove(board, SearchLimits.Depth(1)); // warm-up, off the clock
+
+        SearchLimits limits = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        var sw = Stopwatch.StartNew();
+        SearchResult result = engine.FindBestMove(board, limits);
+        sw.Stop();
+        Assert.Equal(MoveGenerator.GenerateLegalMoves(board)[0], result.BestMove);
+        Assert.True(sw.ElapsedMilliseconds < 50, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void MoveTime_IsStillSpentInFull()
+    {
+        var engine = new ChessEngine();
+        var board = new Board();
+        engine.FindBestMove(board, SearchLimits.Depth(1)); // warm-up
+        var sw = Stopwatch.StartNew();
+        engine.FindBestMove(board, SearchLimits.Time(300));
+        sw.Stop();
+        Assert.True(sw.ElapsedMilliseconds >= 280, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    // ClockOptimumHalfMax (off by default): the optimum may not exceed half
+    // the maximum, so the clamped case above keeps room to extend.
+    [Fact]
+    public void HalfMax_CapsTheOptimumAtHalfTheMaximum()
+    {
+        SearchLimits plain = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600);
+        SearchLimits half = TimeManager.FromClock(8_000, 1_000, 100, null, 60, 600, halfMax: true);
+        Assert.Equal(plain.HardTimeMs, half.HardTimeMs);
+        Assert.Equal(half.HardTimeMs / 2, half.SoftTimeMs);
+        Assert.True(half.ClockManaged);
     }
 }

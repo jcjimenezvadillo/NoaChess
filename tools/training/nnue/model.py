@@ -552,6 +552,19 @@ class NoaNnue(nn.Module):
         with torch.no_grad():
             self.ft.weight.clamp_(-1.98, 1.98)          # |w*QA| <= ~505/int16-safe
             self.ft_bias.clamp_(-1.98, 1.98)
+            # threat_ft and coarse_ft sum into this SAME int16 accumulator as
+            # ft (see the "one accumulator, one grid" comments in forward()),
+            # so they need the identical bound - missing until 2026-09-18,
+            # caught by an audit. Currently a latent risk rather than a known
+            # failure (coarse=True is live in the shipped recipe and nothing
+            # has visibly broken), but nothing here previously stopped either
+            # table's weights from drifting past the safe range during
+            # training and only being discovered by a saturation failure at
+            # export time, or not at all.
+            if self.threats:
+                self.threat_ft.weight.clamp_(-1.98, 1.98)
+            if self.coarse:
+                self.coarse_ft.weight.clamp_(-1.98, 1.98)
             # The int8 architectures need |round(w*QB)| <= 127 for the
             # VPMADDUBSW bound to hold; this clamp is what guarantees the export
             # saturation check passes rather than merely usually passing.

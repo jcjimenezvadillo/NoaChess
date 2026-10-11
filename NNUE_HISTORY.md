@@ -3,6 +3,402 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
+**Current state (v6.0.0, 2026-10-07).** The embedded net is `fqgen7` (v6.0.0, first entry below):
+a 14-epoch re-entry from `fqblind` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7) over its corpus
+with the 6,000-node blind-spot label files replaced by the same mined elite positions relabelled at
+40,000 nodes by `fqblind` with the tablebases probed inside the search, at weight 4x; +15.9 Elo, H1
+over 1,354 fixed-node games against `fqblind`. Before it, `fqblind` (v5.9.26) was a cold 60-epoch
+cosine anneal from lr 1e-3 over fqco5912's corpus plus the blind-spot corpus, +8.0 Elo over
+`fqco5912` (v5.9.20), which re-annealed fqco592's weights over 14 epochs of a real cosine on
+fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus, warm-started from
+`fqco592.pt.partial`. v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
+45 search constants) changed search, time management and the trainer, not the net (see
+CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
+on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). In
+preparation for the next generation (`fqgen8`): `datascale6/bulk` (130M positions of 6,000-node autoplay,
+`fqblind` as teacher, the tablebases probed in the search) and a second 40,000-node relabel, `deep2`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
+coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
+status entry further down). Last measured CCRL: **3461 +/- 55** (v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
+single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
+v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493 tests.
+
+**Read this before training another generation the same way.** The investigation that explains
+`fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
+gen9's +18 and fqcohuman3's +21.6 - were not data steps at all: both were the tail of a 60-epoch
+cosine anneal (`lr0=1e-3, T_max=60`) on an unchanged 190-file corpus, split across crash-resumed
+segments. `fqco592` and `fqco5911` are the only two nets ever trained as 7 epochs of tail polish at
+the floor of that same finished schedule (`--lr 4.287769e-05`, evaluated: it is the reference
+schedule at epoch 53 of 60, to nine figures) - and they are exactly the two that measured almost
+nothing. The recipe `dump_args.py` reads off a champion checkpoint is a **resume stub**, not a
+recipe: copying it forward again is the most expensive mistake available. The next generation needs
+either a cold 60-epoch anneal or a real re-entry point in the schedule (not its last 12%), not
+another `--epochs 7` run at this learning rate. [Both forms have since run and both paid: the
+re-entry `fqco5912`, +34.3 over fqco592 (v5.9.20), and the cold 60-epoch `fqblind`, +8.0 over
+fqco5912 (v5.9.26).] `--max-records 120000000` in `Train-Fqco5911.ps1` is
+dead code on the streaming path (`train_streaming` returns before it is read) and should not be
+copied forward as if it limited anything - every run described here consumed its entire corpus,
+every epoch.
+
+**Open issues found by the audit of 2026-10-04, none acted on yet** (they waited for fqblind, which
+has since finished and shipped in v5.9.26; they belong to the next generation):
+
+- *Quantization with factorization.* Quantization-aware training rounds the real and the virtual
+  (factorized) feature-transformer rows separately, while the exporter folds them and rounds the
+  sum. The exported table differs from what the training saw by 1.67-1.70 cp of eval on average,
+  with 25.6% of its entries one LSB off. `verify_qat.py` only covers `factorized=False`, which is
+  how it went unseen. The fix (fold before fake-quantizing in `model.py`) waits for the running
+  training; a net re-exported with any fix is a new net and needs its own SPRT (0.5-2 Elo expected).
+- *Tablebase labels.* `NoaChess.DataGen --tb-path` relabelled the WDL of positions inside the tables
+  but its search never probed them in-tree (it only ever filtered the root): the per-engine probe
+  limit was never set. Fixed in v5.9.25, with a startup self-check. Every corpus generated with
+  `--tb-path` before then - the blind-spot batch included - carries score labels from a search blind
+  to the tables, and the corpora generated without `--tb-path` labelled their rows with six men or
+  fewer without tables at all. A relabel into a new directory, with a DTZ and fifty-move guard, is
+  due before the next anneal. The fix also changes what a new corpus contains: a search that finds a
+  decisive tablebase result now scores it in the tablebase band (about 98,700), which the
+  `|score| < 20000` row filter drops and the resign adjudication ends on, and a drawn tablebase
+  subtree scores 0, which brings the draw adjudication forward. Expect fewer late-endgame rows than
+  in the older corpora.
+- *Elite results decided on time* are taken as the game result; the next label-book pass should keep
+  those positions with a neutral or omitted result.
+- *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
+  been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqgen7 ships as v6.0.0 (2026-10-07): deeper labels pay in play, not on the exam
+
+**The run.** Warm start from `fqblind`, 14 epochs of a cosine from lr 1.371433e-4 (the 60-epoch
+schedule evaluated at epoch 46) to 1e-5, lambda 0.735 -> 0.7, batch 16384, reference loss with
+pow-exp 2.5, `--val-split tail-dedup`, the loader process with three readers, QAT, the factorized
+128-wide transformer with the coarse lane. Data: the `fqblind` corpus with its blind-spot label-book
+files (the elite positions mined in six groups, labelled at 6,000 nodes by our search) replaced by the
+same positions relabelled at 40,000 nodes by `fqblind` with the tablebases probed in the search,
+sampled at 4x, the blind self-play files at 1.5x; about 1,245,881,765 rows drawn per epoch. It ran at
+19-21 steps/s and finished on 2026-10-07 with the validation 0.006154 (epoch 12), 0.006158 (epoch 13) and
+0.006150 (epoch 14, best); the split is a function of the corpus, so this is not comparable with `fqblind`'s 0.005989.
+Exported 5,820,956 bytes, sha256 starting 7a70aeab80c2339f; bit-exact against the engine (42 cp on
+the start position from the trainer's check and from `NoaChess.DataGen --nnueprobe`), accumulator
+headroom with the coarse lane 98.5% of the int16 range in the worst lane. Two whole-machine disk
+stalls (reads of one to four seconds on the SSD) slowed it for minutes each; neither changed a number.
+
+**Measured at 100,000 fixed nodes against `fqblind`, the same 5.9.27 binary on both sides (only
+`EvalFile` differing, `fqgen7` listed first, 8moves_v3, elo0=0 elo1=10, one thread):
++15.9 +/- 11.9 Elo, 313-251-790 (0.523) over 1,354 games, LOS 99.5%, LLR 2.95, H1**, no time losses,
+no anomalies; ten games still running when the test stopped are not counted. As with every early H1
+the point estimate leans high.
+
+**The blind-spot exam, again.** The same 1,401 held-out points (scale k = 0.810), each net's static
+evaluation against the independent judge at depth 20, mean absolute error in centipawns, and the signed
+bias (negative = the net is compressed towards zero against the judge):
+
+| Group | fqco5912 | fqblind | fqgen7 | bias fqblind | bias fqgen7 |
+|-------|----------|---------|--------|--------------|-------------|
+| B1, opposite-coloured bishops | 255 | 253 | 252 | -57 | -59 |
+| B2, same-coloured bishops | 176 | 173 | 175 | -32 | -35 |
+| R, rook endings with a passer | 371 | 369 | 369 | -71 | -75 |
+| K, king attacks | 173 | 173 | 173 | -86 | -87 |
+| L, large material gaps | 666 | 661 | 665 | -74 | -82 |
+| P, pawn tension | 68 | 70 | 69 | -28 | -27 |
+
+Nothing moved by more than a few centipawns, and the compression grew a little where the labels
+were deepest. The rate of positions the net gets wrong outright stays at 0-3% for all three nets.
+
+**A second re-entry does not repeat it (2026-10-08).** A second re-entry from fqgen7 itself (fqgen7b: the same recipe, corpus and weights, seed 5, 14 epochs, best epoch 13, validation 0.006142) did not pay: fqgen7b against fqgen7 at 100,000 fixed nodes scored 599-598-1756 (0.500) over 2,953 games, +0.1 +/- 8.0 Elo, LLR -2.95, H0. The gain of a re-entry is therefore a one-time step out of a finished cold anneal, not something repeated re-entries keep paying, and fqgen7 stays the embedded net.
+
+**The control, 2026-10-10: the deeper labels do pay.** `fqctl` is the same 14-epoch re-entry from `fqblind` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384, the same recipe and seed as `fqgen7`) on the `fqblind` corpus with the OLD 6,000-node blind-spot label files instead of the 40,000-node ones (best epoch 13, validation 0.005986 on the same split as `fqblind`'s 0.005989). At 100,000 fixed nodes on the 5.9.27 binary, one thread, 8moves_v3: `fqctl` against `fqblind` 1295-1205-3500 over 6,000 games, +5.2 +/- 5.7 Elo, LLR 0.25 (stopped at the 6,000-game cap, undecided); `fqgen7` against `fqctl` 854-756-2165 over 3,775 games, +9.0 +/- 7.2 Elo, LOS 99.3%, LLR 2.95, H1. So of `fqgen7`'s +15.9 over `fqblind`, about +5 is the re-entry itself (positive, not proven) and +9.0 (H1) is the deeper labels, and the two add up to the whole (5.2 + 9.0 = 14.2). The blind-spot exam under-measured them: the static evaluation on the six held-out groups did not move and play improved all the same. The inference drawn from the exam in the first version of this entry, that the gain might not belong to the labels, is withdrawn; the labels at 40,000 nodes with the tablebases in the search are the lever to push for the next net.
+
+**Reading.**
+- The deeper labels were closer to the judge on the paired positions they replaced (6,000 -> 40,000
+  nodes: large material gaps 644 -> 515, rook endings 418 -> 355, opposite-coloured bishops 294 ->
+  273, king attacks 87 -> 77), yet the trained net is not closer to it on positions it has not seen:
+  the static evaluation does not generalise the deeper label from a few million examples in 4% of a
+  1.2-billion-row corpus.
+- The +15.9 splits, by the control below, into about +5 for the re-entry itself (what `fqco5912` shares with it: a warm re-entry at a real point
+  of the schedule) and +9.0, H1, for the 40,000-node labels with the tablebases in the search. The exam did not see it; play did.
+- Rook endings are still evaluated at about 0.7 of the judge's magnitude. If they are to move, the
+  next net needs them from a source that sees the answer (the tablebases in the label, the game
+  result) rather than more of our own shallow labels.
+
+**The next generation (`fqgen8`).** The `datascale6` corpus was stopped on 2026-10-10 after its first source, `bulk` (130M positions of 6,000-node autoplay with `fqblind` as teacher and the tablebases probed in the search): its other sources (`open`, `mid`, `hard`) had no measured value, while the 40,000-node labels had just measured +9.0 Elo. The CPU goes to a second deep relabel instead (`deep2`: the next 8M positions of the six mined blind-spot groups, labelled at 40,000 nodes by `fqgen7` with the tablebases in the search, about two days at 10 threads). `fqgen8` is a cold 60-epoch anneal on the corpus plus `datascale6/bulk` and the first deep batch (running since 2026-10-10), followed by its 14-epoch re-entry, where `deep2` enters at weight 4x. Still open for it: the QAT rounding of the factorized rows and WDL-versus-score row filtering.
+
+---
+
+## fqblind ships as v5.9.26 (2026-10-05): the cold anneal pays, the blind-spot labels do not
+
+The run is described in the next entry, written while it trained. It finished on 2026-10-05 after
+about 62 h (all 60 epochs on the 282 files, the loader process from epoch 2 on: about 10.5 steps per
+second before it, about 21 after). Best epoch 59 of 60, validation 0.005989 on the tail-dedup split
+(1,204,331,372 training rows, 51,316,966 validation rows after 12,068,759 tail rows, 19.04%, were
+dropped as training positions); that number is not comparable with the validation losses of any
+earlier net, all read on the leaking tail cut. Exported 2026-10-05, 5,820,956 bytes, sha256 starting
+cc65210c23bf26ec; verified bit-exact against the engine (44 cp on the start position on both sides).
+Architecture and file size unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco5912, the same 5.9.25 binary on both sides (only
+`EvalFile` differing, fqblind listed first, 8moves_v3, elo0=0 elo1=10).** The first batch stopped at
+its 6,000-game cap undecided: 1448-1321-3231, +7.4 +/- 6.0, LLR 2.54. A second batch of 353 games
+(96-77-180) took the pooled count to **1544-1398-3411 over 6,353 games, +8.0 Elo, LLR 3.40, H1**.
+
+**The blind-spot exam.** Held-out positions of the six groups, never in the training corpus, 300 per
+group (299 for K and L); each net's static evaluation against an independent judge at depth 20. Mean
+absolute error in centipawns:
+
+| Group | fqco5912 | fqblind |
+|-------|----------|---------|
+| B1, opposite-coloured bishops with a passer | 255 | 253 |
+| B2, same-coloured bishops | 176 | 173 |
+| R, rook endings with a passer | 371 | 369 |
+| K, king attacks | 173 | 173 |
+| L, large material gaps | 666 | 661 |
+| P, pawn tension | 68 | 70 |
+
+The rook-ending evaluations are still compressed to about 0.64-0.71 of the judge's. Nothing here
+moved by more than a few centipawns, so **the +8.0 comes from the long cold anneal, not from the
+blind-spot labels**: they did not fix the static evaluation where they were aimed.
+
+**Why, most likely.**
+- The labels come from our own 6,000-node search, whose evaluation shares the blind spots the corpus
+  was meant to correct: a shallow search does not label correctly what its own evaluation misjudges
+  at that depth.
+- The datagen search did not probe the tablebases in-tree (the `--tb-path` defect, fixed in
+  v5.9.25), so the endings closest to the tables, the rook endings among them, were scored blind to
+  them.
+- The corpus is about 4% of the data (sampled at 1.5x), a small voice against 1.2 billion rows that
+  carry the old judgment.
+
+**Lessons.**
+- The schedule is the lever, again: a cold 60-epoch anneal over the same data, plus 4%, beat a
+  14-epoch re-entry anneal by +8.0. Both forms the "Read this before training" note asked for have now
+  paid.
+- Positions alone do not teach what their labels do not know. A blind-spot corpus is only as good as
+  the search that scores it, and that search has to be deeper than the eval it corrects, or see the
+  answer some other way (the tables, the game result).
+- Measure the target, not only the Elo: the +8.0 alone would have credited the blind-spot corpus;
+  the held-out exam against an independent judge says it did not do its job.
+
+**The next generation.** Deeper labels from our own search with the tablebases probed in the search,
+more weight for the blind-spot files, and more weight on the game result for them; the open issues at
+the top of this file (QAT rounding of factorized rows, the tablebase relabel, results decided on time,
+WDL-versus-score row filtering) belong to the same cycle. Shipping that net is one of the three
+conditions for 6.0.0 (ROADMAP.md).
+
+---
+
+## fqblind in training, and the trainer rebuilt under it (2026-10-01 to 2026-10-04, v5.9.25)
+
+**Not a shipped net.** v5.9.25 still embeds `fqco5912`. `fqblind` is the long anneal the fqco5912
+result pointed to, and it is still training; it will be judged by its own SPRT when it ends. On the
+evening of 2026-10-04 it was in epoch 46 of 60. [It finished on 2026-10-05 and shipped as v5.9.26,
++8.0 over fqco5912: entry above.]
+
+**The run.** A cold start (no `--init-from`): 60 epochs of a cosine from lr 1e-3, lambda 1.0 to 0.7,
+otherwise fqco5912's architecture and recipe (HalfKAv2_hm, 128/32/32, one output bucket, factorized,
+coarse lane, QAT at QA 255, the reference-style loss with exponent 2.5, 240/145 constants, weight
+decay 1e-05 and none on the transformer), seed 2, batch 16384. 282 files: datascale2, datascale4,
+datascale5, selfplay-gen8, the elite WDL shards and the 19 files of the blind-spot corpus, sampled
+at 1.5x their size with `--reweight`. Validation is the new `--val-split tail-dedup` (below), so its
+validation losses are not comparable with those of earlier nets, which were read on the leaking tail
+cut.
+
+**The blind-spot corpus.** 48,270,285 positions aimed at what the review of the Windows test
+(2026-09-27) found the net misjudging. Elite positions were mined in six groups - opposite-coloured
+bishops with a passed pawn, same-coloured bishops, rook endings with a passed pawn, king attacks,
+large material gaps and pawn tension - and given to `NoaChess.DataGen` both to label directly and as
+starting points for self-play, one labelled file and one to three self-play files per group. Its
+labels carry the `--tb-path` defect recorded under the open issues at the top of this file (the
+search that scored them did not probe the tables in-tree).
+
+**The trainer changes it runs on, shipped with v5.9.25** (`tools/training/nnue/train_nnue.py`,
+`dataset.py`):
+- **`--val-split tail-dedup`.** The tail cut, minus every tail row whose position is a training row
+  of any file; the training rows are exactly the tail split's. A position is the pair of HalfKA
+  feature sets the net reads, each taken as a set, so a mirrored board or a colour-flipped one
+  counts as the same input (on datascale5, one shard's tail against three others: identical rows
+  2.47%, identical feature sets 3.63% - hashing rows in order would have left a third of the leak).
+  The fqco5911 entry below measured 5.48% of one shard's tail inside other files; on fqblind's 282
+  files 12,068,759 of 63,385,725 validation tail rows (19.04%; 18.66% without the blind-spot corpus)
+  are positions the training rows contain, and the trainer keeps the checkpoint with the best
+  validation loss, so the leak steered that choice toward memorisation. A position-hash split
+  (`--val-split hash`) was built first and kept only for comparison: it splits every game across
+  both sides, so 99.99% of its validation rows have training rows from their own game, and its
+  validation pass reads the whole corpus. The masks are cached next to the feature shards. The
+  default stays `tail`.
+- **Exact resume at an epoch boundary.** Every epoch writes `<out>.state`: weights, optimizer,
+  scheduler, lambda ramp, best validation so far and every RNG the loop draws from. `--resume-state`
+  restores all of it and continues at the next epoch, where `--init-from` only approximated it with
+  a fresh optimizer (fqco5912's resume, and the crash-resumed segments of the 60-epoch anneals
+  above). The other arguments must be the run's own; `--data` may gain files at the boundary, and
+  dropping or shortening one is refused where it would leak trained rows into validation
+  (`--accept-val-leak` overrides). `--stop-after-epoch N`, or creating `<out>.stop` in a running
+  job, ends it cleanly at the next epoch boundary (exit code 3); a fresh run refuses to start over
+  an unfinished one in the same `--out`.
+- **Memory-mapped coarse caches.** `np.load` ignores `mmap_mode` for an `.npz` and read every member
+  whole: about 52 GB of RAM for the coarse caches. Each member is now mapped where it sits in the
+  archive, and the page cache keeps what fits.
+- **The loader in its own process** (`--loader-process`, plus `--loader-workers` reader threads).
+  The GPU sat idle about half the time waiting for a single-threaded buffer build; the same
+  `stream_batches` now runs in a child process, off the trainer's GIL, with byte-identical batches
+  in the same order and the same RNG a resume saves. fqblind was stopped at the end of its first
+  epoch through `<out>.stop` and resumed with it through `--resume-state`, the first real use of the
+  exact resume: about 10.5 steps per second before, about 21 after.
+
+**DataGen.** `NoaChess.DataGen --tb-path` now probes the tables inside the search, with a startup
+self-check (K+N+N against K must score 0; it scored +361 before). What that means for the corpora
+already on disk, and for the next one, is under the open issues at the top of this file.
+
+---
+
+## fqco5912 ships as v5.9.20 (2026-09-24): the schedule experiment, a real anneal
+
+The experiment the "Read this before training another generation" note above asked for. One axis
+moved against fqco5911: the learning-rate schedule. Same warm start (`fqco592.pt.partial`), same
+corpus (263 files, 1,219,446,812 records), same hyperparameters (batch 16384, lambda 0.735 to 0.7,
+reference-style loss, factorized, coarse lane, QAT at QA 255) - but a fresh 14-epoch cosine from lr
+1.371433e-4 (the original 60-epoch schedule evaluated at epoch 46) down to `eta_min` 1e-5, in place
+of 7 epochs at the floor (4.287769e-05).
+
+The run was terminated from outside at epoch 11 of 14 (no Python traceback in its log; epoch 10 saved,
+validation 0.005560) and resumed from the epoch-10 checkpoint at the learning rate the cosine had
+reached there (3.3935e-05), 4 epochs left, lambda 0.710 to 0.7. That is the documented continuation
+recipe: it reproduces the remaining schedule closely but not exactly, since the optimizer state
+restarts. Final checkpoint validation 0.005540 (fqco592: 0.005860 at its own selection; the
+validation split leaks a little, see the fqco5911 entry, so the loss reads optimistic and the SPRT is
+the judge). Exported 2026-09-24 19:27, 5,820,956 bytes, sha256 starting 7a326447140c10e0 (fqco5911:
+cfd9e654...); embedded and `EvalFile` loads verified identical in play. Architecture and file size
+unchanged, so the swap costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592, the same 5.9.19 binary on both sides (fqco5912
+listed first, 8moves_v3, elo0=0 elo1=10 alpha=beta=0.05): 119-72-286 [0.549] over 477 games, +34.3
++/- 19.7 Elo, LOS 100%, LLR 2.95, H1.** It closed early, so the point estimate is likely inflated by
+the stopping rule; fqco5911, a data step of the same recipe on 1.35x the corpus, read +7.8 +/- 6.0
+over 5,401 games. **Mechanism finding:** the reading supports the hypothesis of the 2026-09-23
+investigation - the learning-rate schedule, not the data volume, was the lever behind the project's
+large NNUE gains, and a real wider anneal on the same data pays several times what the data step
+did. Still to come: a longer measurement against fqco5911 and a gauntlet. A cold 60-epoch anneal
+remains the other untested form of the same idea.
+
+---
+
+## fqco5911 ships as v5.9.17 (2026-09-23): a data step, measured small and real
+
+fqco592's exact recipe (7 epochs, batch 16384, lr 4.287769e-05, lambda 0.735 to 0.7, the reference
+loss with exponent 2.5, 240/145 input and output constants, weight decay 1e-05, 128/32/32 widths, one
+output bucket, factorized, coarse lane, QAT at QA 255, seed 1, 5% validation), warm-started from
+`fqco592.pt.partial`, on a larger corpus: datascale2 (600,006,650) + datascale4 (298,082,565) +
+datascale5 (297,839,853, 6,000 nodes, root diversity on, teacher fqco592, completed 2026-09-22) +
+selfplay-gen8 (6,823,196) + the 17 elite WDL shards (16,694,548, teacher fqco592) - 263 files,
+1,219,446,812 records, against fqco592's 904,912,411 (a 1.3475x, 0.43 doublings). Best epoch 6 of 7,
+val 0.005543. Export report against its own teacher labels: pearson 0.9470, slope 0.817, RMS 114.0
+cp, sign agreement 90.2% - the slope and RMS are unremarkable on this architecture (fqcohuman3 reads
+0.811 on the same file) and explain none of the result below. Export verified bit-exact against the
+engine's own probe (`--nnueprobe`, value 57 both sides). Architecture and file size unchanged
+(5,820,956 bytes), so a net swap changes no node counts and costs nothing at the clock.
+
+**Measured at 100,000 fixed nodes against fqco592: +7.8 +/- 6.0 Elo, LOS 99.4%, LLR 2.96, H1 over
+5,401 games** (1,199-1,078-3,124, draw ratio 57.8%; the point estimate held inside [+4.1, +8.0] from
+game 800 onward, so the run was topped up past the SPRT bounds for precision rather than stopped
+early). At the project's own data-scale curve (+82 Elo per doubling at 4.3M-20M, +26 at 20M-324M,
+NNUE_HISTORY.md, 2026-08-01/09), 0.43 doublings measured here gives about **+11.6 Elo per doubling**
+at this corpus size - the expected shape of diminishing returns, not a broken step. See CHANGELOG.md,
+2026-09-23, for the full investigation into why this generation's gain is small and what it costs to
+recover more: in short, the schedule collapsed from 60 epochs to 7 while the corpus grew, and that
+axis - not data volume - is where the missing Elo most likely is.
+
+Two defects found and fixed while investigating this run, not yet acted on beyond documenting them:
+the validation split is a per-file tail cut, and 5.48% of one shard's tail is found verbatim inside
+1.64% of the training corpus (a real, small leak in every validation number on record); and no
+training log exists for this run (`Lanzar-Train-Fqco5911.bat` redirects nothing), so its epoch-by-
+epoch loss curve is lost. `NNUE_HISTORY.md` previously called datascale2 "924M, human-seeded, the
+fixed base" (2026-09-17 entry below); the shard headers give 600,006,650 records in 121 files - the
+924M figure was wrong and is left uncorrected below as originally published, per this file's own
+convention for stale historical numbers.
+
+---
+
+## fqco592 ships as v5.9.10 (2026-09-17): the same recipe on the datascale4 corpus
+
+One axis moved: the data. Everything else is fqcohuman3's, pulled from the champion checkpoint with
+`dump_args.py` on 2026-09-16 rather than typed from memory - 7 epochs, batch 16384, lr 4.287769e-05,
+lambda 0.735 at the start and 0.7 at the end, the reference loss with exponent 2.5 and the 240/145
+input and output constants, weight decay 1e-05 (none on the transformer), 128/32/32 widths, one
+output bucket, factorized, coarse lane, no fine threats, QAT at QA 255, 120M records per epoch,
+chunk 8192, 64 buffered chunks, 4 prefetch workers, seed 1, 5% validation. Warm-started from
+`fqcohuman3.pt.partial` the way fqcohuman3 started from fqcohuman2's.
+
+Data: datascale2 (924M, human-seeded, the fixed base) + datascale4 + selfplay-gen8. datascale4 is
+the corpus the previous champion generated: 298,082,565 positions at 6,000 nodes, teacher v5.9.2
+with fqcohuman3, four arms (bulk 43.3% from random openings, mid 35.2% from a human middlegame book,
+open 20.1% from a human opening book, hard 1.4% from the bot's own judged losses - the hard arm's
+book was small and came up short of its 2% target), 62 shards, audited before training with the same
+check that caught datascale3 labelled by the classical evaluator: every arm's manifest names
+fqcohuman3 as the evaluator. W/D/L 28.5/42.7/28.8.
+
+Measured against fqcohuman3 in the same v5.9.8 binary through `EvalFile`, 60+1 with ponder:
+13-13-81, 0.500 over 107 games, stopped by decision. Not a verdict either way. The net ships because
+the wheel's rule is that a corpus is labelled by the best net available when it starts, and
+datascale5 started on this one. The v5.9.10 binary embeds it (resource hash c633...48a7 matches the
+exported file).
+
+> **Note on the CCRL numbers below.** On 2026-09-09 the project measured, rather than assumed, the
+> rating of its own CCRL reference field (a 1,680-game round-robin) and found it had been
+> systematically mislabeled: every gauntlet performance published before that date (fq60's 3271,
+> fq594's 3317, fqmix's 3342, fqwd0's 3242, and so on) was solved against ratings that read roughly
+> 30-34 points too high, uniformly, so no promotion decision changes but the absolute figures are
+> not directly comparable to anything from v5.9.0 onward. Those older figures are left as originally
+> published below rather than restated; the first numbers on the corrected scale are fqcohuman's
+> 3276 (v5.9.0/v5.9.1) and 3321 (v5.9.2). See CHANGELOG.md, 2026-09-09.
+
+---
+
+## The complete fqcohuman ships as v5.9.2 (2026-09-11): +21.6 Elo over the epoch-14 net
+
+The two stages that died young (below) are finished: 39 + 14 + 7 = 60 epochs, trained under new
+loader guards on a machine that reads memory back wrong (see below). Validation loss over the final
+seven epochs: 0.005825, 0.005820, 0.005814, 0.005826, 0.005816, **0.005804**, 0.005804 - the shipped
+checkpoint is epoch 6 of this stage, the best of the whole series (the epoch-14 net that shipped in
+v5.9.0 was 0.005860). Against that shipped net, at fixed nodes: **+21.6 +/- 14.6 Elo, LOS 99.8%,
+LLR 2.98, H1 over 983 games**. Export verified bit-exact against the engine's own probe. Bench
+7,793,209 nodes at depth 12. Gauntlet, single-threaded, field 2, measured labels: **52.1% over 240
+games, 3321 +/- 45 CCRL**, against v5.9.0/v5.9.1's 3276, v5.8.7's 3286 and v5.8.6's 3296 on the same
+measured labels. Internally this final checkpoint is referred to as `fqcohuman3`; it was the embedded
+net until `fqco592` replaced it in v5.9.10 (see "Current state" above).
+
+**The training loader now survives a machine that reads memory back wrong.** Four training runs died
+in two days with three different faces: an impossible permutation index, two CUDA device-side
+asserts from an index kernel, and a coarse-feature chunk whose offsets were not monotonic in memory
+although they are on disk. The fourth was reproduced outside the trainer - the same chunk order
+replayed on the CPU, one thread, no GPU, returned coarse ids up to 4,216 from a chunk whose values
+are all below 144 on disk, and the same chunk read back correctly a moment later - and then confirmed
+by a plain memory-pattern test in a third process. That points at hardware (the box carries eight
+non-ECC modules from two different kits); a memory test is the next step and it stops the corpus
+generation, so it is the user's call. Two guards keep a run alive and record the evidence instead of
+dying: a chunk that cannot be read is logged with its file and row range and skipped, and every batch
+is range-checked on the host before the GPU sees it, a failing batch written to disk whole and
+skipped.
+
+## fqcohuman ships as v5.9.0 (2026-09-10): +11.5 Elo, an interrupted training run
+
+**+11.5 +/- 9.2 Elo, LOS 99.3%, LLR 2.97, H1 over 2,627 fixed-node games against fqhuman**, the net
+shipping since v5.4.0, draw ratio 52.3%. Same HalfKA schema, same 128-wide transformer, same
+factorized and quantization-aware recipe as every net since fq60, trained further on the same corpus
+with the coarse threat lane and the human opening arms together for the first time (the recipe
+`fqcoarse` announced below, on the fqhuman corpus). A net swap changes no node counts, so the
+fixed-node verdict carries to the clock as is.
+
+**It survived two crashes to get here.** The original run died at epoch 39 of 60 when the machine
+rebooted, and the trainer had no way to continue one; `--init-from` (a warm start from a checkpoint)
+was added for exactly that. The continuation then died at epoch 17 of 21 on a real defect in the
+streaming loader, which sized its shuffle permutation from a row counter instead of from the array it
+was about to index; fixed to warn instead of abort. The net that shipped is the checkpoint from
+epoch 14 of that continuation, 53 of the 60 planned epochs, validation loss 0.005860 - the best of
+the series at the time. The remaining seven epochs trained afterward and shipped as the complete
+fqcohuman / `fqcohuman3` in v5.9.2, above.
+
+Bench 8,193,088 nodes at depth 12. 443 tests. Gauntlet (shared with v5.9.1, identical search and
+net): single-threaded, field 2, measured labels: **46.2% over 240 games, 3276 +/- 44 CCRL**, against
+v5.8.7's 3286 and v5.8.6's 3296.
+
 ---
 
 ## fqcoarse (2026-09-05): the coarse threat features win their attribution
@@ -20,6 +416,37 @@ against fqhuman. `fqcohuman` (this recipe plus the human corpus segments, the tw
 together for the first time) is training; every one of the champion's 190 shards already has its
 coarse companion, so no data generation was needed.
 
+## The headroom guard that cried wolf (2026-09-02)
+
+After 40 hours of training, `fqhuman` failed the exporter's accumulator headroom check by three units: worst int16 lane 32,770 against the 32,767 limit. The first instinct - tighten the clipping, or worse, retrain - would have been wrong both ways, because **the guard's bound was loose, not the net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over the whole feature table, freely mixing combinations the schema cannot produce. Two exact properties tighten it:
+
+1. A feature index is `bucket * 704 + plane * 64 + square`, and one accumulator belongs to one perspective whose king square fixes ONE bucket - rows from different king buckets never share an accumulator.
+2. Inside a bucket the layout is plane-major over 64 squares, and a square holds at most one piece, so at most one plane can be active per square.
+
+| bound | fqhuman | verdict |
+|---|---|---|
+| global tail (the old guard) | 32,770 | false positive |
+| per king bucket | 31,052 | passes |
+| per bucket and per square (now) | 30,995 | passes |
+| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
+
+The control that justifies trusting the change: re-exporting the shipping champion under the new guard produces a **byte-identical** file, so the fix touches only the check, never the payload. The lesson generalizes the negative-control rule: **a guard that aborts is also a measurement, and its bound must be interrogated for reachability before it is obeyed.** Asked against the corpus, this one overstated reality by 2.4x. The limit itself was never raised - a silent int16 accumulator overflow does not error, it just plays worse, which is exactly why the guard exists.
+
+## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
+
+**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
+fq594.** The champion recipe verbatim; the single variable is the corpus,
+extended ~594M -> ~924M by adding the human game segments from datascale2
+(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
+closes the provenance-bug debt: the human datagen had silently never run,
+so every earlier belief about human seeding was untested. The honest
+confounder, recorded as ever: volume also rose, like every corpus decision
+in the series. Fourth consecutive net promotion by the same protocol
+(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
+fixed-node SPRTs whose verdicts carry to the clock by construction. It
+shipped as v5.4.0; the SMP investigation and transposition-table fixes
+from the same release are search-side, not NNUE, and are documented in
+CHANGELOG.md.
 
 ## 2026-08-31 - the coarse-threat pipeline closes end to end; fqhuman in flight
 
@@ -621,14 +1048,14 @@ the measuring instrument.
 (`--nodes`), not the generational loop itself. gen2-gen4 all used 14000-node
 labels and made small steps (+2 to +6 Elo); gen5 raised labels to 20000 nodes and
 jumped +34. **Superseded on 2026-08-01:** at equal total search work, 20M
-positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 ±16.6, LOS 100%**. The
+positions at 6,000 nodes beat 4.3M at 28,000 by **+182.2 +/-16.6, LOS 100%**. The
 network was starved of DATA and label depth was never the binding constraint.
 
 Internal SPRTs run at TC 10+0.1. Note that vs-classical comparisons at that fast
 TC are speed-sensitive (the NNUE eval is ~66% the speed of classical), so the
 absolute CCRL placement of a net comes from `gauntlet_nnue.bat` (vs the 12-engine
 CCRL field), not from the internal SPRT. Classical baseline (2.8.4-equivalent,
-NNUE off) ≈ 3020-3035 CCRL.
+NNUE off) ~ 3020-3035 CCRL.
 
 **NEWEST AT THE TOP.** The table used to run in ascending order, and what gets
 consulted is always the latest net, never the first.
@@ -676,9 +1103,9 @@ mattering.
 
 **gen5 CCRL calibration (2026-07-28):** field gauntlet vs the 12 CCRL engines
 (2862-3281, 20 games each, 240 total) at TC 60+0.6, single-threaded. **51.0%
-overall; ML performance rating ≈ 3050 CCRL** against a field averaging 3043.
-gen5 beats every opponent ≤3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
-and loses to ≥3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
+overall; ML performance rating ~ 3050 CCRL** against a field averaging 3043.
+gen5 beats every opponent <=3010 (Colossus 2862: 92.5%, Bit-Genie 3010: 57.5%)
+and loses to >=3120 (Winter 3120: 37.5%, Patricia 3281: 17.5%), crossover ~3050.
 This is the first CCRL number for the NNUE line. Note it lands only ~+15 over the
 classical estimate (~3035), NOT the +42 the internal SPRT chain suggested - the
 expected shrink of self-play gains against a diverse external field. It is the
@@ -693,7 +1120,7 @@ The gen6 dataset is included in the gen7 combined training set.
 **gen7 (2026-07-29, v3.2.0):** 28000 nodes, embedded and promoted as a
 **marginal** generation - the vs-gen5 SPRT is parity (76.2% LOS), not a formal
 H1. Its own gauntlet (240 games, 60+0.6, single-thread, field 2862-3281)
-placed it at **57.9%, ~3080 ±40 CCRL**, up from gen5's 51.0%/~3050 but inside
+placed it at **57.9%, ~3080 +/-40 CCRL**, up from gen5's 51.0%/~3050 but inside
 combined gauntlet noise. The honest read at the time: the human-opening
 seeding this generation shipped with did not itself buy strength over gen5 -
 the value was the data pipeline and pinning the NNUE-over-classical delta at
@@ -708,7 +1135,7 @@ openings after all. See [README](README.md) for the full correction.
 Notes:
 - gen2's SPRT log was later removed in a cleanup; its +1.9 (H1) is on record from
   the run, not a file.
-- gen5's +34 is the deeper-labels payoff (14000→20000 nodes). Its absolute CCRL
+- gen5's +34 is the deeper-labels payoff (14000->20000 nodes). Its absolute CCRL
   placement (~3050) comes from the field gauntlet; the internal-vs-classical step
   is skipped for gen5 because the gauntlet is the more direct placement.
 
@@ -720,14 +1147,14 @@ measurements all said no:
 1. **SPRT vs gen7** at 60+1, `Threads=1`, ponder off: stopped at **H0** after 198
    games (59W 95D 41L, 53.8%). No evidence of the +50 Elo the bounds asked for.
 2. **Real games on the bot**, same binary, only the net swapped: the avoidable
-   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p≈0.017), and the
+   material-loss rate **tripled**, 0.23 to 0.72 per 100 moves (p~0.017), and the
    score fell from 80.5% to 75.8% against opposition only 58 Elo stronger. See
    [[bot-version-timeline-aug2026]] in the session memory for the exact cutoffs.
 3. **Gauntlet** vs the 12-engine field: started, then abandoned once the first
    two measurements agreed. No number recorded.
 
 **The cause is the training schedule, not the data.** The loss curve never
-flattened - validation loss fell 0.008005 → 0.005993 across the six epochs and
+flattened - validation loss fell 0.008005 -> 0.005993 across the six epochs and
 **the largest single drop was the last one** (-0.00065, against -0.00005 for the
 first), with every epoch marked as a new best. `CosineAnnealingLR` is built with
 `T_max=args.epochs`, so the learning rate hit its 7.63e-05 floor exactly when the
@@ -784,8 +1211,8 @@ further - see [README](README.md) and [CHANGELOG](CHANGELOG.md).
 **Status as of v4.3.1 (2026-08-05): still gen7, and now measured with the
 current engine.** A field gauntlet of **v4.3.1 + gen7** scored **59.7% over 165
 games** against the same 12 CCRL engines (average 3043), for a performance of
-**~3110 ±45**. Applying one formula to all three runs for once: gen5 3050, gen7
-3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside ±45,
+**~3110 +/-45**. Applying one formula to all three runs for once: gen5 3050, gen7
+3098, v4.3.1+gen7 3111. The **+13** over the gen7 figure sits well inside +/-45,
 so the correction histories and the 4.3.x fixes are **not measurably visible
 here** - what the run establishes is a band, roughly **3070-3155**, with the
 crossover against the field around 3150 (50.0% against Rubichess 3150, 60.7%
@@ -810,7 +1237,7 @@ ponder off, no tablebases for anyone. Per-opponent performances land between
 3052 and 3215, so no single pairing is dragging the figure.
 
 **This does NOT measure gen9's +18.** The previous full reading was ~3110 for
-v4.3.1+gen7, and a 600-game gauntlet resolves roughly ±20. gen9 (+18 by SPRT)
+v4.3.1+gen7, and a 600-game gauntlet resolves roughly +/-20. gen9 (+18 by SPRT)
 plus the v4.4.0 search work (~+7 by node and nps measurement) should land near
 3135; 3114 is inside the band either way. The honest statement is that the
 engine sits around **3100-3150** and that nothing regressed - the gauntlet
@@ -830,7 +1257,7 @@ hyperparameters, differing in one flag each, and both **lost**:
 | variant | difference | result |
 |---|---|---|
 | `ds1w512` | `--ft-out 512` instead of 128 | **-76** at 10+0.1, **-93** at 60+0.6 |
-| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 ±25.3, H0** at 435 games |
+| `ds1b8` | `--out-buckets 8` instead of 1 | **-15.2 +/-25.3, H0** at 435 games |
 
 The b8 result is clean - checkpoint metadata confirms 60 epochs, batch 16384,
 lambda 0.85, ft_out 128, l1_out 32 and the same 70 shards for both, with
@@ -855,48 +1282,6 @@ Each published engine bakes its net in as an embedded resource, so a net swap
 requires a republish, and `src/NoaChess.UCI/Resources/noa-embedded.noannue`
 persists between builds - verify the reported hash before every measurement.
 
-## The headroom guard that cried wolf (2026-09-02)
-
-After 40 hours of training, `fqhuman` failed the exporter's accumulator
-headroom check by three units: worst int16 lane 32,770 against the 32,767
-limit. The first instinct - tighten the clipping, or worse, retrain - would
-have been wrong both ways, because **the guard's bound was loose, not the
-net's weights large**. It summed the MAX_ACTIVE largest row magnitudes over
-the whole feature table, freely mixing combinations the schema cannot
-produce. Two exact properties tighten it:
-
-1. A feature index is `bucket * 704 + plane * 64 + square`, and one
-   accumulator belongs to one perspective whose king square fixes ONE
-   bucket - rows from different king buckets never share an accumulator.
-2. Inside a bucket the layout is plane-major over 64 squares, and a square
-   holds at most one piece, so at most one plane can be active per square.
-
-| bound | fqhuman | verdict |
-|---|---|---|
-| global tail (the old guard) | 32,770 | false positive |
-| per king bucket | 31,052 | passes |
-| per bucket and per square (now) | 30,995 | passes |
-| measured over 4,000,000 real positions | 12,948 | 39.5% of int16 |
-
-The control that justifies trusting the change: re-exporting the shipping
-champion under the new guard produces a **byte-identical** file, so the fix
-touches only the check, never the payload. The lesson generalizes the
-negative-control rule: **a guard that aborts is also a measurement, and its
-bound must be interrogated for reachability before it is obeyed.** Asked
-against the corpus, this one overstated reality by 2.4x. The limit itself
-was never raised - a silent int16 accumulator overflow does not error, it
-just plays worse, which is exactly why the guard exists.
-
-## fqhuman: the human segments finally measured (v5.4.0, 2026-09-02)
-
-**+18.7 [+5.3, +32.0], LLR +2.96, H1 over 1,360 fixed-node games against
-fq594.** The champion recipe verbatim; the single variable is the corpus,
-extended ~594M -> ~924M by adding the human game segments from datascale2
-(opening plies 12-20 and middlegames 20-40, open.0010 excluded). This
-closes the provenance-bug debt: the human datagen had silently never run,
-so every earlier belief about human seeding was untested. The honest
-confounder, recorded as ever: volume also rose, like every corpus decision
-in the series. Fourth consecutive net promotion by the same protocol
-(fqwd0 +11.1, fqmix +19.6, fq594 +29.7, fqhuman +18.7), all same-arch
-fixed-node SPRTs whose verdicts carry to the clock by construction.
+**The headroom guard and fqhuman's promotion (v5.4.0, 2026-09-02) are documented earlier in this
+file, right after the fqcoarse entry, in their correct chronological place.**
 

@@ -138,12 +138,52 @@ public sealed class NnueAccumulator
     // One perspective only: what the lazy stack needs when it materialises a
     // level from its nearest computed ancestor. Half the traffic of CopyFrom,
     // and paid only for the perspective an evaluation actually asked for.
-    public void CopyPerspectiveFrom(NnueAccumulator other, Color perspective)
+    // 'copyPsqt' false for a net without a psqt head, whose lane is all zero
+    // in every accumulator and never written, so the copy would move zeros.
+    public void CopyPerspectiveFrom(NnueAccumulator other, Color perspective, bool copyPsqt = true)
     {
         NnueProfiling.CountPerspectiveCopy();
         int p = (int)perspective;
         Array.Copy(other.Values[p], Values[p], Values[p].Length);
-        Array.Copy(other.Psqt, p * MaxPsqtBuckets, Psqt, p * MaxPsqtBuckets, MaxPsqtBuckets);
+        if (copyPsqt)
+            Array.Copy(other.Psqt, p * MaxPsqtBuckets, Psqt, p * MaxPsqtBuckets, MaxPsqtBuckets);
+    }
+
+    // One level of the lazy stack in a single pass, for the commonest update:
+    // dst = parent + row(add) - row(sub) [- row(sub2)], instead of copying
+    // the parent and then patching the copy, which reads and writes the
+    // accumulator twice. Same int16 arithmetic, which wraps the same way in
+    // any order, so the values are identical. Only for nets without psqt or
+    // threats, on AVX2 with FtOutputs a multiple of 16; the caller checks.
+    public void FusedFrom(NnueNetwork network, NnueAccumulator parent, Color perspective,
+                          int addIndex, int subIndex, int sub2Index)
+    {
+        int p = (int)perspective;
+        short[] dstArr = Values[p];
+        short[] srcArr = parent.Values[p];
+        short[] weights = network.FtWeights;
+        int ftOut = network.FtOutputs;
+        ref short d = ref MemoryMarshal.GetArrayDataReference(dstArr);
+        ref short s = ref MemoryMarshal.GetArrayDataReference(srcArr);
+        ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+        nuint addRow = (nuint)addIndex * (nuint)ftOut;
+        nuint subRow = (nuint)subIndex * (nuint)ftOut;
+        if (sub2Index < 0)
+        {
+            for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+                (Vector256.LoadUnsafe(ref s, i)
+                    + Vector256.LoadUnsafe(ref w, addRow + i)
+                    - Vector256.LoadUnsafe(ref w, subRow + i)).StoreUnsafe(ref d, i);
+        }
+        else
+        {
+            nuint sub2Row = (nuint)sub2Index * (nuint)ftOut;
+            for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+                (Vector256.LoadUnsafe(ref s, i)
+                    + Vector256.LoadUnsafe(ref w, addRow + i)
+                    - Vector256.LoadUnsafe(ref w, subRow + i)
+                    - Vector256.LoadUnsafe(ref w, sub2Row + i)).StoreUnsafe(ref d, i);
+        }
     }
 
     // ---- Feature-transformer row updates: the hottest code in NNUE play ----

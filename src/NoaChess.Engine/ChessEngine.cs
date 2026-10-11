@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "5.9.2";
+    public const string Version = "6.0.2";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -51,6 +51,53 @@ public sealed class ChessEngine
     private CountdownEvent? _done;
     private volatile bool _poolShutdown;
 
+    // A helper that never returns from FindBestMove - a real hang, not just a
+    // slow node - is quarantined forever: .NET has no safe way to reclaim a
+    // stuck managed thread, so the only way to stop it from re-freezing every
+    // future move is to never wait on it again. Measured once on 2026-09-12
+    // (Threads=12, an 8-man king+bishop+pawns ending): the helper never came
+    // back after "info depth 23", _done.Wait() blocked with no timeout, and
+    // the whole engine - and the lichess bot behind it, concurrency 1 - sat
+    // frozen for 74 minutes until the process was killed by hand. The
+    // position sat right at WonBandMaxMen's default cutoff (8 men), the area
+    // of this codebase with the worst history of tablebase-adjacent bugs, but
+    // the exact stuck code path was not isolated; this bounds the damage
+    // instead of chasing a repro that did not reproduce outside the game.
+    //
+    // Quarantine is NOT forever any more (2026-09-25): a quarantined helper
+    // that finally returns rejoins the pool at the next search. Most helpers
+    // that miss the deadline are not hung, they are slow - the Windows bot's
+    // tablebases lived on a mechanical disk, the tables are memory-mapped, and
+    // a helper deep in tablebase territory page-faults on every probe while
+    // the stop check only runs every StopCheckInterval nodes. Eleven of 24
+    // helpers were quarantined at once in one game and the engine played the
+    // rest of it on 13 threads; the parked helpers were all back within
+    // minutes. A helper that really never returns is still never awaited.
+    private const int HelperWatchdogMs = 3000;
+    private bool[] _helperQuarantined = [];
+    private bool[] _workerFinished = [];
+    private long[] _quarantinedAt = [];
+    // Bumped by every RebuildPool. A thread from an older pool that returns
+    // from a stale search after the arrays were replaced exits instead of
+    // indexing (or parking on) the new pool's slots.
+    private int _poolGeneration;
+    // Tests only (set by reflection): runs on a helper between its search and
+    // publishing the result, to simulate a helper that comes back late.
+    private static Action<int>? s_helperReturnHook;
+    // Orders "the watchdog quarantines this slot" against "this slot signals
+    // _done" (2026-09-14): a helper quarantined after the timeout used to
+    // signal the countdown of a LATER search when it finally returned, and a
+    // signal on a countdown already at zero throws on the worker thread and
+    // takes the whole process down (unhandled InvalidOperationException in
+    // WorkerLoop, gauntlet game 117, 60+1, four threads).
+    private readonly object _quarantineGate = new();
+
+    // Raised with a plain diagnostic line when something abnormal happens
+    // that the UCI host should surface as "info string" (the engine facade
+    // has no output stream of its own). Currently only the helper watchdog
+    // uses it.
+    public event Action<string>? Diagnostic;
+
     // Per-search state handed to the workers. Written by the main thread before
     // the go signal is released and read by the worker after it, so the
     // semaphore is what publishes them - no other synchronisation is needed.
@@ -82,12 +129,38 @@ public sealed class ChessEngine
     // slow: interactive consumers (GUI) must invoke it from a background
     // thread and use the token to be able to cancel it. 'progress' (optional)
     // receives a snapshot after each completed search depth.
+    // 'excludedRootMoves' (default null): forwarded to the single-threaded
+    // search only (see AlphaBetaSearch.FindBestMove) - DataGen's self-play
+    // loop, the only caller that uses this, always runs Threads=1 per game
+    // instance. Passing it with Threads>1 is a no-op, not an error: the
+    // Lazy-SMP vote path does not thread exclusion through the helper pool.
     public SearchResult FindBestMove(Board board, SearchLimits limits,
                                      CancellationToken cancellation = default,
-                                     IProgress<SearchProgress>? progress = null)
-        => _threads <= 1
-            ? _search.FindBestMove(board, limits, cancellation, progress)
-            : FindBestMoveParallel(board, limits, cancellation, progress);
+                                     IProgress<SearchProgress>? progress = null,
+                                     MoveList? excludedRootMoves = null)
+    {
+        Volatile.Write(ref _searchInFlight, true);
+        try
+        {
+            if (_threads <= 1)
+            {
+                _search.SearchSerial = 0; // alone: rank the tablebase root directly
+                return _search.FindBestMove(board, limits, cancellation, progress, excludedRootMoves: excludedRootMoves);
+            }
+            return FindBestMoveParallel(board, limits, cancellation, progress);
+        }
+        finally
+        {
+            Volatile.Write(ref _searchInFlight, false);
+        }
+    }
+
+    // True between the start and the end of FindBestMove; read by ResizeHash.
+    private bool _searchInFlight;
+
+    // The pool's shared root tablebase ranking and the serial of its search.
+    private readonly RootTablebaseMemo _rootTbMemo = new();
+    private int _searchSerial;
 
     // Hands a running "go ponder" search its real clock instead of stopping it
     // and starting again (see AlphaBetaSearch.ApplyClockLimits). Returns false
@@ -100,6 +173,11 @@ public sealed class ChessEngine
     public bool ApplyPonderhitClock(SearchLimits limits) =>
         _search.ApplyClockLimits(limits);
 
+    // The move the shared transposition table stores for this position, or
+    // Move.None. Not validated: the caller checks it against the legal moves.
+    public Move TableMove(Board board) =>
+        _search.Tt.Probe(board.ZobristKey, out var entry) ? entry.BestMove : Move.None;
+
     // Lazy SMP search: main worker (this thread) plus Threads-1 helpers on
     // dedicated threads, all sharing one transposition table. The main worker
     // owns time management; when it returns, the helpers are stopped and the
@@ -110,6 +188,16 @@ public sealed class ChessEngine
     {
         EnsureHelpers();
         int n = _threads;
+
+        // One root tablebase ranking for the whole pool (see RootTablebaseMemo).
+        // The helpers get the serial only as they are woken (below): a helper
+        // still out in quarantine may be inside the root filter of an OLDER
+        // search, and stamping the memo with this serial would hand this
+        // search the root moves of another position.
+        int serial = ++_searchSerial;
+        if (serial == 0)
+            serial = ++_searchSerial;
+        _search.SearchSerial = serial;
 
         // Age the shared table exactly ONCE; every worker then runs with
         // newSearch:false so the shared generation is not bumped n times.
@@ -164,49 +252,95 @@ public sealed class ChessEngine
         // The honest repair is the time manager itself, and it is a separate
         // change with its own measurement.
 
-        // Wake the parked workers. Everything they read was written above, and
-        // the semaphore release is the barrier that publishes it. _done counts
-        // them back in after the main worker decides.
-        _done!.Reset(n - 1);
-        for (int i = 1; i < n; i++)
-            _go[i - 1].Release();
-
-        // Couple the pool to the main worker's time manager: its instability
-        // factor averages root best-move changes over ALL workers (peer sum /
-        // thread count), which keeps it low-variance instead of letting one
-        // thread's noisy count spike the budget. Reset afterwards so the
-        // single-threaded path (which uses _search directly) is never affected.
-        AlphaBetaSearch[] pool = _helpers;
-        int lastPeerTotal = 0; // fresh per search; peer func runs only on the main thread
-        _search.SearchThreadCount = n;
-        _search.PeerBestMoveChanges = () =>
-        {
-            int cur = 0;
-            for (int i = 0; i < pool.Length; i++)
-                cur += pool[i].BestMoveChangesTotal;
-            int delta = cur - lastPeerTotal; // changes since the last main iteration
-            lastPeerTotal = cur;
-            return delta;
-        };
-
-        // The main worker runs on the calling thread so its "info" progress is
-        // reported from where the UCI host expects it.
+        // The try opens before the wake on purpose: a wake that throws (the
+        // SemaphoreFullException a broken protocol raises, see RebuildPool)
+        // would otherwise leave the helpers already woken searching on an
+        // uncancelled token, the zombie pool the finally exists to prevent.
+        // A helper counted but never woken then costs the watchdog once and
+        // ends in quarantine, which is the lesser failure.
         try
         {
+            // Wake the parked workers. Everything they read was written above,
+            // and the semaphore release is the barrier that publishes it. _done
+            // counts them back in after the main worker decides. Quarantined
+            // helpers (see the watchdog below) are still inside a previous call
+            // - skip them, both in the release and in the count _done waits
+            // for, or this move would pay the watchdog timeout again. Under the
+            // gate: a helper rejoining concurrently must not flip its flag
+            // between the count and the release, or a released-but-uncounted
+            // helper would signal a countdown already at zero.
+            int activeHelpers = 0;
+            lock (_quarantineGate)
+            {
+                for (int i = 0; i < n - 1; i++)
+                {
+                    _workerFinished[i] = _helperQuarantined[i];
+                    if (!_helperQuarantined[i])
+                        activeHelpers++;
+                }
+                _done!.Reset(activeHelpers);
+                for (int i = 1; i < n; i++)
+                {
+                    if (!_helperQuarantined[i - 1])
+                    {
+                        _helpers[i - 1].SearchSerial = serial;
+                        _go[i - 1].Release();
+                    }
+                }
+            }
+
+            // Couple the pool to the main worker's time manager: its
+            // instability factor averages root best-move changes over ALL
+            // workers (peer sum / thread count), which keeps it low-variance
+            // instead of letting one thread's noisy count spike the budget.
+            // Reset afterwards so the single-threaded path (which uses _search
+            // directly) is never affected.
+            AlphaBetaSearch[] pool = _helpers;
+            int lastPeerTotal = 0; // fresh per search; peer func runs only on the main thread
+            _search.SearchThreadCount = n;
+            _search.PeerBestMoveChanges = () =>
+            {
+                int cur = 0;
+                for (int i = 0; i < pool.Length; i++)
+                    cur += pool[i].BestMoveChangesTotal;
+                int delta = cur - lastPeerTotal; // changes since the last main iteration
+                lastPeerTotal = cur;
+                return delta;
+            };
+
+            // The main worker runs on the calling thread so its "info" progress
+            // is reported from where the UCI host expects it.
             results[0] = _search.FindBestMove(_workerBoards[0], limits, linked.Token, progress, newSearch: false);
         }
         finally
         {
             _search.SearchThreadCount = 1;
             _search.PeerBestMoveChanges = null;
-        }
 
-        // Main decided (time/depth/nodes): stop the helpers and gather. The
-        // workers are NOT joined - they park again for the next search - so this
-        // waits on the countdown instead. Waiting is still mandatory: reading
-        // their results while they are mid-search would race.
-        linked.Cancel();
-        _done.Wait();
+            // Main decided (time/depth/nodes) or threw: stop the helpers and
+            // gather. The workers are NOT joined - they park again for the
+            // next search - so this waits on the countdown instead. Waiting is
+            // still mandatory: reading their results while they are
+            // mid-search would race.
+            //
+            // Stop and gather the helpers on every exit path: disposing the
+            // linked source uncancelled also unlinks it from the caller token,
+            // and helpers on unlimited limits would never stop. A main worker
+            // that threw (a progress sink that failed, say) used to leave the
+            // whole pool searching forever, and every later search then lost
+            // HelperWatchdogMs and its helpers to the quarantine.
+            //
+            // Bounded, not unbounded: every helper checks the cancellation
+            // token every StopCheckInterval nodes, so in the overwhelming
+            // majority of searches this returns in well under a millisecond of
+            // the deadline. A helper that is not back within HelperWatchdogMs
+            // is quarantined: not awaited, not used, its late result
+            // discarded, until it returns on its own and rejoins (see
+            // WorkerLoop).
+            linked.Cancel();
+            if (!_done!.Wait(HelperWatchdogMs))
+                QuarantineStragglers(n);
+        }
 
         long totalNodes = 0;
         foreach (SearchResult r in results)
@@ -218,7 +352,46 @@ public sealed class ChessEngine
             ? results[0]
             : VoteBestResult(results);
 
+        // Logged so the bot's logs can say how often, and where, the vote
+        // overrules the main thread (the 2026-09-27 review could not compare
+        // the two hosts because nothing recorded it).
+        if (chosen.BestMove != results[0].BestMove && results[0].BestMove != Move.None)
+            Diagnostic?.Invoke(
+                $"vote chose {chosen.BestMove} (depth {chosen.Depth}, score {chosen.Score}) over the "
+              + $"main thread's {results[0].BestMove} (depth {results[0].Depth}, score {results[0].Score})");
+
         return chosen with { NodesSearched = totalNodes };
+    }
+
+    // Quarantines every helper of an n-thread search that has not come back
+    // from the stop (see HelperWatchdogMs).
+    private void QuarantineStragglers(int n)
+    {
+        lock (_quarantineGate)
+        {
+            for (int i = 0; i < n - 1; i++)
+            {
+                if (_helperQuarantined[i] || _workerFinished[i])
+                    continue;
+                _helperQuarantined[i] = true;
+                _quarantinedAt[i] = Environment.TickCount64;
+                Diagnostic?.Invoke(
+                    $"helper thread {i + 1} did not honour cancellation within "
+                  + $"{HelperWatchdogMs} ms - quarantined until it returns");
+            }
+        }
+    }
+
+    // Builds the helper pool ahead of the first search (UCI "ucinewgame" and
+    // "isready"), so rebuilding up to 31 searchers and their threads is not
+    // paid inside the first move's clock: measured on the bot at 24 threads,
+    // the first search of every game spent a median 41 ms reaching depth 1
+    // against 1 ms on later moves. Skipped while a search is in flight; the
+    // search itself still calls EnsureHelpers, which is then a cheap re-sync.
+    public void PrepareSearchThreads()
+    {
+        if (_threads > 1 && !Volatile.Read(ref _searchInFlight))
+            EnsureHelpers();
     }
 
     // Rebuilds the helper pool when the thread count or evaluator changed, then
@@ -234,6 +407,10 @@ public sealed class ChessEngine
             _helpers = pool;
             _helpersStale = false;
         }
+
+        _search.RootTbMemo = _rootTbMemo;
+        foreach (AlphaBetaSearch h in _helpers)
+            h.RootTbMemo = _rootTbMemo;
 
         // The worker THREADS are rebuilt only when the count changes, not when
         // the searchers are replaced. A new game or a new evaluator swaps
@@ -253,8 +430,6 @@ public sealed class ChessEngine
             h.UseSmpAspDiversify = _search.UseSmpAspDiversify;
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
-            h.UseNmpEvalGate = _search.UseNmpEvalGate;
-            h.UseMoveCountLmr = _search.UseMoveCountLmr;
             h.UseFailLowCorrection = _search.UseFailLowCorrection;
             h.UseDynamicAspiration = _search.UseDynamicAspiration;
             h.UseHistoryBonus = _search.UseHistoryBonus;
@@ -262,21 +437,26 @@ public sealed class ChessEngine
             h.UseKillerShallowing = _search.UseKillerShallowing;
             h.UseTbPvCap = _search.UseTbPvCap;
             h.UseTbResistance = _search.UseTbResistance;
+            h.UseTbDrawProbeAlways = _search.UseTbDrawProbeAlways;
             h.UseTbWinTieBreak = _search.UseTbWinTieBreak;
             h.WonBandMaxMen = _search.WonBandMaxMen;
             h.UseWonBandPromoGuard = _search.UseWonBandPromoGuard;
             h.UseLostResistance = _search.UseLostResistance;
             h.LostResistanceBound = _search.LostResistanceBound;
+            // Helpers MUST carry the same contempt as the main thread: they
+            // share one transposition table, and two threads scoring the same
+            // draw differently would write disagreeing bounds into it.
+            h.ContemptCp = _search.ContemptCp;
             h.UseCaptureLmr = _search.UseCaptureLmr;
-            h.UseNmpPackage = _search.UseNmpPackage;
             h.UseCutNodeLmr = _search.UseCutNodeLmr;
+            h.UseCutNodeLmrTtPv = _search.UseCutNodeLmrTtPv;
             h.UseStatScoreLmr = _search.UseStatScoreLmr;
             h.UseNodeTimeFactor = _search.UseNodeTimeFactor;
             h.UseEvalStabilityTime = _search.UseEvalStabilityTime;
             h.UseRootSafetyNet = _search.UseRootSafetyNet;
             h.UsePonderMinThink = _search.UsePonderMinThink;
             h.UseEasyMoveWinOnly = _search.UseEasyMoveWinOnly;
-            h.UseRootStaticEval = _search.UseRootStaticEval;
+            h.UseSlowTcEasyMoveDamp = _search.UseSlowTcEasyMoveDamp;
             h.UseQsStackMove = _search.UseQsStackMove;
             h.UseCheckExemptFutility = _search.UseCheckExemptFutility;
             h.UseMateDistancePruning = _search.UseMateDistancePruning;
@@ -285,32 +465,37 @@ public sealed class ChessEngine
             h.UseDrawTieBreak = _search.UseDrawTieBreak;
             h.UseSmpOvershootTaper = _search.UseSmpOvershootTaper;
             h.UseRepetitionAfterRoot = _search.UseRepetitionAfterRoot;
+            h.UseRepetitionStrictWhenWorse = _search.UseRepetitionStrictWhenWorse;
             h.UseNmpNonPvOnly = _search.UseNmpNonPvOnly;
+            h.UseNmpCutNodeOnly = _search.UseNmpCutNodeOnly;
             h.UseTtEvalRefine = _search.UseTtEvalRefine;
             h.UseTtKeepMoveOnFailLow = _search.UseTtKeepMoveOnFailLow;
-            h.UseTtMateReuse = _search.UseTtMateReuse;
             h.UseRootScoreOrdering = _search.UseRootScoreOrdering;
-            h.UseRazoring = _search.UseRazoring;
             h.UseNoDecayOnRelaunch = _search.UseNoDecayOnRelaunch;
             h.UseQsChecks = _search.UseQsChecks;
-            h.UseProbCutAllowNull = _search.UseProbCutAllowNull;
             h.UseFutilityFailSoft = _search.UseFutilityFailSoft;
-            h.UseCaptureFutility = _search.UseCaptureFutility;
             h.UseHistoryPrune = _search.UseHistoryPrune;
+            h.HistoryPruneScale = _search.HistoryPruneScale;
+            h.UsePruneLossGuard = _search.UsePruneLossGuard;
+            h.UseLosingCaptureOrder = _search.UseLosingCaptureOrder;
+            h.UseSmallProbCutExact = _search.UseSmallProbCutExact;
+            h.UseImprovingAboveBeta = _search.UseImprovingAboveBeta;
+            h.UseGoodCaptureSlack = _search.UseGoodCaptureSlack;
+            h.UseHistoryPruneCounts = _search.UseHistoryPruneCounts;
+            h.UseNmpEvalR = _search.UseNmpEvalR;
+            h.UseTtCutoffHistory = _search.UseTtCutoffHistory;
+            h.UseCutoffCountLmrAllNode = _search.UseCutoffCountLmrAllNode;
+            h.UsePvWindowEarly = _search.UsePvWindowEarly;
+            h.UseTtRule50Guard = _search.UseTtRule50Guard;
             h.UseQsContCorrection = _search.UseQsContCorrection;
             h.UseSingularTight = _search.UseSingularTight;
             h.UseQsEntryKey = _search.UseQsEntryKey;
             h.UseLmpAllDepths = _search.UseLmpAllDepths;
             h.UseQuietSeePrune = _search.UseQuietSeePrune;
             h.UsePriorFailLowBonus = _search.UsePriorFailLowBonus;
-            h.UseLmrDeeperResearch = _search.UseLmrDeeperResearch;
-            h.UseRfpTtMoveGuard = _search.UseRfpTtMoveGuard;
-            h.UseLmpCountAllMoves = _search.UseLmpCountAllMoves;
-            h.UseDrawRandom = _search.UseDrawRandom;
             h.UseHindsightDepth = _search.UseHindsightDepth;
-            h.UseCutoffCountLmr = _search.UseCutoffCountLmr;
             h.UseCaptureSeePruneDeep = _search.UseCaptureSeePruneDeep;
-            h.UseCorrectionBlend = _search.UseCorrectionBlend;
+            h.CaptureSeeHistK = _search.CaptureSeeHistK;
             h.UsePruningLadder = _search.UsePruningLadder;
             h.UsePruningLadderFutility = _search.UsePruningLadderFutility;
             h.SyzygyProbeLimit = _search.SyzygyProbeLimit;
@@ -335,6 +520,13 @@ public sealed class ChessEngine
         _poolShutdown = false;
         _go = new SemaphoreSlim[need];
         _pool = new Thread[need];
+        lock (_quarantineGate)
+        {
+            _poolGeneration++;
+            _helperQuarantined = new bool[need];
+            _workerFinished = new bool[need];
+            _quarantinedAt = new long[need];
+        }
         // Seeded at 1 only so the countdown is valid before the first search;
         // every search resets it to the live worker count.
         _done = new CountdownEvent(1);
@@ -360,14 +552,31 @@ public sealed class ChessEngine
     // it safe to swap the arrays the workers index into afterwards.
     private void ShutdownPool()
     {
+        // Retire the generation FIRST. A quarantined thread that returns
+        // between the shutdown below and the bump in RebuildPool would
+        // otherwise still match it and index (or park on) slots this method
+        // disposes - and with a pool rebuilt for zero helpers the bump there
+        // never came at all.
+        lock (_quarantineGate)
+            _poolGeneration++;
+
         if (_pool.Length == 0)
             return;
 
         _poolShutdown = true;
         foreach (SemaphoreSlim go in _go)
             go.Release();
-        foreach (Thread t in _pool)
-            t.Join();
+        for (int i = 0; i < _pool.Length; i++)
+        {
+            // A quarantined thread is still inside a stale FindBestMove call
+            // and may never come back - joining it would just trade one
+            // unbounded wait for another (e.g. the GUI changing "Threads"
+            // would freeze here instead of at the next move). If it does come
+            // back, the generation check in WorkerLoop makes it exit.
+            if (i < _helperQuarantined.Length && _helperQuarantined[i])
+                continue;
+            _pool[i].Join();
+        }
         foreach (SemaphoreSlim go in _go)
             go.Dispose();
         _done?.Dispose();
@@ -382,15 +591,17 @@ public sealed class ChessEngine
     // searchers (new game, new evaluator) needs no new threads.
     private void WorkerLoop(int index)
     {
+        int generation = Volatile.Read(ref _poolGeneration);
         while (true)
         {
             _go[index].Wait();
             if (_poolShutdown)
                 return;
 
+            SearchResult result;
             try
             {
-                _workerResults[index + 1] = _helpers[index].FindBestMove(
+                result = _helpers[index].FindBestMove(
                     _workerBoards[index + 1], _workerLimits, _workerToken, null, newSearch: false);
             }
             catch
@@ -398,14 +609,39 @@ public sealed class ChessEngine
                 // A helper that throws must not take the search down with it:
                 // the main worker's line is what gets played. Report an empty
                 // result, which the vote skips.
-                _workerResults[index + 1] = new SearchResult(Move.None, 0, 0);
+                result = new SearchResult(Move.None, 0, 0);
             }
-            finally
+            s_helperReturnHook?.Invoke(index);
+
+            // MUST run on every path (the catch above swallows everything). A
+            // missed signal used to hang the engine forever on the next
+            // _done.Wait() - _done.Wait() is bounded now. Under the gate: a
+            // slot the watchdog has quarantined does not signal - its
+            // countdown belongs to a search that stopped waiting for it - and
+            // does not publish its result either: _workerResults is reused by
+            // every search, so a late result from an OLD position written into
+            // it could win the vote of the search running now. It rejoins
+            // instead, and the next search counts and wakes it again.
+            long lateMs = -1;
+            lock (_quarantineGate)
             {
-                // MUST run on every path. A missed signal hangs the engine
-                // forever on the next _done.Wait().
-                _done!.Signal();
+                if (generation != _poolGeneration)
+                    return;
+                _workerFinished[index] = true;
+                if (_helperQuarantined[index])
+                {
+                    _helperQuarantined[index] = false;
+                    lateMs = Environment.TickCount64 - _quarantinedAt[index];
+                }
+                else
+                {
+                    _workerResults[index + 1] = result;
+                    _done!.Signal();
+                }
             }
+            if (lateMs >= 0)
+                Diagnostic?.Invoke(
+                    $"helper thread {index + 1} returned {HelperWatchdogMs + lateMs} ms after the stop and rejoined the pool");
         }
     }
 
@@ -436,7 +672,11 @@ public sealed class ChessEngine
         // main is a completed iteration of essentially current information;
         // depth-1 rosiness stays excluded by the distance to mainDepth.
         int mainDepth = results[0].Depth;
-        int voteDepth = UseSmpVoteAll ? Math.Max(1, mainDepth - 1) : mainDepth;
+        // Never above the main's own depth: a main worker stopped before its
+        // first iteration completed reports depth 0, and a floor of 1 then
+        // left it out of its own vote - the comparison below reads its tally
+        // unconditionally and threw KeyNotFoundException.
+        int voteDepth = UseSmpVoteAll ? Math.Min(mainDepth, Math.Max(1, mainDepth - 1)) : mainDepth;
         if (results[0].BestMove == Move.None)
             return results[0]; // no legal move: nothing to vote on
 
@@ -513,8 +753,22 @@ public sealed class ChessEngine
         _helpersStale = true; // rebuild helpers fresh (empty history) next search
     }
 
-    // Reallocates the transposition table ("setoption name Hash value N").
-    public void ResizeHash(int sizeMb) => _search.ResizeTT(sizeMb);
+    // Reallocates the transposition table ("setoption name Hash value N", or
+    // the large-pages switch). The old block is released at once unless a
+    // worker may still be reading it: a search in flight (a GUI resizing
+    // mid-search) or a helper quarantined for missing a stop, which keeps
+    // searching until it notices. Then it lives as long as the table.
+    public void ResizeHash(int sizeMb)
+    {
+        bool readerOut = Volatile.Read(ref _searchInFlight);
+        lock (_quarantineGate)
+            readerOut |= Array.IndexOf(_helperQuarantined, true) >= 0;
+        _search.ResizeTT(sizeMb, releaseOld: !readerOut);
+    }
+
+    // Whether the transposition table currently sits in large pages.
+    public bool HashInLargePages => _search.Tt.UsesLargePages;
+    public int HashSizeMb => _search.Tt.SizeMb;
 
     // Syzygy probing settings, driven by the UCI options of the same name.
     public int SyzygyProbeLimit { set => _search.SyzygyProbeLimit = value; }
@@ -542,18 +796,8 @@ public sealed class ChessEngine
         set => _search.UseOptimism = value;
     }
 
-    // Null-move entry gate (off by default, measured before it ships).
-    public bool UseNmpEvalGate
-    {
-        get => _search.UseNmpEvalGate;
-        set => _search.UseNmpEvalGate = value;
-    }
-
-    public bool UseMoveCountLmr
-    {
-        get => _search.UseMoveCountLmr;
-        set => _search.UseMoveCountLmr = value;
-    }
+    // The same gate licensing the reference's deep null reduction instead of
+    // forbidding probes (off by default, measured before it ships).
 
     public bool UseFailLowCorrection
     {
@@ -583,6 +827,12 @@ public sealed class ChessEngine
     {
         get => _search.UseTbResistance;
         set => _search.UseTbResistance = value;
+    }
+
+    public bool UseTbDrawProbeAlways
+    {
+        get => _search.UseTbDrawProbeAlways;
+        set => _search.UseTbDrawProbeAlways = value;
     }
     public bool UseTbWinTieBreak
     {
@@ -614,16 +864,16 @@ public sealed class ChessEngine
         set => _search.LostResistanceBound = value;
     }
 
+    public int ContemptCp
+    {
+        get => _search.ContemptCp;
+        set => _search.ContemptCp = value;
+    }
+
     public bool UseCaptureLmr
     {
         get => _search.UseCaptureLmr;
         set => _search.UseCaptureLmr = value;
-    }
-
-    public bool UseNmpPackage
-    {
-        get => _search.UseNmpPackage;
-        set => _search.UseNmpPackage = value;
     }
 
     public bool UseCorrectionLmr
@@ -647,6 +897,12 @@ public sealed class ChessEngine
     {
         get => _search.UseCutNodeLmr;
         set => _search.UseCutNodeLmr = value;
+    }
+
+    public bool UseCutNodeLmrTtPv
+    {
+        get => _search.UseCutNodeLmrTtPv;
+        set => _search.UseCutNodeLmrTtPv = value;
     }
 
     public bool UseNodeTimeFactor
@@ -679,10 +935,10 @@ public sealed class ChessEngine
         set => _search.UseEasyMoveWinOnly = value;
     }
 
-    public bool UseRootStaticEval
+    public bool UseSlowTcEasyMoveDamp
     {
-        get => _search.UseRootStaticEval;
-        set => _search.UseRootStaticEval = value;
+        get => _search.UseSlowTcEasyMoveDamp;
+        set => _search.UseSlowTcEasyMoveDamp = value;
     }
 
     public bool UseQsStackMove
@@ -696,6 +952,7 @@ public sealed class ChessEngine
         get => _search.UseCheckExemptFutility;
         set => _search.UseCheckExemptFutility = value;
     }
+
 
     public bool UseMateDistancePruning
     {
@@ -740,10 +997,22 @@ public sealed class ChessEngine
         set => _search.UseRepetitionAfterRoot = value;
     }
 
+    public bool UseRepetitionStrictWhenWorse
+    {
+        get => _search.UseRepetitionStrictWhenWorse;
+        set => _search.UseRepetitionStrictWhenWorse = value;
+    }
+
     public bool UseNmpNonPvOnly
     {
         get => _search.UseNmpNonPvOnly;
         set => _search.UseNmpNonPvOnly = value;
+    }
+
+    public bool UseNmpCutNodeOnly
+    {
+        get => _search.UseNmpCutNodeOnly;
+        set => _search.UseNmpCutNodeOnly = value;
     }
 
     public bool UseTtEvalRefine
@@ -758,23 +1027,12 @@ public sealed class ChessEngine
         set => _search.UseTtKeepMoveOnFailLow = value;
     }
 
-    public bool UseTtMateReuse
-    {
-        get => _search.UseTtMateReuse;
-        set => _search.UseTtMateReuse = value;
-    }
-
     public bool UseRootScoreOrdering
     {
         get => _search.UseRootScoreOrdering;
         set => _search.UseRootScoreOrdering = value;
     }
 
-    public bool UseRazoring
-    {
-        get => _search.UseRazoring;
-        set => _search.UseRazoring = value;
-    }
 
     public bool UseNoDecayOnRelaunch
     {
@@ -788,29 +1046,95 @@ public sealed class ChessEngine
         set => _search.UseQsChecks = value;
     }
 
-    public bool UseProbCutAllowNull
-    {
-        get => _search.UseProbCutAllowNull;
-        set => _search.UseProbCutAllowNull = value;
-    }
-
     public bool UseFutilityFailSoft
     {
         get => _search.UseFutilityFailSoft;
         set => _search.UseFutilityFailSoft = value;
     }
 
-    public bool UseCaptureFutility
-    {
-        get => _search.UseCaptureFutility;
-        set => _search.UseCaptureFutility = value;
-    }
+
 
     public bool UseHistoryPrune
     {
         get => _search.UseHistoryPrune;
         set => _search.UseHistoryPrune = value;
     }
+
+    public int HistoryPruneScale
+    {
+        get => _search.HistoryPruneScale;
+        set => _search.HistoryPruneScale = value;
+    }
+
+
+    public bool UsePruneLossGuard
+    {
+        get => _search.UsePruneLossGuard;
+        set => _search.UsePruneLossGuard = value;
+    }
+
+
+    public bool UseLosingCaptureOrder
+    {
+        get => _search.UseLosingCaptureOrder;
+        set => _search.UseLosingCaptureOrder = value;
+    }
+
+    public bool UseSmallProbCutExact
+    {
+        get => _search.UseSmallProbCutExact;
+        set => _search.UseSmallProbCutExact = value;
+    }
+
+    public bool UseImprovingAboveBeta
+    {
+        get => _search.UseImprovingAboveBeta;
+        set => _search.UseImprovingAboveBeta = value;
+    }
+
+    public bool UseGoodCaptureSlack
+    {
+        get => _search.UseGoodCaptureSlack;
+        set => _search.UseGoodCaptureSlack = value;
+    }
+
+    public bool UseHistoryPruneCounts
+    {
+        get => _search.UseHistoryPruneCounts;
+        set => _search.UseHistoryPruneCounts = value;
+    }
+
+    public bool UseNmpEvalR
+    {
+        get => _search.UseNmpEvalR;
+        set => _search.UseNmpEvalR = value;
+    }
+
+    public bool UseTtCutoffHistory
+    {
+        get => _search.UseTtCutoffHistory;
+        set => _search.UseTtCutoffHistory = value;
+    }
+
+    public bool UseCutoffCountLmrAllNode
+    {
+        get => _search.UseCutoffCountLmrAllNode;
+        set => _search.UseCutoffCountLmrAllNode = value;
+    }
+
+    public bool UsePvWindowEarly
+    {
+        get => _search.UsePvWindowEarly;
+        set => _search.UsePvWindowEarly = value;
+    }
+
+    public bool UseTtRule50Guard
+    {
+        get => _search.UseTtRule50Guard;
+        set => _search.UseTtRule50Guard = value;
+    }
+
+
 
     public bool UseQsContCorrection
     {
@@ -846,41 +1170,22 @@ public sealed class ChessEngine
         get => _search.UsePriorFailLowBonus;
         set => _search.UsePriorFailLowBonus = value;
     }
-    public bool UseLmrDeeperResearch
-    {
-        get => _search.UseLmrDeeperResearch;
-        set => _search.UseLmrDeeperResearch = value;
-    }
-    public bool UseRfpTtMoveGuard
-    {
-        get => _search.UseRfpTtMoveGuard;
-        set => _search.UseRfpTtMoveGuard = value;
-    }
-    public bool UseLmpCountAllMoves
-    {
-        get => _search.UseLmpCountAllMoves;
-        set => _search.UseLmpCountAllMoves = value;
-    }
-    public bool UseDrawRandom
-    {
-        get => _search.UseDrawRandom;
-        set => _search.UseDrawRandom = value;
-    }
     public bool UseHindsightDepth
     {
         get => _search.UseHindsightDepth;
         set => _search.UseHindsightDepth = value;
-    }
-    public bool UseCutoffCountLmr
-    {
-        get => _search.UseCutoffCountLmr;
-        set => _search.UseCutoffCountLmr = value;
     }
 
     public bool UseCaptureSeePruneDeep
     {
         get => _search.UseCaptureSeePruneDeep;
         set => _search.UseCaptureSeePruneDeep = value;
+    }
+
+    public int CaptureSeeHistK
+    {
+        get => _search.CaptureSeeHistK;
+        set => _search.CaptureSeeHistK = value;
     }
 
     public bool UseSmpAspDiversify
@@ -898,12 +1203,6 @@ public sealed class ChessEngine
     {
         get => _search.UseStatScoreLmr;
         set => _search.UseStatScoreLmr = value;
-    }
-
-    public bool UseCorrectionBlend
-    {
-        get => _search.UseCorrectionBlend;
-        set => _search.UseCorrectionBlend = value;
     }
 
     public bool UsePruningLadder

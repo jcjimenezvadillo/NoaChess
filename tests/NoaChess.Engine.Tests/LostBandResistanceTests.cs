@@ -25,7 +25,14 @@ public class LostBandResistanceTests(ITestOutputHelper output)
     // and the engine used to walk into the fastest mate because the root
     // filter switched the tablebase scores off and left the saturated
     // evaluation to choose. With the probe kept on for a lost root the search
-    // sees the mates and picks the longest defence: Kc8, not Ka8.
+    // sees the mates and picks the longest defence.
+    //
+    // Which move is shortest was checked on 2026-09-22 with an independent
+    // brute-force mate solver (python-chess, no engine involved): after Kc8,
+    // Ka8 or Ka7 White mates in 4, after Kc7 in 3. The assertion used to
+    // forbid Ka8 on the belief that it lost fastest; it is one of the three
+    // longest defences, and the only move that shortens the game is Kc7. The
+    // assertion now forbids that move, which is what the test always meant.
     private const string BareKingVersusQueen = "8/1k6/8/1Q3K2/8/8/8/8 b - - 3 67";
 
     [SyzygyFact]
@@ -48,10 +55,11 @@ public class LostBandResistanceTests(ITestOutputHelper output)
         output.WriteLine($"best {result.BestMove} score {result.Score}");
 
         // The search must have SEEN the mate, i.e. reported a mate score, and
-        // must not have chosen the move that loses fastest.
+        // must not have chosen the move that loses fastest (Kc7, mate in 3;
+        // the other three moves are mated in 4).
         Assert.True(result.Score <= -(AlphaBetaSearch.MateScore - 1000),
             $"expected a mate score, got {result.Score}");
-        Assert.NotEqual("b7a8", result.BestMove.ToString());
+        Assert.NotEqual("b7c7", result.BestMove.ToString());
     }
 
     private static string? EmbeddedModelPath()

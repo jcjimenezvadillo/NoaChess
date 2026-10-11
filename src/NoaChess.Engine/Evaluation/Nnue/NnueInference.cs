@@ -400,9 +400,46 @@ public static class NnueInference
         // architecture 5 thirteen percent of its NPS when it had four times as
         // many of them, measured, which is how this one was found.
         int shift = net.QbShift;
+        int start = 0;
+        if (Avx2.IsSupported && shift >= 0 && net.L1Outputs >= Vector256<int>.Count)
+        {
+            // The output layer of the SHIPPING architecture was the last
+            // serial stretch of the evaluation: thirty-two iterations of a
+            // bounds-checked span read, a bounds-checked weight read, a
+            // sign-extending 64-bit multiply and a thirty-two deep chain of
+            // long adds, run after the L1 dot has already finished. The same
+            // construct for architecture 5 - which nothing ships - was
+            // vectorised two versions ago and sits a hundred lines above this.
+            //
+            // int32 accumulation is EXACT rather than merely close: the
+            // activation is clamped to [0, QA] with QA at most 255, the weight
+            // is an int16, so one product is at most 255 * 32768 = 8,355,840
+            // and thirty-two of them at most 267,386,880 - an eighth of what
+            // int32 holds. The long accumulator below still receives the total,
+            // so the arithmetic is the same arithmetic.
+            ref int hRef = ref MemoryMarshal.GetReference(hidden);
+            ref short owRef = ref MemoryMarshal.GetArrayDataReference(net.OutWeights);
+            var zero = Vector256<int>.Zero;
+            var qaVec = Vector256.Create(qa);
+            var acc = Vector256<int>.Zero;
+            for (; start + Vector256<int>.Count <= net.L1Outputs; start += Vector256<int>.Count)
+            {
+                var h = Vector256.LoadUnsafe(ref hRef, (nuint)start);
+                var a2 = Avx2.Min(Avx2.Max(Avx2.ShiftRightArithmetic(h, (byte)shift), zero), qaVec);
+                // VPMOVSXWD: eight int16 weights widened to int32 in one go.
+                var w = Avx2.ConvertToVector256Int32(
+                    Vector128.LoadUnsafe(ref owRef, (nuint)(headOffset + start)));
+                acc = Avx2.Add(acc, Avx2.MultiplyLow(a2, w));
+            }
+            output += Vector256.Sum(acc);
+        }
+
         if (shift >= 0)
         {
-            for (int o = 0; o < net.L1Outputs; o++)
+            // Tail: whatever the vector block did not cover, and the whole
+            // loop when AVX2 is absent. Same expression, so it is a slower
+            // twin rather than a second definition of the arithmetic.
+            for (int o = start; o < net.L1Outputs; o++)
             {
                 int a2 = Math.Clamp(hidden[o] >> shift, 0, qa);
                 output += net.OutWeights[headOffset + o] * (long)a2;
@@ -610,6 +647,10 @@ public static class NnueInference
         int lanes = Vector<short>.Count;
         int inputs = 2 * ftOut;
 
+        if (Avx2.IsSupported && net.L1WeightsByPair is not null
+            && ftOut % Vector256<short>.Count == 0 && net.QbShift >= 0)
+            return EvaluateInt16Sparse(net, stmAccumulator, oppAccumulator, bucket);
+
         var zero = Vector<short>.Zero;
         var qaVec = new Vector<short>((short)qa);
 
@@ -617,10 +658,34 @@ public static class NnueInference
         // The clipped result is identical for every output, so computing it a
         // single time lets each output run a plain dot product over it.
         Span<short> act = stackalloc short[inputs];
-        for (int i = 0; i < ftOut; i += lanes)
+        if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
-            Vector.Min(Vector.Max(new Vector<short>(stmAccumulator, i), zero), qaVec).CopyTo(act[i..]);
-            Vector.Min(Vector.Max(new Vector<short>(oppAccumulator, i), zero), qaVec).CopyTo(act[(ftOut + i)..]);
+            // The last use in the engine of `new Vector<short>(array, index)`
+            // plus `CopyTo(Span)`: a null check, a range check, a span slice
+            // and a destination length check per half per step, which is the
+            // exact idiom v4.0.0 measured 2.5x slower in MoveFeature and
+            // replaced with LoadUnsafe everywhere else. The arithmetic is
+            // unchanged - clamp to [0, QA] into a contiguous [stm | opp].
+            ref short sRef = ref MemoryMarshal.GetArrayDataReference(stmAccumulator);
+            ref short oRef = ref MemoryMarshal.GetArrayDataReference(oppAccumulator);
+            ref short aRef = ref MemoryMarshal.GetReference(act);
+            var zero256 = Vector256<short>.Zero;
+            var qa256 = Vector256.Create((short)qa);
+            for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+            {
+                Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref sRef, i), zero256), qa256)
+                         .StoreUnsafe(ref aRef, i);
+                Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref oRef, i), zero256), qa256)
+                         .StoreUnsafe(ref aRef, (nuint)ftOut + i);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < ftOut; i += lanes)
+            {
+                Vector.Min(Vector.Max(new Vector<short>(stmAccumulator, i), zero), qaVec).CopyTo(act[i..]);
+                Vector.Min(Vector.Max(new Vector<short>(oppAccumulator, i), zero), qaVec).CopyTo(act[(ftOut + i)..]);
+            }
         }
 
         Span<int> hidden = stackalloc int[net.L1Outputs];
@@ -631,6 +696,8 @@ public static class NnueInference
         {
             ref short actRef = ref MemoryMarshal.GetReference(act);
             ref short wRef = ref MemoryMarshal.GetArrayDataReference(l1Weights);
+            ref int biasRef = ref MemoryMarshal.GetArrayDataReference(net.L1Bias);
+            ref int hiddenRef = ref MemoryMarshal.GetReference(hidden);
 
             // FOUR OUTPUT ROWS PER PASS, one horizontal reduction instead of
             // four. This is the shipping net's kernel - fq60 is architecture 1,
@@ -674,10 +741,11 @@ public static class NnueInference
                 var folded = Avx2.HorizontalAdd(Avx2.HorizontalAdd(a0, a1),
                                                 Avx2.HorizontalAdd(a2, a3));
                 var totals = Sse2.Add(folded.GetLower(), folded.GetUpper());
-                hidden[o] = net.L1Bias[biasBase + o] + totals.GetElement(0);
-                hidden[o + 1] = net.L1Bias[biasBase + o + 1] + totals.GetElement(1);
-                hidden[o + 2] = net.L1Bias[biasBase + o + 2] + totals.GetElement(2);
-                hidden[o + 3] = net.L1Bias[biasBase + o + 3] + totals.GetElement(3);
+                // The four biases are contiguous and so are the four totals, so
+                // this is one load, one add and one store instead of four
+                // GetElement extractions and four bounds-checked bias reads.
+                Sse2.Add(Vector128.LoadUnsafe(ref biasRef, (nuint)(biasBase + o)), totals)
+                    .StoreUnsafe(ref hiddenRef, (nuint)o);
             }
 
             // Tail, for widths that are not a multiple of four. Same sums in
@@ -712,6 +780,118 @@ public static class NnueInference
                 }
                 hidden[o] = net.L1Bias[biasBase + o] + Vector.Sum(accum);
             }
+        }
+
+        return FinishOutput(net, hidden, bucket);
+    }
+
+    // ---- ARCH 1, sparse inputs (audit of 2026-10-04) ----
+    //
+    // After the clamp to [0, QA] most of the feature transformer's outputs are
+    // exactly zero - 79% of them on the shipping net, as the audit counted -
+    // and the dense kernel above multiplies every one of them by every row. This
+    // one walks only the input PAIRS with a nonzero activation: the pair is
+    // broadcast as one int32 and VPMADDWD against that pair's column for eight
+    // outputs at a time (L1WeightsByPair holds the columns contiguously),
+    // accumulating straight into the bias.
+    //
+    // EXACT, not approximate: every term is an integer product, integer
+    // addition gives the same int32 whatever the order (and the bound in
+    // FinishOutput keeps these sums far from wrapping anyway), and a pair
+    // whose two activations are both zero contributes exactly zero to every
+    // output - which is all this skips. The parity tests assert it against
+    // the scalar reference.
+    [SkipLocalsInit]
+    private static int EvaluateInt16Sparse(NnueNetwork net, short[] stmAccumulator,
+                                           short[] oppAccumulator, int bucket)
+    {
+        int ftOut = net.FtOutputs;
+        int inputs = 2 * ftOut;
+        int pairs = inputs / 2;
+        int l1 = net.L1Outputs;
+
+        // Clamp into [stm | opp] and record which int32 pairs are nonzero,
+        // eight pairs per 16 activations.
+        Span<short> act = stackalloc short[inputs];
+        Span<ulong> masks = stackalloc ulong[(pairs + 63) / 64];
+        masks.Clear();
+        ref short sRef = ref MemoryMarshal.GetArrayDataReference(stmAccumulator);
+        ref short oRef = ref MemoryMarshal.GetArrayDataReference(oppAccumulator);
+        ref short aRef = ref MemoryMarshal.GetReference(act);
+        var zero = Vector256<short>.Zero;
+        var qaVec = Vector256.Create((short)net.QA);
+        for (int i = 0; i < ftOut; i += Vector256<short>.Count)
+        {
+            var a = Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref sRef, (nuint)i), zero), qaVec);
+            a.StoreUnsafe(ref aRef, (nuint)i);
+            ulong nz = ~Vector256.ExtractMostSignificantBits(
+                Vector256.Equals(a.AsInt32(), Vector256<int>.Zero)) & 0xFFUL;
+            int bit = i / 2;
+            masks[bit >> 6] |= nz << (bit & 63);
+
+            var b = Vector256.Min(Vector256.Max(Vector256.LoadUnsafe(ref oRef, (nuint)i), zero), qaVec);
+            b.StoreUnsafe(ref aRef, (nuint)(ftOut + i));
+            ulong nz2 = ~Vector256.ExtractMostSignificantBits(
+                Vector256.Equals(b.AsInt32(), Vector256<int>.Zero)) & 0xFFUL;
+            int bit2 = (ftOut + i) / 2;
+            masks[bit2 >> 6] |= nz2 << (bit2 & 63);
+        }
+
+        ref int actPairs = ref Unsafe.As<short, int>(ref aRef);
+        ref short wRef = ref MemoryMarshal.GetArrayDataReference(net.L1WeightsByPair!);
+        ref int biasRef = ref MemoryMarshal.GetArrayDataReference(net.L1Bias);
+        nuint biasBase = (nuint)(bucket * l1);
+        nuint wBase = (nuint)(bucket * l1 * inputs);
+        nuint pairStride = (nuint)(2 * l1); // shorts per pair column
+
+        Span<int> hidden = stackalloc int[l1];
+        ref int hRef = ref MemoryMarshal.GetReference(hidden);
+
+        // Thirty-two outputs per pass in four independent chains (the shipping
+        // width is exactly one pass), then eight at a time for any remainder.
+        int g = 0;
+        for (; g + 32 <= l1; g += 32)
+        {
+            var acc0 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g);
+            var acc1 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 8);
+            var acc2 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 16);
+            var acc3 = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g + 24);
+            for (int w = 0; w < masks.Length; w++)
+            {
+                ulong m = masks[w];
+                while (m != 0)
+                {
+                    int p = (w << 6) + BitOperations.TrailingZeroCount(m);
+                    m &= m - 1;
+                    var x = Vector256.Create(Unsafe.Add(ref actPairs, p)).AsInt16();
+                    nuint col = wBase + (nuint)p * pairStride + (nuint)(2 * g);
+                    acc0 = Avx2.Add(acc0, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col)));
+                    acc1 = Avx2.Add(acc1, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 16)));
+                    acc2 = Avx2.Add(acc2, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 32)));
+                    acc3 = Avx2.Add(acc3, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col + 48)));
+                }
+            }
+            acc0.StoreUnsafe(ref hRef, (nuint)g);
+            acc1.StoreUnsafe(ref hRef, (nuint)g + 8);
+            acc2.StoreUnsafe(ref hRef, (nuint)g + 16);
+            acc3.StoreUnsafe(ref hRef, (nuint)g + 24);
+        }
+        for (; g < l1; g += 8)
+        {
+            var acc = Vector256.LoadUnsafe(ref biasRef, biasBase + (nuint)g);
+            for (int w = 0; w < masks.Length; w++)
+            {
+                ulong m = masks[w];
+                while (m != 0)
+                {
+                    int p = (w << 6) + BitOperations.TrailingZeroCount(m);
+                    m &= m - 1;
+                    var x = Vector256.Create(Unsafe.Add(ref actPairs, p)).AsInt16();
+                    nuint col = wBase + (nuint)p * pairStride + (nuint)(2 * g);
+                    acc = Avx2.Add(acc, Avx2.MultiplyAddAdjacent(x, Vector256.LoadUnsafe(ref wRef, col)));
+                }
+            }
+            acc.StoreUnsafe(ref hRef, (nuint)g);
         }
 
         return FinishOutput(net, hidden, bucket);
