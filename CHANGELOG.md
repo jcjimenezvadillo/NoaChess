@@ -1,5 +1,49 @@
 # CHANGELOG
 
+## 2026-10-15 (v6.1.0) - fqgen9 embedded: all of datascale6 and three deep relabels, +12.4 Elo over fqgen7
+
+**The release is the net.** The search is unchanged from v6.0.2 (CI node count 134088, 496 tests, the default search
+node-identical). A 14-epoch re-entry from `fqgen7` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, seed 11, architecture unchanged) over the corpus with all 26 shards of `datascale6` (130M positions of 6,000-node autoplay) and three 40,000-node relabels of the mined elite blind-spot positions (`deep2`, `deep3`, `deep4`: 15.9M records, `fqgen7` as teacher, tablebases probed in the search, weight 4x): **+12.4 +/- 9.8 Elo at 100,000 fixed nodes, 436-366-1162 over 1,964 games, LOS 99.3%, LLR +2.95, H1** against `fqgen7`.
+
+**The run.** Warm start from `fqgen7`, 14 epochs of a cosine from lr 1.371433e-4 to 1e-5 (the 60-epoch schedule evaluated at
+epoch 46), lambda 0.735 -> 0.7, batch 16384, reference loss with pow-exp 2.5 (offsets 240, scalings 145), `--val-split
+tail-dedup`, the loader process, QAT, the factorized 128-wide transformer with the coarse lane, seed 11. Data: the `fqgen7`
+corpus plus the 26 shards of `datascale6/bulk` (until now only 5M of them had ever been trained on, see below) plus the three
+deep relabels, all at weight 4x together with the first deep batch (`gen7`), the blind self-play at 1.5x; about 1,428,957,531
+rows drawn per epoch against 1,245,881,765 for `fqgen7`. The three relabels take the mined rows that were left after the first
+batch: `deep2` 5,321,136 records, `deep3` 4,501,916 and `deep4` 6,104,561 (15,927,613 in all), 40,000 nodes per position by
+`fqgen7` with the tablebases probed in the search; the mined rows of groups R, K, L and P are now exhausted (B1 and B2 were
+taken whole by the first batch). Validation 0.006512 at epoch 14 (best); the split is a function of the corpus, so it is not
+comparable with `fqgen7`'s 0.006150. The last epoch was cut 35 minutes before its end by a Windows Update restart and resumed
+from the saved state of epoch 13 (lr 1.159387e-5, lambda 0.7025), which repeats that epoch whole. Exported 5,820,956 bytes,
+payload sha256 starting b13d14a7c3d68549; the engine reports the same hash when it loads the embedded model.
+
+**Against `fqgen7`** (one thread, 100,000 nodes per move, 8moves_v3, `fqgen9` listed first, elo0=0 elo1=10, same binary on both
+sides): **436-366-1162 over 1,964 games, +12.4 +/- 9.8 Elo, LOS 99.3%, LLR +2.95, H1.** Its CCRL gauntlet read 3448 +/- 54 (67.9% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), level with v6.0.0's 3461 +/- 55 inside the error bars: a gain of the size of the fixed-node SPRT (+12.4) is smaller than the gauntlet's band.
+
+**What did not work in the same cycle** (all measured at 100,000 fixed nodes unless said otherwise):
+
+- **`fqgen8`, the cold anneal, lost to `fqgen7`: 126-162-360, -19.3 +/- 17.8, H0 over 648 games.** A cold 60-epoch cosine (lr 1e-3
+  to 1e-5) over the corpus, the first deep batch and, through a fault in the chain, only 5M of the 130M positions of `datascale6`
+  (the coarse-lane companion files of 25 of its 26 shards had never been written, and the step that was meant to write them reported
+  success; found on 2026-10-12, the companions written, the anneal left to finish). Its planned re-entry was cancelled unrun: a
+  re-entry adds +5 to +14, and the cold net sat 19 below the champion. The re-entry was run from `fqgen7` instead, which is `fqgen9`.
+- **A tail term for the loss, against the net flattening beyond 750 cp (2026-10-12).** The win-rate mapping saturates (a 300 cp
+  error at +1000 moves the target by half a percent), so past about 700 cp the loss says nothing; on the blind-spot exam the
+  median |net| for positions the judge puts below -1500 cp was 637 for `fqgen7`. A smooth L1 in the centipawn domain on labels past
+  600 cp (clipped at 1800), added in short fine-tunes from `fqgen7` on a subset against an identical control without it, does
+  move the ceiling (median |net| 562 for the control, 770 at weight 0.03, 842 at 0.1, the +-300..500 band untouched), and it buys
+  nothing in play: from 520 judged held-out positions of +-350..1200 cp, both colours, 1,040 games, weight 0.03 against the
+  control scored 515-513-12, +0.7 +/- 21; weight 0.1 lost the standard SPRT, -15.6 +/- 16.4, H0 over 736 games. Closed: the
+  resolution of the net beyond 750 cp is not what limits the engine at a fixed node count.
+- **The eleven tied search options together (2026-10-12/13).** `HistoryPrune` (scale 8 with the count), `CutoffCountLmrAllNode`,
+  `QsContCorrection`, `PriorFailLowBonus`, `SingularTight`, `CaptureSeePruneDeep`, `NmpNonPvOnly`, `CutNodeLmr` and
+  `CutNodeLmrTtPv`, each of which had read a flat +2 to +4 alone, all on against the v6.0.2 defaults: 749-732-2424, **+1.5 +/-
+  6.7, H0 over 3,905 games.** The ties do not add; the options stay off and are candidates for removal.
+- **Production check of v6.0.2 on the Mac bot** (171 games from the restart to 2026-10-12: 40.9% against opponents averaging
+  about 2900, no game lost on time; in 60+1 the lowest clock reached is a median 12% of the base time and 46% of the games dip
+  under 5 s, with the increment carrying the end).
+
 ## 2026-10-10 (v6.0.2) - tablebase probes 1.32x faster in six-man endings, and an outside review answered
 
 **The review.** An outside team sent three points: measure `PonderContinue` (published off for want of a
