@@ -3,7 +3,7 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v6.0.0, 2026-10-07).** The embedded net is `fqgen7` (v6.0.0, first entry below):
+**Current state (v6.1.0, 2026-10-15).** The embedded net is `fqgen9` (v6.1.0, first entry below): a 14-epoch re-entry from `fqgen7` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7, seed 11) over the corpus with all 26 shards of `datascale6/bulk` and three 40,000-node relabels of the mined blind-spot positions (`deep2`, `deep3`, `deep4`, 15.9M records at weight 4x); +12.4 Elo, H1 over 1,964 fixed-node games against `fqgen7`. Before it, `fqgen7` (v6.0.0) was the same kind of re-entry from `fqblind`, +15.9 Elo. Everything said below about the line up to v6.0.0 still holds. As of v6.0.0, the embedded net was `fqgen7` (v6.0.0, second entry below):
 a 14-epoch re-entry from `fqblind` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7) over its corpus
 with the 6,000-node blind-spot label files replaced by the same mined elite positions relabelled at
 40,000 nodes by `fqblind` with the tablebases probed inside the search, at weight 4x; +15.9 Elo, H1
@@ -14,13 +14,11 @@ fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus,
 `fqco592.pt.partial`. v5.9.18 and v5.9.19, v5.9.21 to v5.9.25 and v5.9.27 (the joint SPSA retune of
 45 search constants) changed search, time management and the trainer, not the net (see
 CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
-on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). In
-preparation for the next generation (`fqgen8`): `datascale6/bulk` (130M positions of 6,000-node autoplay,
-`fqblind` as teacher, the tablebases probed in the search) and a second 40,000-node relabel, `deep2`. Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
+on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
-status entry further down). Last measured CCRL: **3461 +/- 55** (v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
+status entry further down). Last measured CCRL: **3448 +/- 54** (v6.1.0 with `fqgen9`, 67.9% over 240 games, 2026-10-15, level with the next figure inside the error bars; **3461 +/- 55** v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
 single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
-v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 493 tests.
+v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 496 tests.
 
 **Read this before training another generation the same way.** The investigation that explains
 `fqco5911`'s small gain (CHANGELOG.md, 2026-09-23) found that the project's two largest NNUE wins -
@@ -63,6 +61,38 @@ has since finished and shipped in v5.9.26; they belong to the next generation):
   those positions with a neutral or omitted result.
 - *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
   been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqgen9 ships as v6.1.0 (2026-10-15): more data and more deep labels, on the champion
+
+**The run.** Warm start from `fqgen7`, 14 epochs of the same cosine as `fqgen7` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch
+16384, reference loss with pow-exp 2.5, `--val-split tail-dedup`, the loader process, QAT, seed 11). New against `fqgen7`'s corpus: the 26
+shards of `datascale6/bulk` (130M positions of 6,000-node autoplay with `fqblind` as teacher and the tablebases probed in the search) and
+three 40,000-node relabels by `fqgen7` of the rows the first deep batch had not taken (`deep2` 5,321,136 records, `deep3` 4,501,916,
+`deep4` 6,104,561), at weight 4x with the first batch. About 1,428,957,531 rows per epoch; validation 0.006519 (epoch 12), 0.006523
+(13) and 0.006512 (14, best). The last epoch was resumed from the epoch-13 state after a restart of the machine. Exported 5,820,956
+bytes, payload sha256 b13d14a7c3d6...; against the 20,000-record label sample the net reads pearson 0.9432, RMS 117.7 cp.
+
+**Result.** 436-366-1162 over 1,964 games, +12.4 +/- 9.8 Elo, LOS 99.3%, LLR +2.95, H1 against `fqgen7` (100,000 nodes, one thread,
+8moves_v3). Its CCRL gauntlet read 3448 +/- 54 (67.9% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), level with v6.0.0's 3461 +/- 55 inside the error bars: a gain of the size of the fixed-node SPRT (+12.4) is smaller than the gauntlet's band.
+
+**The mined elite rows are exhausted.** Groups R, K, L and P are all labelled (R and the K, L and P rows in the three batches); B1 and
+B2 were taken whole by the first. A next generation needs new positions, not another pass over these.
+
+**The cold anneal did not pay (`fqgen8`).** A cold 60-epoch cosine (lr 1e-3 to 1e-5, lambda 1.0 to 0.7, seed 7) over the corpus, the first
+deep batch and 5M positions of `datascale6` (the other 25 shards had no coarse companion files: the step of the chain that encodes them
+reported success without writing them, found on 2026-10-12) read 126-162-360, -19.3 +/- 17.8, H0 over 648 games against `fqgen7`. The
+lesson of the fqblind step (a cold anneal pays) held when the lineage had not been re-entered since; here the lineage had been, and the
+re-entry gains it carries (+8 for fqgen7's deep labels, about +5 for the re-entry itself) were not rebuilt by one anneal on a
+corpus 9% smaller than the one it was meant to have. The re-entry planned from it was cancelled unrun.
+
+**A tail term in the loss, closed.** The win-rate mapping saturates beyond about 700 cp, so the net flattens (median |net| 637 for
+judged positions below -1500 cp). Short fine-tunes from `fqgen7` with a smooth L1 in centipawns on labels past 600 cp, against a control
+without it: median |net| 562 (control), 770 (weight 0.03), 842 (0.1), the +-300..500 cp band untouched; in play, from 520 held-out
+positions of +-350..1200 cp judged by an independent engine, 1,040 games, weight 0.03 against the control 515-513-12, +0.7 +/- 21; weight
+0.1 -15.6 +/- 16.4, H0 over 736 games on the standard book. The resolution beyond 750 cp is not what limits the engine at a fixed node
+count; the option stays in the experiment trainer only.
 
 ---
 
@@ -120,7 +150,7 @@ were deepest. The rate of positions the net gets wrong outright stays at 0-3% fo
   next net needs them from a source that sees the answer (the tablebases in the label, the game
   result) rather than more of our own shallow labels.
 
-**The next generation (`fqgen8`).** The `datascale6` corpus was stopped on 2026-10-10 after its first source, `bulk` (130M positions of 6,000-node autoplay with `fqblind` as teacher and the tablebases probed in the search): its other sources (`open`, `mid`, `hard`) had no measured value, while the 40,000-node labels had just measured +9.0 Elo. The CPU goes to a second deep relabel instead (`deep2`: the next 8M positions of the six mined blind-spot groups, labelled at 40,000 nodes by `fqgen7` with the tablebases in the search, about two days at 10 threads). `fqgen8` is a cold 60-epoch anneal on the corpus plus `datascale6/bulk` and the first deep batch (running since 2026-10-10), followed by its 14-epoch re-entry, where `deep2` enters at weight 4x. Still open for it: the QAT rounding of the factorized rows and WDL-versus-score row filtering.
+**The next generation (`fqgen8` -> `fqgen9`).** The plan of 2026-10-10 (a cold anneal `fqgen8`, then a re-entry with `deep2`) failed at its first step and was replaced by a re-entry of `fqgen7`; see the `fqgen9` entry above. Still open: the QAT rounding of the factorized rows and WDL-versus-score row filtering.
 
 ---
 
