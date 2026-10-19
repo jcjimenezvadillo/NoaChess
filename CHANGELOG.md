@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## 2026-10-19 (v6.2.0) - fqgen11 embedded: deep labels on ordinary positions, +14.6 Elo over fqgen9
+
+**The release is the net.** The search is unchanged from v6.1.0 (CI node count 134088, 496 tests, the default search
+node-identical). A 14-epoch re-entry from `fqgen9` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, seed 14, architecture unchanged) over the corpus, all 27 shards of `datascale7` (130M positions of 6,000-node self-play by `fqgen9`) and `deep7`, a 40,000-node relabel of 5.75M ordinary positions drawn from `datascale7` (`fqgen9` as teacher, tablebases probed in the search, weight 4x): **+14.6 +/- 11.2 Elo at 100,000 fixed nodes, 354-289-903 over 1,546 games, LOS 99.5%, LLR +2.97, H1** against `fqgen9`.
+
+**What paid, and what did not.** The same re-entry of `fqgen9` with `datascale7` alone, its 6,000-node labels, read
+**635-635-1768, 0.0 +/- 8.0, H0 over 3,038 games** (`fqgen10`): 130M new self-play positions added nothing. Adding `deep7`, 5.75M of
+those positions relabelled at 40,000 nodes by `fqgen9` with the tablebases in the search, is the whole difference to `fqgen11`. The
+40,000-node labels had paid on the mined blind-spot rows (+9.0 Elo, v6.0.0); this shows they pay on ordinary positions too, and
+that depth of label, not volume, is what the net is short of.
+
+**The run.** Warm start from `fqgen9`, 14 epochs of a cosine from lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384,
+reference loss with pow-exp 2.5, `--val-split tail-dedup`, the loader process, QAT, the factorized 128-wide transformer with the
+coarse lane. Data: everything `fqgen9` saw, the 27 shards of `datascale7`, and the `deep7` files (six chunks of 1,000,000 positions,
+one drawn at random from each of six spread-out `datascale7` shards, 5,752,316 records after the filters), at weight 4x together with
+the earlier deep batches; about 1,574,318,731 rows drawn per epoch. Validation 0.006410 at epoch 14 (best); the split is a function
+of the corpus, so it is not comparable with `fqgen9`'s 0.006512. Exported 5,820,956 bytes, payload sha256 starting 4859659e0458ef2c;
+the engine reports the same hash when it loads the embedded model.
+
+**Against `fqgen9`** (one thread, 100,000 nodes per move, 8moves_v3, `fqgen11` listed first, elo0=0 elo1=10, same binary on both
+sides): **354-289-903 over 1,546 games, +14.6 +/- 11.2 Elo, LOS 99.5%, LLR +2.97, H1.** Its CCRL gauntlet read 3417 +/- 50 (64.2% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), 31 below v6.1.0's 3448 +/- 54 and 44 below v6.0.0's 3461 +/- 55: inside the error bars each time, but the three readings fall while the fixed-node SPRTs rise (+12.4, +14.6); a clock match at 10+0.1 (one thread, ponder off, the same v6.2.0 executable with the v6.0.0 net `fqgen7` against the embedded `fqgen11`) read 876-789-2244, +7.5 +/- 7.2 Elo (LOS 98%) over 3,909 games, stopped before its bounds: positive, but about a quarter of the +27 that the two fixed-node SPRTs (+12.4, +14.6) add up to.
+
+**Operational notes of the cycle.** Windows Terminal crashed three times on 2026-10-17 (an Application Error in ucrtbase.dll) and took
+down with it the training of `fqgen10` two epochs from its end (resumed from its saved state) and two SPRTs; long jobs now run in
+classic `conhost` consoles launched by scheduled tasks. A Windows Update restart on 2026-10-14 had already cut `fqgen9` 35 minutes
+from its end (resumed the same way); automatic restarts are now disabled. The Mac bot played v6.1.0 throughout without a game lost on time.
+
 ## 2026-10-15 (v6.1.0) - fqgen9 embedded: all of datascale6 and three deep relabels, +12.4 Elo over fqgen7
 
 **The release is the net.** The search is unchanged from v6.0.2 (CI node count 134088, 496 tests, the default search
