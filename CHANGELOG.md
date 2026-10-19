@@ -20,7 +20,7 @@ of the corpus, so it is not comparable with `fqgen9`'s 0.006512. Exported 5,820,
 the engine reports the same hash when it loads the embedded model.
 
 **Against `fqgen9`** (one thread, 100,000 nodes per move, 8moves_v3, `fqgen11` listed first, elo0=0 elo1=10, same binary on both
-sides): **354-289-903 over 1,546 games, +14.6 +/- 11.2 Elo, LOS 99.5%, LLR +2.97, H1.** Its CCRL gauntlet read 3417 +/- 50 (64.2% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), 31 below v6.1.0's 3448 +/- 54 and 44 below v6.0.0's 3461 +/- 55: inside the error bars each time, but the three readings fall while the fixed-node SPRTs rise (+12.4, +14.6); a clock match of this build against v6.0.0 was run to say whether the fixed-node gains reach the clock.
+sides): **354-289-903 over 1,546 games, +14.6 +/- 11.2 Elo, LOS 99.5%, LLR +2.97, H1.** Its CCRL gauntlet read 3417 +/- 50 (64.2% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), 31 below v6.1.0's 3448 +/- 54 and 44 below v6.0.0's 3461 +/- 55: inside the error bars each time, but the three readings fall while the fixed-node SPRTs rise (+12.4, +14.6); a clock match at 10+0.1 (one thread, ponder off, the same v6.2.0 executable with the v6.0.0 net `fqgen7` against the embedded `fqgen11`) read 876-789-2244, +7.5 +/- 7.2 Elo (LOS 98%) over 3,909 games, stopped before its bounds: positive, but about a quarter of the +27 that the two fixed-node SPRTs (+12.4, +14.6) add up to.
 
 **Operational notes of the cycle.** Windows Terminal crashed three times on 2026-10-17 (an Application Error in ucrtbase.dll) and took
 down with it the training of `fqgen10` two epochs from its end (resumed from its saved state) and two SPRTs; long jobs now run in
