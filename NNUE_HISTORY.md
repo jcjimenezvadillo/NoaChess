@@ -3,7 +3,7 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v6.1.0, 2026-10-15).** The embedded net is `fqgen9` (v6.1.0, first entry below): a 14-epoch re-entry from `fqgen7` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7, seed 11) over the corpus with all 26 shards of `datascale6/bulk` and three 40,000-node relabels of the mined blind-spot positions (`deep2`, `deep3`, `deep4`, 15.9M records at weight 4x); +12.4 Elo, H1 over 1,964 fixed-node games against `fqgen7`. Before it, `fqgen7` (v6.0.0) was the same kind of re-entry from `fqblind`, +15.9 Elo. Everything said below about the line up to v6.0.0 still holds. As of v6.0.0, the embedded net was `fqgen7` (v6.0.0, second entry below):
+**Current state (v6.2.0, 2026-10-19).** The embedded net is `fqgen11` (v6.2.0, first entry below): a 14-epoch re-entry from `fqgen9` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7, seed 14) over the corpus, the 27 shards of `datascale7` and `deep7`, a 40,000-node relabel of 5.75M ordinary positions of `datascale7` at weight 4x; +14.6 Elo, H1 over 1,546 fixed-node games against `fqgen9`. Before it, `fqgen9` (v6.1.0) was the re-entry of `fqgen7` over all of `datascale6` and three deep relabels, +12.4 Elo. Everything said below about the line up to v6.1.0 still holds. As of v6.0.0, the embedded net was `fqgen7` (v6.0.0, second entry below):
 a 14-epoch re-entry from `fqblind` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7) over its corpus
 with the 6,000-node blind-spot label files replaced by the same mined elite positions relabelled at
 40,000 nodes by `fqblind` with the tablebases probed inside the search, at weight 4x; +15.9 Elo, H1
@@ -16,7 +16,7 @@ fqco5911's corpus; fqco5911 (v5.9.17) was fqco592's recipe over a larger corpus,
 CHANGELOG.md). On the blind-spot exam `fqgen7` is no closer to the independent judge than `fqblind`
 on held-out positions, although its deeper labels were closer on paired ones, yet the control of 2026-10-10 shows they pay in play: +9.0 +/- 7.2, H1, over the same re-entry on the old labels (entry below). Architecture is HalfKAv2_hm with factorized features, 128-wide feature transformer,
 coarse threat lane, quantization-aware training - unchanged since fq60/v4.7.0 (see the 2026-08-11
-status entry further down). Last measured CCRL: **3448 +/- 54** (v6.1.0 with `fqgen9`, 67.9% over 240 games, 2026-10-15, level with the next figure inside the error bars; **3461 +/- 55** v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
+status entry further down). Last measured CCRL: **3417 +/- 50** (v6.2.0 with `fqgen11`, 64.2% over 240 games, 2026-10-19; **3448 +/- 54** v6.1.0 with `fqgen9`, 2026-10-15; **3461 +/- 55** v6.0.0 with `fqgen7`, 69.8% over 250 games, 2026-10-10; v5.9.27 with `fqblind` read 3420 +/- 50; gauntlet on field 2,
 single-threaded, 64.6% over 240 games, 2026-10-07; v5.9.23 read 3368 +/- 46, v5.9.19 3364 +/- 40,
 v5.9.2 3321 +/- 45); a net swap does not move it, only a new gauntlet would. 496 tests.
 
@@ -61,6 +61,27 @@ has since finished and shipped in v5.9.26; they belong to the next generation):
   those positions with a neutral or omitted result.
 - *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
   been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqgen11 ships as v6.2.0 (2026-10-19): deep labels pay on ordinary positions
+
+**The run.** Warm start from `fqgen9`, 14 epochs of the cosine of `fqgen7` and `fqgen9` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch
+16384, reference loss with pow-exp 2.5, `--val-split tail-dedup`, the loader process, QAT, seed 14). New against `fqgen9`'s corpus: the 27
+shards of `datascale7` (130M positions of 6,000-node self-play, `fqgen9` as teacher, tablebases probed in the search) and `deep7`: one
+million positions drawn at random from each of six spread-out `datascale7` shards, relabelled at 40,000 nodes by `fqgen9`
+(5,752,316 records after the filters), at weight 4x. About 1,574,318,731 rows per epoch; validation 0.006410 at the best epoch, 14.
+Exported 5,820,956 bytes, payload sha256 4859659e0458....
+
+**The control that makes it readable.** `fqgen10` is the same re-entry with `datascale7` and without `deep7`: 635-635-1768, 0.0 +/- 8.0,
+H0 over 3,038 games. Its 130M new positions at 6,000 nodes added nothing to a net that already had 660M; the 5.75M at 40,000 nodes
+are the whole of `fqgen11`'s gain: **354-289-903 over 1,546 games, +14.6 +/- 11.2 Elo, LOS 99.5%, LLR +2.97, H1** against `fqgen9`.
+Its CCRL gauntlet read 3417 +/- 50 (64.2% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), 31 below v6.1.0's 3448 +/- 54 and 44 below v6.0.0's 3461 +/- 55: inside the error bars each time, but the three readings fall while the fixed-node SPRTs rise (+12.4, +14.6); a clock match at 10+0.1 (one thread, ponder off, the same v6.2.0 executable with the v6.0.0 net `fqgen7` against the embedded `fqgen11`) read 876-789-2244, +7.5 +/- 7.2 Elo (LOS 98%) over 3,909 games, stopped before its bounds: positive, but about a quarter of the +27 that the two fixed-node SPRTs (+12.4, +14.6) add up to. Two measurements now say the same thing from two directions (the blind-spot rows at +9.0 in v6.0.0, ordinary positions here):
+label depth is the lever, and volume at the shallow depth is not.
+
+**What it leaves open.** The mined elite rows are exhausted; `deep7` took 5.75M of the 130M positions of `datascale7`. A further
+relabel of more of them at 40,000 nodes by `fqgen11` (or at a still deeper node count) is the obvious next experiment, and the dose
+is not yet known: `deep7` is 0.4% of the epoch.
 
 ---
 
