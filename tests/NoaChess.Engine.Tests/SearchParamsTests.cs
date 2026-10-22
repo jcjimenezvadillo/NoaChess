@@ -56,7 +56,7 @@ public class SearchParamsTests
         {
             SearchParams.ResetToDefaults();
         }
-        Assert.Equal(78, SearchParams.RfpMargin);
+        Assert.Equal(75, SearchParams.RfpMargin);
     }
 
     [Fact]
