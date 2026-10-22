@@ -1,6 +1,8 @@
-134088
+198226
 
-# Regenerated 2026-10-05 against the 5.9.27 tree (134088: the search defaults set to the
+# Regenerated 2026-10-22 against the 6.2.1 tree (198226: the search defaults set to the third SPSA round;
+# the 6.2.0 build gives the same 198226 with every Tune_ option set to those values, and 134088 at its own defaults).
+# Before that, 2026-10-05 against the 5.9.27 tree (134088: the search defaults set to the
 # 2026-10-05 SPSA values; the 5.9.26 SPSA test binary gives the same 134088 with every Tune_ option
 # set to those values, and 127139 at its old defaults). Before that, 2026-09-24 against the
 # 5.9.20 tree (127139; the shipped 5.9.19 binary gives the same

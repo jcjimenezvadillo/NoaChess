@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2026-10-22 (v6.2.1) - the third SPSA round: 34 search constants retuned, +12.9 Elo over the v6.2.0 defaults
+
+**The release is the search constants.** The net is unchanged (`fqgen11`, payload sha256 4859659e0458ef2c) and so is every line of search code; only the
+defaults of `SearchParams.cs` moved. A third SPSA round, run on the v6.2.0 build with the `fqgen11` net (all 45 `Tune_` constants of the search, 5,000 iterations of 8 games = 40,000 games at 40,000 nodes per move, one thread, the project's adjudication), moved 34 of the 45 defaults: **+12.9 +/- 10.0 Elo at 100,000 fixed nodes, 368-303-1085 over 1,756 games, LOS 99.4%, LLR +3.00, H1** against the v6.2.0 defaults, the same executable and net on both sides.
+
+The largest moves: SeDepth 7 -> 6 and SeMargin 33 -> 27 (singular extensions earlier and tighter), IirDepth 4 -> 5, FutilityBase -3 -> -9 and FutilityMargin 90 -> 80, AspWindow 38 -> 30, RfpMargin 78 -> 75, NmpEvalDiv 84 -> 78, ProbCutMargin 151 -> 143, CorrPawnW 128 -> 118, KillerBonus 3939 -> 4133, CounterMoveBonus 2003 -> 2245, LmrNotImproving 1013 -> 1072, LmrTtPv 859 -> 828, QsSeeThreshold 37 -> 44.
+
+**Why now.** The second round (60,000 nodes, started from the 5.9.27 values) lost its SPRT, -17.4 +/- 17.0, and the route was written off. Since then the net has changed three times (`fqgen7`, `fqgen9`, `fqgen11`), and a net that is a little sharper moves the optimum of the pruning margins; this round started from the v6.2.0 values and ran at 40,000 nodes per move. The gain is measured at fixed nodes; the fixed-node gains of the two previous releases reached the clock at about a quarter of their size, so expect less than +12.9 in play.
+
+**Verified.** CI node count 134088 -> 198226 at the new defaults (`tools/ci/nodecount_ref.txt` regenerated; the v6.2.0 build with the 45 `Tune_` options set to the new values gives the
+same 198226, which ties the shipped defaults to the arm that won the SPRT). 496 tests (one assertion of `SearchParamsTests` follows the new RfpMargin default, 75).
+
+**Three nets that did not pay, same cycle (all against `fqgen11`, one thread, 100,000 nodes, same binary on both sides).** `fqgen12`, the re-entry over `deep7` plus `deep8` (11.5M ordinary positions at 40,000 nodes by `fqgen11`, twice the dose): 629-630-1710, -0.1 +/- 8.1 Elo, H0 over 2,969 games. `fqgen13`, the same plus `deep9` (2M of the `deep7` positions relabelled at 200,000 nodes, five times deeper): 187-215-576, -9.9 +/- 13.9, H0 over 978 games. And `soup3`, the plain average of the weights of `fqgen11`, `fqgen12` and `fqgen13` (three nets that share an ancestor), exported as it was: 109-142-368, -18.5 +/- 17.4, H0 over 619 games. The label-depth lever that paid in v6.2.0 is spent at this dose, and averaging does not recover anything.
+
+Its CCRL gauntlet read 3429 +/- 51 (65.6% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box), 12 above v6.2.0's 3417 +/- 50, 19 below v6.1.0's 3448 +/- 54 and 32 below v6.0.0's 3461 +/- 55: inside the error bars each time.
+
 ## 2026-10-19 (v6.2.0) - fqgen11 embedded: deep labels on ordinary positions, +14.6 Elo over fqgen9
 
 **The release is the net.** The search is unchanged from v6.1.0 (CI node count 134088, 496 tests, the default search
