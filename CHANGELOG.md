@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## 2026-10-23 (v6.3.0) - fqgen14 embedded: deep labels on the positions of the bot's own games, +10.7 Elo over fqgen11
+
+**The release is the net.** The search is unchanged from v6.2.1 (CI node count 198226, 496 tests). A 14-epoch re-entry from `fqgen11` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, seed 17, architecture unchanged) over the corpus plus `deep10`: the positions of the bot's own games (974,216 distinct positions from 8,127 games of the Mac and Windows bots, 2026-08-07 to 2026-10-22, from ply 8 on, side to move not in check), relabelled at 40,000 nodes by `fqgen11` with the tablebases probed in the search, weight 4x: **+10.7 +/- 8.6 Elo at 100,000 fixed nodes, 565-486-1508 over 2,559 games, LOS 99.3%, LLR +2.96, H1** against `fqgen11`.
+
+**What it says.** The 40,000-node labels had paid on the mined blind-spot rows (v6.0.0) and on 5.75M ordinary self-play positions (v6.2.0); then twice the dose of the same kind of positions (`fqgen12`, -0.1 +/- 8.1) and the same positions at 200,000 nodes (`fqgen13`, -9.9 +/- 13.9) paid nothing. A million positions of a different distribution, the games the engine really plays against the opponents it really meets, pay +10.7: what the net lacked was coverage of where it plays, not depth or volume. Two more distributions are in training as `fqgen15`: elite human games (2.1M positions) and the engine-vs-engine games kept from the gauntlets and a field round robin (0.9M).
+
+**The run.** Warm start from `fqgen11`, 14 epochs of a cosine from lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384, reference loss with
+pow-exp 2.5, `--val-split tail-dedup`, the loader process, QAT, the factorized 128-wide transformer with the coarse lane. Data: everything
+`fqgen11` saw plus `deep10` (one chunk of 974,216 positions drawn from the PGN records of both bots, deduplicated by board, side, castling and
+en passant), at weight 4x together with the earlier deep batches; about 1,606,260,215 rows drawn per epoch. Validation 0.006394 at epoch 14 (best);
+the split is a function of the corpus, so it is not comparable with the earlier nets. Exported 5,820,956 bytes, payload sha256 starting f0b22bac8a05c50b;
+the engine reports the same hash when it loads the embedded model.
+
+**Against `fqgen11`** (one thread, 100,000 nodes per move, 8moves_v3, `fqgen14` listed first, elo0=0 elo1=10, same binary on both sides):
+**565-486-1508 over 2,559 games, +10.7 +/- 8.6 Elo, LOS 99.3%, LLR +2.96, H1.** An SPRT that stops on acceptance overstates its estimate: the two previous
+fixed-node gains reached the clock at about a quarter of their size (v6.2.1 against v6.2.0 at 10+0.1, 5,000 games: +3.1 +/- 5.5). Its CCRL gauntlet read 3422 +/- 51 (64.8% over 240 games at 60+0.6, field 2, single-threaded, ponder off, quiet box with the trainer paused), 7 below v6.2.1's 3429 +/- 51 and 5 above v6.2.0's 3417 +/- 50: level with both inside the error bars, as every net since v6.0.0 has been (3461, 3448, 3417, 3429, 3422); the gauntlet's band is wider than the fixed-node gains.
+
+**Also in the cycle, not shipped.** The fourth SPSA round (40,000 games at 40,000 nodes from the v6.2.1 values) read +4.9 +/- 5.6 over 6,000 games (LLR -0.17),
+undecided at its cap. The average of the weights of `fqgen11`, `fqgen12` and `fqgen13` (`soup3`) read -18.5 +/- 17.4 (H0).
+
 ## 2026-10-22 (v6.2.1) - the third SPSA round: 34 search constants retuned, +12.9 Elo over the v6.2.0 defaults
 
 **The release is the search constants.** The net is unchanged (`fqgen11`, payload sha256 4859659e0458ef2c) and so is every line of search code; only the
