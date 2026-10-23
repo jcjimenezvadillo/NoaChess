@@ -3,7 +3,7 @@
 Generational self-play pipeline. Each generation's datagen uses the previously
 promoted net as teacher; the training data accumulates across generations.
 
-**Current state (v6.2.1, 2026-10-22).** The embedded net is still `fqgen11` (v6.2.0): v6.2.1 changes search constants only. Three further nets were trained from `fqgen11` in the cycle and none beat it: `fqgen12` (`deep7` + `deep8`, 11.5M ordinary positions at 40,000 nodes, twice the dose) 629-630-1710, -0.1 +/- 8.1 Elo, H0 over 2,969 games; `fqgen13` (plus `deep9`, 2M positions at 200,000 nodes) 187-215-576, -9.9 +/- 13.9, H0 over 978 games; `soup3`, the average of the weights of `fqgen11`, `fqgen12` and `fqgen13`, 109-142-368, -18.5 +/- 17.4, H0 over 619 games. The label-depth lever of v6.2.0 is spent at this dose. As of v6.2.0 (2026-10-19) the state was: The embedded net is `fqgen11` (v6.2.0, first entry below): a 14-epoch re-entry from `fqgen9` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7, seed 14) over the corpus, the 27 shards of `datascale7` and `deep7`, a 40,000-node relabel of 5.75M ordinary positions of `datascale7` at weight 4x; +14.6 Elo, H1 over 1,546 fixed-node games against `fqgen9`. Before it, `fqgen9` (v6.1.0) was the re-entry of `fqgen7` over all of `datascale6` and three deep relabels, +12.4 Elo. Everything said below about the line up to v6.1.0 still holds. As of v6.0.0, the embedded net was `fqgen7` (v6.0.0, second entry below):
+**Current state (v6.3.0, 2026-10-23).** The embedded net is `fqgen14` (v6.3.0, first entry below): a 14-epoch re-entry from `fqgen11` over its corpus plus `deep10`, 974,216 positions of the bot's own games relabelled at 40,000 nodes by `fqgen11` at weight 4x; +10.7 +/- 8.6 Elo, H1 over 2,559 fixed-node games against `fqgen11`. As of v6.2.1 (2026-10-22) the state was: **Current state (v6.2.1, 2026-10-22).** The embedded net is still `fqgen11` (v6.2.0): v6.2.1 changes search constants only. Three further nets were trained from `fqgen11` in the cycle and none beat it: `fqgen12` (`deep7` + `deep8`, 11.5M ordinary positions at 40,000 nodes, twice the dose) 629-630-1710, -0.1 +/- 8.1 Elo, H0 over 2,969 games; `fqgen13` (plus `deep9`, 2M positions at 200,000 nodes) 187-215-576, -9.9 +/- 13.9, H0 over 978 games; `soup3`, the average of the weights of `fqgen11`, `fqgen12` and `fqgen13`, 109-142-368, -18.5 +/- 17.4, H0 over 619 games. The label-depth lever of v6.2.0 is spent at this dose. As of v6.2.0 (2026-10-19) the state was: The embedded net is `fqgen11` (v6.2.0, first entry below): a 14-epoch re-entry from `fqgen9` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7, seed 14) over the corpus, the 27 shards of `datascale7` and `deep7`, a 40,000-node relabel of 5.75M ordinary positions of `datascale7` at weight 4x; +14.6 Elo, H1 over 1,546 fixed-node games against `fqgen9`. Before it, `fqgen9` (v6.1.0) was the re-entry of `fqgen7` over all of `datascale6` and three deep relabels, +12.4 Elo. Everything said below about the line up to v6.1.0 still holds. As of v6.0.0, the embedded net was `fqgen7` (v6.0.0, second entry below):
 a 14-epoch re-entry from `fqblind` (lr 1.371433e-4 down to 1e-5, lambda 0.735 -> 0.7) over its corpus
 with the 6,000-node blind-spot label files replaced by the same mined elite positions relabelled at
 40,000 nodes by `fqblind` with the tablebases probed inside the search, at weight 4x; +15.9 Elo, H1
@@ -61,6 +61,23 @@ has since finished and shipped in v5.9.26; they belong to the next generation):
   those positions with a neutral or omitted result.
 - *WDL-versus-score row filtering* (dropping rows whose result contradicts a large score) has never
   been tried; it belongs to the next training cycle, measured with two cold anneals and an SPRT.
+
+---
+
+## fqgen14 ships as v6.3.0 (2026-10-23): the distribution of the labelled positions is the lever
+
+**The run.** Warm start from `fqgen11`, 14 epochs of the usual cosine (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, batch 16384, reference loss with
+pow-exp 2.5, `--val-split tail-dedup`, the loader process, QAT, seed 17). New against `fqgen11`'s corpus: `deep10`, 974,216 positions drawn from the
+PGN records of both bots (the Mac log from 2026-08-07 and the Windows log, 8,127 games; from ply 8, side to move not in check, deduplicated by board),
+relabelled at 40,000 nodes by `fqgen11` with the tablebases probed in the search, at weight 4x. About 1,606,260,215 rows per epoch; validation
+0.006394 at the best epoch, 14. Exported 5,820,956 bytes, payload sha256 f0b22bac8a05....
+
+**The result in context.** **565-486-1508 over 2,559 games, +10.7 +/- 8.6 Elo, LOS 99.3%, LLR +2.96, H1** against `fqgen11`. The same cycle's other nets, all
+against `fqgen11`: `fqgen12` (`deep7` + `deep8`, 11.5M self-play positions at 40,000 nodes) -0.1 +/- 8.1; `fqgen13` (plus 2M positions at 200,000 nodes)
+-9.9 +/- 13.9; `soup3`, the average of the weights of the three, -18.5 +/- 17.4. Volume and depth had stopped paying; a new distribution paid.
+
+**What it leaves open.** `fqgen15` (in training at the time of writing) takes two other distributions, elite human games and engine-vs-engine games, without
+the bot's own; if each pays, a net with all three is the obvious next step, with a fresh SPSA round on top.
 
 ---
 
