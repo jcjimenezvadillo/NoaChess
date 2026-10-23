@@ -74,7 +74,7 @@ relabelled at 40,000 nodes by `fqgen11` with the tablebases probed in the search
 
 **The result in context.** **565-486-1508 over 2,559 games, +10.7 +/- 8.6 Elo, LOS 99.3%, LLR +2.96, H1** against `fqgen11`. The same cycle's other nets, all
 against `fqgen11`: `fqgen12` (`deep7` + `deep8`, 11.5M self-play positions at 40,000 nodes) -0.1 +/- 8.1; `fqgen13` (plus 2M positions at 200,000 nodes)
--9.9 +/- 13.9; `soup3`, the average of the weights of the three, -18.5 +/- 17.4. Volume and depth had stopped paying; a new distribution paid.
+-9.9 +/- 13.9; `soup3`, the average of the weights of the three, -18.5 +/- 17.4. Volume and depth had stopped paying; a new distribution paid. At the clock (10+0.1, one thread, ponder off) v6.3.0 beat v6.2.1 by +10.4 +/- 8.4 Elo, 475-403-1529 over 2,407 games, LOS 99.2%, H1: the gain of the net reaches the clock at full size.
 
 **What it leaves open.** `fqgen15` (in training at the time of writing) takes two other distributions, elite human games and engine-vs-engine games, without
 the bot's own; if each pays, a net with all three is the obvious next step, with a fresh SPSA round on top.
