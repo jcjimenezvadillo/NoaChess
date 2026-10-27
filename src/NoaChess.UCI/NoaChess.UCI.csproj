@@ -25,6 +25,19 @@
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
+  <!-- Tiered compilation promotes hot ReadyToRun code to fully optimised code
+       only after a quiet period of 100 ms with no new tier-0 activity, restarted
+       by every method first called. lichess-bot starts a fresh engine process
+       for every game, so the opening searches of each game ran on the
+       unpromoted code: measured 2026-10-26, a fresh process searched at 196k
+       nodes/s over its first three searches and 396k over the next seven,
+       against 460k at steady state. With no delay (the same setting as the
+       DOTNET_TC_CallCountingDelayMs=0 environment variable) the first three
+       run at 342k and the next seven at 443k; the steady state is unchanged. -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.Runtime.TieredCompilation.CallCountingDelayMs" Value="0" />
+  </ItemGroup>
+
   <!-- dotnet publish produces one single self-contained .exe (chess-GUI
        friendly: no DLLs to carry around and no .NET runtime required on the
        target machine, like native C/C++ engines). Regular dotnet build/run

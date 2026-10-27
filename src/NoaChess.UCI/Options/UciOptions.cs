@@ -232,7 +232,8 @@ public sealed class UciOptions
         output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
         output.WriteLine("option name Ponder type check default false");
-        output.WriteLine("option name UseNNUE type check default false");
+        // The embedded model is switched on at the first isready unless the GUI sends false, so true is the real default.
+        output.WriteLine("option name UseNNUE type check default true");
         output.WriteLine("option name EvalFile type string default <empty>");
         output.WriteLine("option name Profile type combo default Default var Default var Bullet var WideWindow var EarlyLmr");
         output.WriteLine("option name Optimism type check default false");

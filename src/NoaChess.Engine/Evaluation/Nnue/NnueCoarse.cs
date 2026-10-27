@@ -198,11 +198,22 @@ public static class NnueCoarse
     private static int CountHits(Span<byte> counts, Board board, int row, ulong hits)
     {
         int n = System.Numerics.BitOperations.PopCount(hits);
-        while (hits != 0)
+        // Every hit square holds a piece, so the white ones are hits & White occupancy and the rest are black:
+        // the colour offset of the bucket is then a constant per half and ColorAt is never asked.
+        ulong white = hits & board.Occupancy(Color.White);
+        ulong black = hits ^ white;
+        while (white != 0)
         {
-            int to = System.Numerics.BitOperations.TrailingZeroCount(hits);
-            hits &= hits - 1;
-            counts[row + (int)board.ColorAt(to) * 6 + (int)board.PieceTypeAt(to)]++;
+            int to = System.Numerics.BitOperations.TrailingZeroCount(white);
+            white &= white - 1;
+            counts[row + (int)board.PieceTypeAt(to)]++;
+        }
+        row += 6;
+        while (black != 0)
+        {
+            int to = System.Numerics.BitOperations.TrailingZeroCount(black);
+            black &= black - 1;
+            counts[row + (int)board.PieceTypeAt(to)]++;
         }
         return n;
     }
