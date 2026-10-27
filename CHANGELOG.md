@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-10-27 (v6.3.1) - node-identical speed and start-up: the magics are stored, a fresh engine starts in 0.5 s
+
+**Nothing the search sees changed.** Same net (`fqgen14`), same constants, same nodes (CI node count 198226), 496 tests.
+
+**Start-up.** The engine searched for the 128 magic multipliers of its sliding-piece tables at every start (a fixed-seed random search that the source comment priced at a few tens of milliseconds): 2.2 s of user CPU per process on the training box, and lichess-bot starts a fresh engine for every game. The 128 results are now stored as constants and the tables are filled straight from them, byte for byte the same tables: the engine answers `uciok` in 0.54 s instead of 2.42 s (median of five starts, same loaded box, same executable otherwise).
+
+**The first searches.** A fresh process also searched slowly for its first seconds, because tiered compilation promotes hot ReadyToRun code only after a 100 ms quiet period that every newly called method restarts: the first three searches of a process ran at 208k nodes/s and the next seven at 377k, against 450k at steady state. `System.Runtime.TieredCompilation.CallCountingDelayMs=0` in the runtime configuration (the same setting as `DOTNET_TC_CallCountingDelayMs=0`) brings them to 339k and 452k with the steady state unchanged (449k and 454k over searches 11-40).
+
+**Speed.** `NnueCoarse.CountHits`, the histogram step of the coarse lane, splits each hit set by colour with one occupancy mask instead of asking the colour of every square: byte-identical nodes and +2.97% nodes per second (paired, p = 0.00001).
+
+**Option list.** `uci` advertised `UseNNUE` with default false although the embedded net is switched on at the first `isready` unless the GUI sends false; it now advertises true, the behaviour it always had, so a GUI that saves the advertised defaults cannot leave the engine on the classical evaluator.
+
+**Checks.** The 150-position set to depth 13, base against candidate: 0 positions with a different node count, 0 with a different best move (`ab_speed.py`), paired time +2.26% pooled over two interleaved pairs (that includes one start per run); CI node count 198226 unchanged; 496 tests. No SPRT: nothing the search sees changed. Its CCRL gauntlet is pending; the search and the net are those of v6.3.0, whose gauntlet read 3422 +/- 51.
+
 ## 2026-10-23 (v6.3.0) - fqgen14 embedded: deep labels on the positions of the bot's own games, +10.7 Elo over fqgen11
 
 **The release is the net.** The search is unchanged from v6.2.1 (CI node count 198226, 496 tests). A 14-epoch re-entry from `fqgen11` (lr 1.371433e-4 to 1e-5, lambda 0.735 -> 0.7, seed 17, architecture unchanged) over the corpus plus `deep10`: the positions of the bot's own games (974,216 distinct positions from 8,127 games of the Mac and Windows bots, 2026-08-07 to 2026-10-22, from ply 8 on, side to move not in check), relabelled at 40,000 nodes by `fqgen11` with the tablebases probed in the search, weight 4x: **+10.7 +/- 8.6 Elo at 100,000 fixed nodes, 565-486-1508 over 2,559 games, LOS 99.3%, LLR +2.96, H1** against `fqgen11`.
