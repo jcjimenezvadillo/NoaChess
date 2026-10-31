@@ -54,7 +54,7 @@ public sealed class AlphaBetaSearch
     // edges) land just below the band, and a wider ToTT threshold starts
     // ply-shifting them, which changed off-state node counts. Any resistance
     // grade has to live outside the score space entirely (see SearchRoot).
-    private const int TbScoreBound = TbWin - MaxPly;
+    internal const int TbScoreBound = TbWin - MaxPly;
 
     // Scale used by the reference root DTZ ranking. It leaves separate bands
     // for certain wins/losses and outcomes affected by the fifty-move rule.

@@ -173,4 +173,59 @@ public class VoteBestResultTests
 
         Assert.Equal(helperMove, chosen.BestMove);
     }
+
+    [Fact]
+    public void TablebaseLossIsResistedLongestNotCountedByHeads()
+    {
+        // lichess.org/ipgJS7HK, 2026-10-29: every move lost by tablebase and the
+        // main worker's longest resistance (-19978 on the wire) lost the vote to
+        // a faster loss (-19990) that three helpers had found, because a
+        // tablebase score is below the mate range and so counted as an ordinary
+        // score. Among lost lines the longest resistance wins whatever the count.
+        Move resists = MoveOf(12, 28);
+        Move fasterLoss = MoveOf(11, 27);
+        int slow = -AlphaBetaSearch.TbWin + 20;
+        int fast = -AlphaBetaSearch.TbWin + 4;
+
+        SearchResult chosen = Vote(
+            new SearchResult(resists, slow, 100_000, 24),
+            new SearchResult(fasterLoss, fast, 90_000, 24),
+            new SearchResult(fasterLoss, fast, 90_000, 24),
+            new SearchResult(fasterLoss, fast, 90_000, 24));
+
+        Assert.Equal(resists, chosen.BestMove);
+    }
+
+    [Fact]
+    public void TablebaseWinPrefersTheFasterConversionOverTheCrowd()
+    {
+        // The same band on the winning side: the line that converts soonest has
+        // the higher score, and three helpers agreeing on a slower win must not
+        // outvote it.
+        Move quick = MoveOf(12, 28);
+        Move slower = MoveOf(11, 27);
+
+        SearchResult chosen = Vote(
+            new SearchResult(quick, AlphaBetaSearch.TbWin - 10, 100_000, 20),
+            new SearchResult(slower, AlphaBetaSearch.TbWin - 30, 90_000, 20),
+            new SearchResult(slower, AlphaBetaSearch.TbWin - 30, 90_000, 20),
+            new SearchResult(slower, AlphaBetaSearch.TbWin - 30, 90_000, 20));
+
+        Assert.Equal(quick, chosen.BestMove);
+    }
+
+    [Fact]
+    public void WorkerThatEscapesATablebaseLossTakesTheMove()
+    {
+        // A lost main worker must still hand the move to a helper that found a
+        // line which is not lost.
+        Move lost = MoveOf(12, 28);
+        Move holds = MoveOf(11, 27);
+
+        SearchResult chosen = Vote(
+            new SearchResult(lost, -AlphaBetaSearch.TbWin + 12, 100_000, 18),
+            new SearchResult(holds, -30, 90_000, 18));
+
+        Assert.Equal(holds, chosen.BestMove);
+    }
 }
