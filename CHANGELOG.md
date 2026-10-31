@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-10-31 (v6.3.2) - the Lazy SMP vote no longer outvotes the longest resistance in a tablebase loss
+
+**A correctness fix from reviewing the bot's lost games.** The Lazy SMP vote (`ChessEngine.VoteBestResult`) took its "decisive" bound at the mate range, so a tablebase verdict, which sits just below it, was an ordinary score and the vote counted heads: with every move lost by tablebase, three helpers that had found the faster loss (-19990 on the wire) outvoted the main worker's longest resistance (-19978). Found in the bot's game of 2026-10-29 (lichess.org/ipgJS7HK, move 52) while reviewing the 207 games it lost between 2026-10-22 and 2026-10-30 with an independent judge (Renegade at depth 13, every legal alternative judged for each drop): only 16 moves in 15 of those 207 games were real throw-aways, and this was the one defect of the engine among them. The decisive bound is now the bottom of the tablebase band and a lost line takes the best score among the workers (the longest resistance), as it already did for mates. Two of the three new tests fail on the old code.
+
+Nothing changes outside tablebase and mate scores: one thread never votes, and the CI node count is 198226 as before; 499 tests. No SPRT can price it (a rare ending, the same strength when the position is not decided by tablebase). v6.3.1's gauntlet of 3425 +/- 24 stands.
+
+Measured in the same cycle and left out: `TimeScale` 135 against 100 at 60+0.6, 0.0 +/- 15.7 over 442 games (H0; the bot's 790 games since 2026-10-22 show it spending 0.96-0.98 of what its opponents spend, so there is no clock left unused); the root-score `Optimism` (+13.2 +/- 10.3 at 100,000 fixed nodes, H1 over 1,715 games, but +2.5 +/- 5.6 over 6,000 games at 10+0.1) and its constants (maximum 60, 180, 260; divisor 45, 170: all null) stay off.
+
 ## 2026-10-27 (v6.3.1) - node-identical speed and start-up: the magics are stored, a fresh engine starts in 0.5 s
 
 **Nothing the search sees changed.** Same net (`fqgen14`), same constants, same nodes (CI node count 198226), 496 tests.

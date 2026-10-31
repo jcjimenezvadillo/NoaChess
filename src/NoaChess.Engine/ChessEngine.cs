@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "6.3.1";
+    public const string Version = "6.3.2";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -649,7 +649,13 @@ public sealed class ChessEngine
     // worker contributes its last completed iteration's best move and score.
     private SearchResult VoteBestResult(SearchResult[] results)
     {
-        const int decisiveBound = AlphaBetaSearch.MateScore - 1000;
+        // The decisive range starts at the bottom of the tablebase band, not at
+        // the mate range: a tablebase verdict is as certain as a mate and sits
+        // just below it (see TbScoreBound). With the bound at the mate range a
+        // tablebase loss was an ordinary score and the vote counted heads: on
+        // 2026-10-29 (lichess.org/ipgJS7HK, move 52) the main worker's longest
+        // resistance, -19978, lost the vote to a faster loss, -19990.
+        const int decisiveBound = AlphaBetaSearch.TbScoreBound;
 
         // A HELPER MAY ONLY VOTE IF IT SEARCHED AT LEAST AS DEEP AS THE MAIN
         // WORKER. Scores from different depths are not comparable: a helper
@@ -721,12 +727,21 @@ public sealed class ChessEngine
             // already keeps mated workers out of the ordinary vote, so with
             // the sign restored a lost result can no longer win anything.
             bool bestDecisive = best.Score >= decisiveBound;
+            bool bestLost = best.Score <= -decisiveBound;
             bool curDecisive = cur.Score >= decisiveBound;
 
             if (bestDecisive)
             {
                 // Among winning lines prefer the shortest mate: higher score.
                 if (curDecisive && cur.Score > best.Score)
+                    bestIdx = i;
+            }
+            else if (bestLost)
+            {
+                // Every line seen so far loses by force: take the one that
+                // resists longest, or any worker that found something better,
+                // and never count heads among defeats.
+                if (cur.Score > best.Score)
                     bestIdx = i;
             }
             else if (curDecisive
