@@ -421,7 +421,7 @@ public static class MovePicker
         if (killerRank == 2)
             quietScore += SearchParams.KillerBonus;
         else if (killerRank == 1)
-            quietScore += SearchParams.KillerBonus * 3 / 4;
+            quietScore += SearchParams.KillerBonus * SearchParams.KillerOlderShare / 16;
 
         // Not exclusive with the killer bonus: a move that is both the killer
         // at this ply AND the refutation of the opponent's last move carries

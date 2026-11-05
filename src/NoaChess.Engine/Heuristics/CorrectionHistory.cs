@@ -1,4 +1,5 @@
 using NoaChess.Core;
+using NoaChess.Engine.Search;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -25,7 +26,6 @@ public sealed class CorrectionHistory
     // Entries are stored at Scale times the centipawn residual so the
     // exponential update below keeps sub-centipawn resolution in integers.
     public const int Scale = 64;
-    private const int MaxCorrectionCp = 256;
 
     // FLAT, not int[2, TableSize]: read on every corrected static evaluation.
     // Layout: side * TableSize + slot.
@@ -51,8 +51,8 @@ public sealed class CorrectionHistory
     // 1,209). Neither more correction nor gentler updates pay here.
     public void Update(Board board, ulong key, int errorCp, int depth)
     {
-        int target = Math.Clamp(errorCp, -MaxCorrectionCp, MaxCorrectionCp) * Scale;
-        int weight = Math.Min(16 + depth * depth, 128);
+        int target = Math.Clamp(errorCp, -SearchParams.CorrMaxCp, SearchParams.CorrMaxCp) * Scale;
+        int weight = Math.Min(SearchParams.CorrUpdBase + depth * depth, SearchParams.CorrUpdCap);
         ref int entry = ref _entries[Index(board, key)];
 
         // Bounded exponential update toward the observed residual. Deep results

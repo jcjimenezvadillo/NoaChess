@@ -1,4 +1,5 @@
 using NoaChess.Core;
+using NoaChess.Engine.Search;
 
 namespace NoaChess.Engine.Heuristics;
 
@@ -45,8 +46,17 @@ public sealed class HistoryTable
     // previous moves still helps ordering but decays over time.
     public void Decay()
     {
-        for (int i = 0; i < _scores.Length; i++)
-            _scores[i] >>= 1;
+        int keep = SearchParams.HistDecay;
+        if (keep == 512)
+        {
+            for (int i = 0; i < _scores.Length; i++)
+                _scores[i] >>= 1;
+        }
+        else
+        {
+            for (int i = 0; i < _scores.Length; i++)
+                _scores[i] = _scores[i] * keep / 1024;
+        }
     }
 
     // Rewards a quiet move that caused a beta cutoff at the given depth.
