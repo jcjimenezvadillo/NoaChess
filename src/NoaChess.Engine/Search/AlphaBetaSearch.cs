@@ -472,31 +472,7 @@ public sealed class AlphaBetaSearch
             : 0;
     }
     private readonly CaptureHistory _captureHistory = new();
-    private CorrectionHistorySet _corrections = new();
-    private bool _sharesCorrections;
-
-    // Lazy SMP helpers can read and write the main worker's correction tables
-    // instead of keeping their own (reference: shared correction history, passed
-    // 8 and 64 threads at the clock). Tables hold plain ints updated by a bounded
-    // moving average, so a racy read or write is a slightly stale estimate and
-    // nothing worse. No effect at one thread. Pass null to go back to own tables.
-    public void ShareCorrectionsWith(AlphaBetaSearch? main)
-    {
-        if (main is not null)
-        {
-            _corrections = main._corrections;
-            _sharesCorrections = true;
-        }
-        else if (_sharesCorrections)
-        {
-            _corrections = new CorrectionHistorySet();
-            _sharesCorrections = false;
-        }
-    }
-
-    // Odd-numbered helpers reduce the null-move search one ply less than the rest
-    // (reference, SMP diversification). No effect on the main worker.
-    public bool UseSmpOddNmp = false;
+    private readonly CorrectionHistorySet _corrections = new();
 
     // Key for the continuation correction table: the (piece, destination) of
     // the move that reached this node, or 0 at the root and after a null move
@@ -506,13 +482,6 @@ public sealed class AlphaBetaSearch
     private ulong ContinuationCorrectionKey(int ply)
         => ply > 0 && _stackPiece[ply - 1] >= 0
             ? CorrectionHistorySet.ContinuationKey(_stackPiece[ply - 1], _stackTo[ply - 1])
-            : 0;
-
-    // Pair key (moves at ply - 2 and ply - 1), or 0 while the pair table is off
-    // (SearchParams.CorrPairW == 0) or either move is missing (root, after a null).
-    private ulong PairCorrectionKey(int ply)
-        => SearchParams.CorrPairW != 0 && ply > 1 && _stackPiece[ply - 1] >= 0 && _stackPiece[ply - 2] >= 0
-            ? CorrectionHistorySet.PairKey(_stackPiece[ply - 2], _stackTo[ply - 2], _stackPiece[ply - 1], _stackTo[ply - 1])
             : 0;
 
     private readonly Stopwatch _timer = new();
@@ -4364,7 +4333,7 @@ public sealed class AlphaBetaSearch
 
             int optimismTerm = OptimismTerm(board);
             staticEval = _corrections.Correct(board, rawStaticEval + optimismTerm,
-                                              ContinuationCorrectionKey(ply), PairCorrectionKey(ply));
+                                              ContinuationCorrectionKey(ply));
             correctionDelta = staticEval - rawStaticEval - optimismTerm;
         }
 
@@ -4409,21 +4378,6 @@ public sealed class AlphaBetaSearch
             : ply >= 4 && _stackEval[ply - 4] != NoEval ? staticEval - _stackEval[ply - 4]
             : 0;
         bool improving = improvement > 0;
-
-        // ---- Eval-swing history (EvalDiffScale, 0 = off) ----
-        // The reference credits or debits the opponent's previous quiet move by
-        // how far the static eval moved across it: if the eval seen from here
-        // plus the eval seen from the parent (opposite sides) is negative, the
-        // move gained for the side that played it. Scale and centre are tunable
-        // because our history amounts are far smaller than the reference's.
-        if (SearchParams.EvalDiffScale != 0 && !inCheck && excluded == Move.None && ply > 0
-            && _stackPiece[ply - 1] >= 0 && _stackEval[ply - 1] != NoEval && _stackVictim[ply - 1] == 6
-            && !_stackMove[ply - 1].IsPromotion)
-        {
-            int swing = Math.Clamp(-(_stackEval[ply - 1] + staticEval), -91, 93) + SearchParams.EvalDiffCenter;
-            _history.Add(Board.OppositeColor(board.SideToMove), _stackMove[ply - 1],
-                         SearchParams.EvalDiffScale * swing);
-        }
 
         // ---- Hindsight depth (HindsightDepth) ----
         if (UseHindsightDepth && !inCheck && excluded == Move.None && ply > 0
@@ -4482,8 +4436,6 @@ public sealed class AlphaBetaSearch
             && excluded == Move.None
             && pruningEval >= beta
             && pruningEval - SearchParams.RfpMargin * depth + (improving ? SearchParams.RfpImproving : 0)
-               + (SearchParams.RfpOppWorsening != 0 && ply > 0 && _stackEval[ply - 1] != NoEval
-                  && staticEval > -_stackEval[ply - 1] ? SearchParams.RfpOppWorsening : 0)
                - (ply > 0 ? _stackStatScore[ply - 1] : 0) / SearchParams.RfpStatDiv >= beta)
             return pruningEval;
 
@@ -4546,8 +4498,6 @@ public sealed class AlphaBetaSearch
             // onset at 8 neither recovers the tactics nor keeps the nodes).
             // SearchParams.NmpBase + depth / NmpDepthDiv (3 + depth / 4).
             int r = SearchParams.NmpBase + depth / SearchParams.NmpDepthDiv;
-            if (UseSmpOddNmp && (WorkerIndex & 1) == 1)
-                r--;
             // NmpEvalR: the reference's eval-proportional term on our base R,
             // (eval - beta) / 168 in its units, 81 here (NmpEvalDiv), at most
             // three plies.
@@ -5566,12 +5516,6 @@ public sealed class AlphaBetaSearch
                     // applies.
                     if (ttCapture) r += SearchParams.LmrTtCapture;
 
-                    // LmrAlphaGap (0 = off): reduce quiets more the further the eval
-                    // sits below alpha (the reference's 3 * clamp(alpha - eval, -64, 96)
-                    // in 1024ths, in our x0.48 units), less when it is already above.
-                    if (SearchParams.LmrAlphaGap != 0 && !move.IsCapture && alpha > -TbScoreBound && alpha < TbScoreBound)
-                        r += SearchParams.LmrAlphaGap * Math.Clamp(alpha - pruningEval, -30, 46);
-
                     // NO cutNode reduction term. The reference's largest LMR
                     // adjuster (r += 4026 at cut nodes) was measured at two
                     // magnitudes and rejected both times: 4026 (~3.9 plies) at
@@ -5733,15 +5677,6 @@ public sealed class AlphaBetaSearch
                             // The depth^2 amounts, each scaled by its
                             // SearchParams 64ths (64 = depth^2 exactly).
                             int depthSq = depth * depth;
-                            // The reference's two history amplifiers, as separate
-                            // knobs (0 = off): a bigger credit when the TT move is
-                            // the one that cut, and credit growing with how many
-                            // moves were tried before the cutoff at non-PV nodes.
-                            if (SearchParams.HistTtMoveBonus != 0 && move == ttMove)
-                                depthSq += depthSq * SearchParams.HistTtMoveBonus / 100;
-                            if (SearchParams.HistTriedScale != 0 && nonPv)
-                                depthSq += (int)((long)depthSq * (triedQuietCount + triedCaptureCount)
-                                                 * SearchParams.HistTriedScale / 1024);
                             int quietMalus = 0;
                             if (UseHistoryBonus)
                             {
@@ -5920,7 +5855,7 @@ public sealed class AlphaBetaSearch
             if (!inCheck && (quietBest && boundAgrees || failLowLearn)
                 && Math.Abs(bestScore) < TbScoreBound)
                 _corrections.Update(board, bestScore - staticEval, depth,
-                                    ContinuationCorrectionKey(ply), PairCorrectionKey(ply));
+                                    ContinuationCorrectionKey(ply));
         }
 
         // PriorFailLowBonus (reference step 20). This node failed low, so

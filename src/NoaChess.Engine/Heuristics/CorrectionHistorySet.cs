@@ -53,14 +53,9 @@ public sealed class CorrectionHistorySet
     // piece placement") is invisible to a colour-blind key.
     private readonly CorrectionHistory[] _nonPawn = [new(), new()];
     private readonly CorrectionHistory _continuation = new();
-    // Keyed by the PAIR of the last two moves (the reference's continuation
-    // correction reads the move two plies up together with the arriving move).
-    // Read and written only while SearchParams.CorrPairW is non-zero.
-    private readonly CorrectionHistory _pair = new();
 
     public void Clear()
     {
-        _pair.Clear();
         _pawn.Clear();
         _minor.Clear();
         _major.Clear();
@@ -72,7 +67,7 @@ public sealed class CorrectionHistorySet
     // Corrects a raw static evaluation. 'continuationKey' encodes the move that
     // led here (see ContinuationKey); pass 0 at the root or after a null move,
     // where there is no such move and the table has nothing to say.
-    public int Correct(Board board, int rawEval, ulong continuationKey, ulong pairKey = 0)
+    public int Correct(Board board, int rawEval, ulong continuationKey)
     {
         long weighted =
             (long)SearchParams.CorrPawnW * _pawn.RawEntry(board, board.PawnZobristKey)
@@ -83,9 +78,6 @@ public sealed class CorrectionHistorySet
                    + _nonPawn[1].RawEntry(board, board.NonPawnZobristKey(Color.Black)))
             + (continuationKey != 0
                 ? (long)SearchParams.CorrContW * _continuation.RawEntry(board, continuationKey)
-                : 0)
-            + (pairKey != 0
-                ? (long)SearchParams.CorrPairW * _pair.RawEntry(board, pairKey)
                 : 0);
 
         // One rounding step at the end, over the combined numerator, instead of
@@ -97,7 +89,7 @@ public sealed class CorrectionHistorySet
     // Feeds the observed residual to every table. They all learn from the same
     // observation; what differs is the key each one files it under, which is
     // what lets them generalise over different things.
-    public void Update(Board board, int errorCp, int depth, ulong continuationKey, ulong pairKey = 0)
+    public void Update(Board board, int errorCp, int depth, ulong continuationKey)
     {
         _pawn.Update(board, board.PawnZobristKey, errorCp, depth);
         _minor.Update(board, board.MinorZobristKey, errorCp, depth);
@@ -106,16 +98,6 @@ public sealed class CorrectionHistorySet
         _major.Update(board, board.MajorZobristKey, errorCp, depth);
         if (continuationKey != 0)
             _continuation.Update(board, continuationKey, errorCp, depth);
-        if (pairKey != 0)
-            _pair.Update(board, pairKey, errorCp, depth);
-    }
-
-    // Key for the pair table: (piece, destination) of the moves at ply - 2 and
-    // ply - 1, mixed so the low bits the table indexes by depend on both.
-    public static ulong PairKey(int pieceIndex2, int toSquare2, int pieceIndex1, int toSquare1)
-    {
-        ulong pair = (ulong)(((pieceIndex2 * 64) + toSquare2) * 768 + (pieceIndex1 * 64) + toSquare1);
-        return ((pair * 0x9E3779B97F4A7C15UL) >> 40) + 1;
     }
 
     // Key for the continuation table: the (piece, destination) of the move that

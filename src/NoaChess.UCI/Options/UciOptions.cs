@@ -107,8 +107,6 @@ public sealed class UciOptions
     public bool ClockDeficitBrake { get; private set; } = true;
     public bool SmpDiversify { get; private set; }
     public bool SmpAspDiversify { get; private set; }
-    public bool SmpOddNmp { get; private set; }
-    public bool SmpSharedCorrection { get; private set; }
     public bool SmpVoteAll { get; private set; }
     public bool CutNodeLmr { get; private set; }
     public bool CutNodeLmrTtPv { get; private set; }
@@ -294,8 +292,6 @@ public sealed class UciOptions
         output.WriteLine("option name ClockDeficitBrake type check default true");
         output.WriteLine("option name SmpDiversify type check default false");
         output.WriteLine("option name SmpAspDiversify type check default false");
-        output.WriteLine("option name SmpOddNmp type check default false");
-        output.WriteLine("option name SmpSharedCorrection type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
         output.WriteLine("option name CutNodeLmr type check default false");
         output.WriteLine("option name CutNodeLmrTtPv type check default false");
@@ -549,12 +545,6 @@ public sealed class UciOptions
             case "smpaspdiversify" when bool.TryParse(value, out bool sad):
                 SmpAspDiversify = sad;
                 return "SmpAspDiversify";
-            case "smpoddnmp" when bool.TryParse(value, out bool son):
-                SmpOddNmp = son;
-                return "SmpOddNmp";
-            case "smpsharedcorrection" when bool.TryParse(value, out bool ssc):
-                SmpSharedCorrection = ssc;
-                return "SmpSharedCorrection";
             case "smpvoteall" when bool.TryParse(value, out bool sva):
                 SmpVoteAll = sva;
                 return "SmpVoteAll";
