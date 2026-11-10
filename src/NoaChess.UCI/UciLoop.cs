@@ -1130,10 +1130,6 @@ public sealed class UciLoop
             _engine.UseSmpDiversify = _options.SmpDiversify;
         if (changed == "SmpAspDiversify")
             _engine.UseSmpAspDiversify = _options.SmpAspDiversify;
-        if (changed == "SmpOddNmp")
-            _engine.UseSmpOddNmp = _options.SmpOddNmp;
-        if (changed == "SmpSharedCorrection")
-            _engine.UseSmpSharedCorrection = _options.SmpSharedCorrection;
         if (changed == "SmpVoteAll")
             _engine.UseSmpVoteAll = _options.SmpVoteAll;
         if (changed == "CutNodeLmr")

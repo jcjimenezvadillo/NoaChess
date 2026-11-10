@@ -1,4 +1,4 @@
-﻿using NoaChess.Core;
+using NoaChess.Core;
 using NoaChess.Engine.Evaluation.Classical;
 using NoaChess.Engine.Evaluation.Nnue;
 using NoaChess.Engine.Search;
@@ -15,7 +15,7 @@ namespace NoaChess.Engine;
 // finishing/cancelling one search before starting the next.
 public sealed class ChessEngine
 {
-    public const string Version = "6.3.3";
+    public const string Version = "6.3.4";
 
     private readonly AlphaBetaSearch _search = new(new ClassicalEvaluator());
 
@@ -428,8 +428,6 @@ public sealed class ChessEngine
         {
             h.UseSmpDiversify = _search.UseSmpDiversify;
             h.UseSmpAspDiversify = _search.UseSmpAspDiversify;
-            h.UseSmpOddNmp = _search.UseSmpOddNmp;
-            h.ShareCorrectionsWith(_smpSharedCorrection ? _search : null);
             h.Profile = _search.Profile;
             h.UseOptimism = _search.UseOptimism;
             h.UseFailLowCorrection = _search.UseFailLowCorrection;
@@ -1209,20 +1207,6 @@ public sealed class ChessEngine
     {
         get => _search.UseSmpAspDiversify;
         set => _search.UseSmpAspDiversify = value;
-    }
-
-    public bool UseSmpOddNmp
-    {
-        get => _search.UseSmpOddNmp;
-        set => _search.UseSmpOddNmp = value;
-    }
-
-    // Helpers share the main worker's correction tables (see AlphaBetaSearch).
-    private bool _smpSharedCorrection;
-    public bool UseSmpSharedCorrection
-    {
-        get => _smpSharedCorrection;
-        set => _smpSharedCorrection = value;
     }
 
     // Widens the vote to helpers one completed iteration behind the main
