@@ -154,22 +154,6 @@ public static class SearchParams
     public static int HindsightDownDelta = 40;
     // A null-move cutoff at or above this depth is verified by a real search.
     public static int NmpVerifyDepth = 14;
-    // Eval-swing history for the opponent's previous quiet move (0 = off).
-    public static int EvalDiffScale = 0;
-    public static int EvalDiffCenter = 0;
-    // Reverse futility: extra margin credit when the opponent's last move did not
-    // help it (our eval is above minus the parent's). 0 = off.
-    public static int RfpOppWorsening = 0;
-    // LMR: 1024ths of a ply per centipawn of (alpha - eval), clamped. 0 = off.
-    public static int LmrAlphaGap = 0;
-    // History decay between searches in 1024ths kept (512 = halve, as always).
-    public static int HistDecay = 512;
-    // History credit amplifiers at a quiet beta cutoff (0 = off): percent extra
-    // when the cutting move is the TT move; 1024ths extra per move tried before
-    // the cutoff at non-PV nodes.
-    public static int HistTtMoveBonus = 0;
-    // Weight of the pair-keyed correction table (0 = off, table untouched).
-    public static int CorrPairW = 0;
     // Correction history: minor and major piece table weights (were the fixed
     // 32), update rate min(CorrUpdBase + depth^2, CorrUpdCap) over 256, clamp
     // of one observation and of the total correction in centipawns.
@@ -179,7 +163,6 @@ public static class SearchParams
     public static int CorrUpdCap = 128;
     public static int CorrMaxCp = 256;
     public static int CorrTotalMax = 320;
-    public static int HistTriedScale = 0;
 
     public sealed record Param(string Name, int Default, int Min, int Max,
                                Func<int> Get, Action<int> Set);
@@ -248,14 +231,6 @@ public static class SearchParams
         new("HindsightUpRed", HindsightUpRed, 1, 5, () => HindsightUpRed, v => HindsightUpRed = v),
         new("HindsightDownDelta", HindsightDownDelta, 0, 150, () => HindsightDownDelta, v => HindsightDownDelta = v),
         new("NmpVerifyDepth", NmpVerifyDepth, 6, 24, () => NmpVerifyDepth, v => NmpVerifyDepth = v),
-        new("EvalDiffScale", EvalDiffScale, 0, 8, () => EvalDiffScale, v => EvalDiffScale = v),
-        new("EvalDiffCenter", EvalDiffCenter, -60, 60, () => EvalDiffCenter, v => EvalDiffCenter = v),
-        new("RfpOppWorsening", RfpOppWorsening, 0, 120, () => RfpOppWorsening, v => RfpOppWorsening = v),
-        new("LmrAlphaGap", LmrAlphaGap, 0, 12, () => LmrAlphaGap, v => LmrAlphaGap = v),
-        new("HistDecay", HistDecay, 128, 1024, () => HistDecay, v => HistDecay = v),
-        new("HistTtMoveBonus", HistTtMoveBonus, 0, 100, () => HistTtMoveBonus, v => HistTtMoveBonus = v),
-        new("HistTriedScale", HistTriedScale, 0, 16, () => HistTriedScale, v => HistTriedScale = v),
-        new("CorrPairW", CorrPairW, 0, 96, () => CorrPairW, v => CorrPairW = v),
         new("CorrMinorW", CorrMinorW, 0, 96, () => CorrMinorW, v => CorrMinorW = v),
         new("CorrMajorW", CorrMajorW, 0, 96, () => CorrMajorW, v => CorrMajorW = v),
         new("CorrUpdBase", CorrUpdBase, 4, 64, () => CorrUpdBase, v => CorrUpdBase = v),

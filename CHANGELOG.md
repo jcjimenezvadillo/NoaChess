@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-11-10 (v6.3.4) - dead options removed after SPSA rounds 7 and 8 and the SMP measurements; the v6.3.3 gauntlet reads 3439 +/- 25
+
+**Nothing left to tune at this level, and the code says so.** Rounds 7 and 8 of the SPSA tuner found nothing to add to the v6.3.3 constants. Round 7 priced 27 new tunable constants (hard-coded literals until then, plus seven off-by-default features) at 10+0.1: its final values against the v6.3.3 defaults read 1006-1049-3945 over 6,000 games, -2.5 +/- 5.1. Round 8 re-tuned all 72 constants at 30+0.3 (2,000 iterations, 16,000 games, 25 h 36 min): its final values against the defaults read 383-419-2198 over 3,000 games, -4.2 +/- 6.4. The seven features that never paid are deleted from the code: the eval-swing history credit (`EvalDiffScale`, `EvalDiffCenter`), the opponent-worsening reverse futility term (`RfpOppWorsening`), the alpha-gap LMR term (`LmrAlphaGap`), the history decay rate (`HistDecay`), the two history amplifiers (`HistTtMoveBonus`, `HistTriedScale`) and the correction table keyed by the last two moves (`CorrPairW`). The 19 constants that were literals stay tunable at their old values.
+
+Two SMP options added in v6.3.3, `SmpSharedCorrection` (the helpers share the main worker's correction tables) and `SmpOddNmp` (odd helpers reduce the null move one ply less), are deleted too. Measured without games, as the paired time to the same depth at four threads over 60 positions (depth 18, two repetitions, the arms interleaved): shared tables 1.060 [0.996, 1.128], odd null move 1.048 [0.993, 1.106], both 1.083 [1.024, 1.145] (ratio of the option's time to the default's, above 1.0 is slower), against a control with the same options on both arms, 0.989 [0.932, 1.049]. None is faster, and the pair is slower.
+
+The gauntlet of v6.3.3, which v6.3.4 plays identically: 1,008 games at 60+0.6, one thread, ponder off, against 12 engines carrying a CCRL rating, 66.9 %, a performance of 3439 +/- 25 on the CCRL scale (field average 3305), against 3425 +/- 24 (65.1 %) for v6.3.1: the +14 that SPSA round 6 measured at the clock.
+
+Play is identical to v6.3.3: the CI node count is 166090 as before; 503 tests.
+
 ## 2026-11-05 (v6.3.3) - SPSA round 6 at the clock retunes 30 search constants (+14 Elo at 10+0.1)
 
 **The first constants round that pays at the clock.** Round 6 of the SPSA tuner ran at the clock (10+0.1, one thread, 16 games at once) instead of at 25,000 fixed nodes, starting from the v6.3.2 values of all 45 tunable constants: 5,000 iterations, 40,000 games, 24 h 49 min. Thirty of the 45 constants moved; the larger moves are LmrNonPv 976 to 909, LmrHistWeight 1632 to 1533, LmrTtPv 828 to 765, AspWindow 30 to 21, HistMalus 71 to 82, ContHistMalus 67 to 76, KillerBonus 4133 to 4737, CounterMoveBonus 2245 to 2438, NmpMinDepth 4 to 3, FutilityDepth 4 to 5 and CapSeeDepth 2 to 3.
