@@ -15,6 +15,10 @@ namespace NoaChess.UCI.Options;
 // - UseNNUE / EvalFile: neural evaluation switch and model path (v2.0).
 public sealed class UciOptions
 {
+    // Largest table the options accept. The table indexes 16-byte entries with an int (good for 32 GB) and its
+    // fallback block is one managed array whose length is (bytes / 8) as an int (good for 8 GB), so 8192 is the
+    // safe ceiling; the bot sets 4096 and the table is still rounded down to a power of two of clusters.
+    public const int MaxHashMb = 8192;
     public int Hash { get; private set; } = 64;
     // Transposition table in large pages when the OS grants them (Windows,
     // "Lock pages in memory"); falls back to normal pages silently.
@@ -227,7 +231,7 @@ public sealed class UciOptions
     // Prints the option declarations the GUI expects right after "id".
     public void Print(TextWriter output)
     {
-        output.WriteLine("option name Hash type spin default 64 min 1 max 1024");
+        output.WriteLine($"option name Hash type spin default 64 min 1 max {MaxHashMb}");
         output.WriteLine("option name LargePages type check default true");
         output.WriteLine("option name Threads type spin default 1 min 1 max 32");
         output.WriteLine("option name MoveOverhead type spin default 30 min 0 max 5000");
@@ -335,7 +339,7 @@ public sealed class UciOptions
         switch (name.ToLowerInvariant())
         {
             case "hash" when int.TryParse(value, out int hash):
-                Hash = Math.Clamp(hash, 1, 1024);
+                Hash = Math.Clamp(hash, 1, MaxHashMb);
                 return "Hash";
 
             case "largepages" when bool.TryParse(value, out bool largePages):
