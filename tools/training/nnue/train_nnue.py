@@ -105,8 +105,14 @@ def make_loss(args):
     if args.loss_style == "mse":
         # What every net so far was trained with: squared error between the net's
         # sigmoid and a target built with one 400 cp scale.
-        def mse_loss(raw, scores, results, lam):
-            return torch.mean((torch.sigmoid(raw) - wdl_target(scores, results, lam)) ** 2)
+        def mse_loss(raw, scores, results, lam, teacher_raw=None, kd=0.0):
+            target = wdl_target(scores, results, lam)
+            if teacher_raw is not None and kd > 0.0:
+                lam_t = lam * kd
+                score_p = torch.sigmoid(scores / OUTPUT_SCALE)
+                result_p = (results + 1.0) / 2.0
+                target = lam * (1.0 - kd) * score_p + lam_t * torch.sigmoid(teacher_raw) + (1.0 - lam) * result_p
+            return torch.mean((torch.sigmoid(raw) - target) ** 2)
         return mse_loss
 
     # The reference formulation. Three differences from the above, all of them
@@ -114,9 +120,14 @@ def make_loss(args):
     # sigmoid, separate scalings for the net and for the label (the net's output
     # distribution is not the teacher's), and an exponent above 2 so large
     # errors are punished harder than squared error punishes them.
-    def reference_loss(raw, scores, results, lam):
+    def reference_loss(raw, scores, results, lam, teacher_raw=None, kd=0.0):
         qf = symmetric_win_rate(raw * OUTPUT_SCALE, args.in_offset, args.in_scaling)
         pf = symmetric_win_rate(scores, args.out_offset, args.out_scaling)
+        if teacher_raw is not None and kd > 0.0:
+            # The teacher speaks the student's own output language, so its win
+            # rate is read through the same mapping the student is scored with.
+            pf = (1.0 - kd) * pf + kd * symmetric_win_rate(teacher_raw * OUTPUT_SCALE,
+                                                           args.in_offset, args.in_scaling)
         t = (results + 1.0) / 2.0
         pt = pf * lam + t * (1.0 - lam)
         return torch.mean(torch.pow(torch.abs(pt - qf), args.pow_exp))
@@ -597,6 +608,12 @@ def main():
     parser.add_argument("--batch", type=int, default=8192)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lambda", dest="lam", type=float, default=0.7)
+    # Soft-label distillation: the label's win rate becomes a mix of the searched
+    # score's and a teacher net's own output (usually a wider net). 0 = off.
+    parser.add_argument("--teacher", default=None,
+                        help="checkpoint of the net whose output is mixed into the label")
+    parser.add_argument("--kd-weight", type=float, default=0.0,
+                        help="share of the label's win rate taken from the teacher (0 = off)")
     # Lambda schedule. Both default to --lambda, so a run that does not ask for
     # a schedule holds it constant exactly as before. Interpolated linearly over
     # the whole run and clamped, which is what the reference does:
@@ -1087,6 +1104,22 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
                     dual=args.dual, l2_out=args.l2_out, psqt_buckets=args.psqt_buckets,
                     coarse=args.coarse).to(device)
 
+    teacher = None
+    if args.teacher and args.kd_weight > 0.0:
+        tck = torch.load(args.teacher, map_location="cpu", weights_only=False)
+        ta = tck["args"]
+        teacher = NoaNnue(int(tck["model"]["ft_bias"].shape[0]), ta.get("l1_out", 32), max(1, ta.get("out_buckets", 1)),
+                          bool(ta.get("factorized", False)), bool(ta.get("qat", False)), ta.get("qa", 255),
+                          threats=bool(ta.get("threats", False)), dual=bool(ta.get("dual", False)),
+                          l2_out=ta.get("l2_out", 32), psqt_buckets=int(ta.get("psqt_buckets", 0) or 0),
+                          coarse=bool(ta.get("coarse", False))).to(device)
+        teacher.load_state_dict(tck["model"])
+        teacher.eval()
+        for prm in teacher.parameters():
+            prm.requires_grad_(False)
+        del tck
+        print(f"teacher: {args.teacher} (FT {int(teacher.ft_bias.shape[0])}), kd weight {args.kd_weight}", flush=True)
+
     # Warm start (--init-from). A 60-epoch run is 40 hours here, and until this
     # existed an interrupted one could only be started over: the reboot of
     # 2026-09-09 killed fqcohuman at epoch 39 of 60 with three days of GPU in
@@ -1313,7 +1346,15 @@ def run_training(args, make_train_batches, make_val_batches, train_total, val_to
                         to_dev(stm_t) if stm_t is not None else None,
                         to_dev(opp_t) if opp_t is not None else None,
                         stm_cd, opp_cd)
-            loss = loss_fn(out, to_dev(scores), to_dev(results), lam)
+            t_out = None
+            if teacher is not None:
+                with torch.no_grad():
+                    t_out = teacher(to_dev(stm), to_dev(opp),
+                                    to_dev(stm_t) if stm_t is not None else None,
+                                    to_dev(opp_t) if opp_t is not None else None,
+                                    stm_cd, opp_cd)
+            loss = loss_fn(out, to_dev(scores), to_dev(results), lam,
+                           teacher_raw=t_out, kd=args.kd_weight)
 
             optimizer.zero_grad()
             loss.backward()
