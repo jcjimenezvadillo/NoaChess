@@ -115,6 +115,11 @@ public sealed class NnueAccumulatorStack
     private readonly int[] _changedCount;
     private int _top;
 
+    // The level the next evaluation is at, and how many levels there are: the
+    // coarse lane keeps one state per level alongside this stack.
+    public int Top => _top;
+    public const int Levels = MaxPly;
+
     public NnueAccumulatorStack(NnueNetwork network)
     {
         _network = network;
