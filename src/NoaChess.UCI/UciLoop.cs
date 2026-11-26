@@ -156,7 +156,8 @@ public sealed class UciLoop
             // divergence gets noticed.
             _output.WriteLine("info string NNUE SIMD path: "
                             + (System.Runtime.Intrinsics.X86.Avx2.IsSupported
-                               ? "AVX2" : "scalar (no AVX2 on this machine)"));
+                               ? "AVX2" : "scalar (no AVX2 on this machine)")
+                            + (_engine.NnueNetwork?.FtWeightsInLargePages == true ? ", weights in large pages" : ""));
             // Auto-enable unless the GUI sent "setoption name UseNNUE value false" first.
             if (!_options.UseNnueExplicitlySet || _options.UseNnue)
                 _engine.SetUseNnue(true);

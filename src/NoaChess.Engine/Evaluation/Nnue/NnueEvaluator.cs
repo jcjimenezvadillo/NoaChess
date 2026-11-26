@@ -118,10 +118,10 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
 
         if (_network.UsesCoarse)
         {
-            _coarseLane ??= new NnueCoarseLane(_network.FtOutputs);
-            _coarseStm ??= new short[_network.FtOutputs];
-            _coarseOpp ??= new short[_network.FtOutputs];
-            _coarseLane.Apply(_network, board, stmAcc, oppAcc, _coarseStm, _coarseOpp);
+            _coarseLane ??= new NnueCoarseLane(_network.FtOutputs, NnueAccumulatorStack.Levels);
+            _coarseStm ??= NnueAlignedArrays.Allocate<short>(_network.FtOutputs);
+            _coarseOpp ??= NnueAlignedArrays.Allocate<short>(_network.FtOutputs);
+            _coarseLane.Apply(_network, board, _accumulators.Top, stmAcc, oppAcc, _coarseStm, _coarseOpp);
             stmAcc = _coarseStm;
             oppAcc = _coarseOpp;
         }
@@ -150,10 +150,25 @@ public sealed class NnueEvaluator : IIncrementalEvaluator
         return Math.Clamp(score, -EvalClamp, EvalClamp);
     }
 
-    public void Reset(Board board) => _accumulators.Reset(board);
-    public void PushMove(Board board, Move move) => _accumulators.PushMove(board, move);
+    public void Reset(Board board)
+    {
+        _accumulators.Reset(board);
+        _coarseLane?.OnReset();
+    }
+
+    public void PushMove(Board board, Move move)
+    {
+        _accumulators.PushMove(board, move);
+        _coarseLane?.OnPush(_accumulators.Top);
+    }
+
     public void CompleteThreatDelta(Board board) => _accumulators.CompleteThreatDelta(board);
-    public void PushNull() => _accumulators.PushNull();
+    public void PushNull()
+    {
+        _accumulators.PushNull();
+        _coarseLane?.OnPush(_accumulators.Top);
+    }
+
     public void Pop() => _accumulators.Pop();
 
     // Shares the read-only network (weights never change after load) but gives

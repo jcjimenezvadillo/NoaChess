@@ -270,14 +270,14 @@ public static class NnueModelLoader
         int offset = 0;
         short[] ReadInt16Array(ReadOnlySpan<byte> src, int count)
         {
-            var result = new short[count];
+            var result = NnueAlignedArrays.Allocate<short>(count);
             for (int i = 0; i < count; i++, offset += 2)
                 result[i] = BinaryPrimitives.ReadInt16LittleEndian(src[offset..]);
             return result;
         }
         int[] ReadInt32Array(ReadOnlySpan<byte> src, int count)
         {
-            var result = new int[count];
+            var result = NnueAlignedArrays.Allocate<int>(count);
             for (int i = 0; i < count; i++, offset += 4)
                 result[i] = BinaryPrimitives.ReadInt32LittleEndian(src[offset..]);
             return result;
@@ -293,7 +293,7 @@ public static class NnueModelLoader
 
         sbyte[] ReadInt8Array(ReadOnlySpan<byte> src, int count)
         {
-            var result = new sbyte[count];
+            var result = NnueAlignedArrays.Allocate<sbyte>(count);
             for (int i = 0; i < count; i++, offset++)
                 result[i] = (sbyte)src[offset];
             return result;
@@ -344,6 +344,7 @@ public static class NnueModelLoader
 
         // The coarse lane, the true last block.
         short[]? coarseWeights = null;
+        sbyte[]? coarseWeightsI8 = null;
         bool[]? coarseRowDead = null;
         if (hasCoarse)
         {
@@ -361,6 +362,16 @@ public static class NnueModelLoader
                 coarseRowDead[pair] = RowIsZero(coarseWeights, pair, ftOutputs)
                                    && RowIsZero(coarseWeights, mirror, ftOutputs);
             }
+
+            bool fitsI8 = true;
+            foreach (short w in coarseWeights)
+                fitsI8 &= w >= sbyte.MinValue && w <= sbyte.MaxValue;
+            if (fitsI8)
+            {
+                coarseWeightsI8 = NnueAlignedArrays.Allocate<sbyte>(coarseWeights.Length);
+                for (int i = 0; i < coarseWeights.Length; i++)
+                    coarseWeightsI8[i] = (sbyte)coarseWeights[i];
+            }
         }
 
         // The arch 1 L1 block again, column-major by input pair, for the
@@ -371,7 +382,7 @@ public static class NnueModelLoader
         if (l1Weights is not null && !archFive && l1Outputs % 8 == 0)
         {
             int pairsPer = l1Inputs / 2;
-            l1ByPair = new short[l1Weights.Length];
+            l1ByPair = NnueAlignedArrays.Allocate<short>(l1Weights.Length);
             for (int b = 0; b < buckets; b++)
             {
                 int src = b * l1Outputs * l1Inputs;
@@ -404,6 +415,9 @@ public static class NnueModelLoader
             QB = qb,
             OutputScale = outputScale,
             FtWeights = ftWeights,
+            FtWeightsBlock = System.Runtime.Intrinsics.X86.Avx2.IsSupported
+                ? new NnueWeightBlock(ftWeights, NoaChess.Engine.Transposition.TranspositionTable.LargePagesAllowed)
+                : null,
             FtBias = ftBias,
             L1Weights = l1Weights,
             L1WeightsI8 = l1WeightsI8,
@@ -417,6 +431,7 @@ public static class NnueModelLoader
             PsqtWeights = psqtWeights,
             CoarseWeights = coarseWeights,
             CoarseRowDead = coarseRowDead,
+            CoarseWeightsI8 = coarseWeightsI8,
             PsqtBuckets = psqtBuckets,
             Sha256 = Convert.ToHexString(actualSha).ToLowerInvariant()
         };

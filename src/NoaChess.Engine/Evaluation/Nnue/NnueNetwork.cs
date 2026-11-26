@@ -99,6 +99,29 @@ public sealed class NnueNetwork
     // read on the hot path, and skipping is exact rather than approximate:
     // the rows really are all zero, so the lane is bit-identical either way.
     public bool[]? CoarseRowDead { get; init; }
+
+    // FtWeights again, in native memory: 64-byte aligned, in 2 MB pages
+    // where the OS grants them (see NnueWeightBlock). The vector kernels read
+    // the transformer through FtWeightsRef; the portable paths keep the array.
+    internal NnueWeightBlock? FtWeightsBlock { get; init; }
+    public bool FtWeightsInLargePages => FtWeightsBlock?.LargePages ?? false;
+
+    public ref short FtWeightsRef
+    {
+        get
+        {
+            if (FtWeightsBlock is { } block)
+                return ref block.Ref;
+            return ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(FtWeights);
+        }
+    }
+
+    // The same coarse rows as int8, when every weight fits (the shipping
+    // nets span -102..35): widened back to int16 on load, so the lane is
+    // bit-identical, but the table is half the bytes - 74 KB instead of
+    // 147 KB at 512 wide - and the lane is bound by fetching those rows,
+    // not by adding them. Null when any weight is out of range.
+    public sbyte[]? CoarseWeightsI8 { get; init; }
     public int PsqtBuckets { get; init; }
 
     // Arch 4 belongs here, and leaving it out cost a NullReferenceException in

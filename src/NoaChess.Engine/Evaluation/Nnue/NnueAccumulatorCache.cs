@@ -57,7 +57,7 @@ public sealed class NnueAccumulatorCache
         {
             // ftBias + no pieces == the accumulator of an empty board, which is
             // the honest starting point for a diff.
-            _values[i] = new short[network.FtOutputs];
+            _values[i] = NnueAlignedArrays.Allocate<short>(network.FtOutputs);
             Array.Copy(network.FtBias, _values[i], network.FtOutputs);
             _placement[i] = new ulong[PlaneCount];
             _psqt[i] = new int[NnueAccumulator.MaxPsqtBuckets];
@@ -68,6 +68,13 @@ public sealed class NnueAccumulatorCache
     // holding the current position, ready for the next refresh of this square.
     public void Refresh(NnueAccumulator target, Board board, Color perspective)
     {
+        if (_network.PsqtBuckets == 0 && Avx2.IsSupported
+            && _network.FtOutputs % Vector256<short>.Count == 0)
+        {
+            RefreshFused(target, board, perspective);
+            return;
+        }
+
         int kingSquare = board.KingSquare(perspective);
         int entry = ((int)perspective * Squares) + kingSquare;
 
@@ -123,6 +130,80 @@ public sealed class NnueAccumulatorCache
         NnueProfiling.CountRefresh(wasPopulated, touched);
     }
 
+    // The same refresh in ONE pass (6.5.0): the changed rows are listed
+    // first, then each 16-lane block of the cached accumulator is loaded
+    // once, every added row added and every removed row subtracted in
+    // registers, and the block stored both back into the cache and into the
+    // target. The row-at-a-time version made a full load/store pass over the
+    // accumulator per changed row and then copied it out, which at 512 wide
+    // is most of the traffic. int16 wrap-around makes the result identical
+    // whatever the order. Nets with a psqt head keep the path above.
+    [System.Runtime.CompilerServices.SkipLocalsInit]
+    private void RefreshFused(NnueAccumulator target, Board board, Color perspective)
+    {
+        int kingSquare = board.KingSquare(perspective);
+        int entry = ((int)perspective * Squares) + kingSquare;
+
+        short[] values = _values[entry];
+        ulong[] placement = _placement[entry];
+        bool wasPopulated = false;
+
+        // At most 32 pieces can appear and 32 disappear.
+        Span<int> addRows = stackalloc int[32];
+        Span<int> subRows = stackalloc int[32];
+        int nAdd = 0, nSub = 0;
+        int ftOut = _network.FtOutputs;
+
+        for (int plane = 0; plane < PlaneCount; plane++)
+        {
+            var color = (Color)(plane / PieceTypeCount);
+            var pieceType = (PieceType)(plane % PieceTypeCount);
+
+            ulong current = board.Pieces(color, pieceType);
+            ulong cached = placement[plane];
+            wasPopulated |= cached != 0;
+            if (current == cached)
+                continue;
+
+            ulong added = current & ~cached;
+            while (added != 0)
+            {
+                int square = Bitboard.PopLsb(ref added);
+                addRows[nAdd++] = NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square) * ftOut;
+            }
+
+            ulong removed = cached & ~current;
+            while (removed != 0)
+            {
+                int square = Bitboard.PopLsb(ref removed);
+                subRows[nSub++] = NnueFeatureIndex.Index(perspective, kingSquare, color, pieceType, square) * ftOut;
+            }
+
+            placement[plane] = current;
+        }
+
+        ref short v = ref MemoryMarshal.GetArrayDataReference(values);
+        ref short t = ref MemoryMarshal.GetArrayDataReference(target.Values[(int)perspective]);
+        ref short w = ref _network.FtWeightsRef;
+        ref int ra = ref MemoryMarshal.GetReference(addRows);
+        ref int rs = ref MemoryMarshal.GetReference(subRows);
+        for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
+        {
+            Vector256<short> acc = Vector256.LoadUnsafe(ref v, i);
+            for (int j = 0; j < nAdd; j++)
+                acc += Vector256.LoadUnsafe(ref w, (nuint)System.Runtime.CompilerServices.Unsafe.Add(ref ra, j) + i);
+            for (int j = 0; j < nSub; j++)
+                acc -= Vector256.LoadUnsafe(ref w, (nuint)System.Runtime.CompilerServices.Unsafe.Add(ref rs, j) + i);
+            acc.StoreUnsafe(ref v, i);
+            acc.StoreUnsafe(ref t, i);
+        }
+
+        target.Valid[(int)perspective] = true;
+        target.Computed[(int)perspective] = true;
+
+        NnueProfiling.CountRefresh(wasPopulated, nAdd + nSub);
+    }
+
     // Same ref-based loads as NnueAccumulator: the array-indexed Vector<T>
     // constructor bounds-checks every iteration and the JIT does not reliably
     // hoist it, which the v4.0.0 profile caught costing ~100x the arithmetic.
@@ -136,7 +217,7 @@ public sealed class NnueAccumulatorCache
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
             ref short v = ref MemoryMarshal.GetArrayDataReference(values);
-            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            ref short w = ref _network.FtWeightsRef;
             nuint row = (nuint)featureIndex * (nuint)ftOut;
             for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
                 (Vector256.LoadUnsafe(ref v, i) + Vector256.LoadUnsafe(ref w, row + i))
@@ -164,7 +245,7 @@ public sealed class NnueAccumulatorCache
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
             ref short v = ref MemoryMarshal.GetArrayDataReference(values);
-            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            ref short w = ref _network.FtWeightsRef;
             nuint row = (nuint)featureIndex * (nuint)ftOut;
             for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
                 (Vector256.LoadUnsafe(ref v, i) - Vector256.LoadUnsafe(ref w, row + i))

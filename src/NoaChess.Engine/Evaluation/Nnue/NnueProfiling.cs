@@ -48,6 +48,11 @@ public static class NnueProfiling
         Pushes = 0;
         PendingApplied = 0;
         PerspectiveCopies = 0;
+        CoarseApplies = 0;
+        CoarseRows = 0;
+        CoarseRowsVsLast = 0;
+        SparseEvals = 0;
+        SparsePairs = 0;
         ResetThreatFinny();
     }
 
@@ -93,6 +98,17 @@ public static class NnueProfiling
     // counter mixes HalfKA and threat rows, and the two live in different
     // tables with different cache behaviour, so a share of the total needs
     // them apart.
+    // The coarse lane: evaluations through it, the rows it streamed, and the
+    // rows a diff against the last evaluated position alone would have
+    // streamed (the base before one state per level).
+    public static long CoarseApplies;
+    public static long CoarseRows;
+    public static long CoarseRowsVsLast;
+
+    // The sparse L1 kernel: evaluations and nonzero input pairs walked.
+    public static long SparseEvals;
+    public static long SparsePairs;
+
     public static long ThreatRowUpdates;
     public static void CountThreatRow() { if (Enabled) ThreatRowUpdates++; }
 
