@@ -812,7 +812,16 @@ public static class NnueInference
 
         // Clamp into [stm | opp] and record which int32 pairs are nonzero,
         // eight pairs per 16 activations.
-        Span<short> act = stackalloc short[inputs];
+        // The clamped activations, 64-byte aligned inside a slightly larger
+        // stack block: a stackalloc is only 16-byte aligned, and every other
+        // 32-byte store and load below would split a cache line.
+        Span<short> actRaw = stackalloc short[inputs + 32];
+        int actSkip;
+        unsafe
+        {
+            actSkip = (int)((64 - ((nint)Unsafe.AsPointer(ref MemoryMarshal.GetReference(actRaw)) & 63)) & 63) / 2;
+        }
+        Span<short> act = actRaw.Slice(actSkip, inputs);
         Span<ulong> masks = stackalloc ulong[(pairs + 63) / 64];
         masks.Clear();
         ref short sRef = ref MemoryMarshal.GetArrayDataReference(stmAccumulator);
@@ -835,6 +844,13 @@ public static class NnueInference
                 Vector256.Equals(b.AsInt32(), Vector256<int>.Zero)) & 0xFFUL;
             int bit2 = (ftOut + i) / 2;
             masks[bit2 >> 6] |= nz2 << (bit2 & 63);
+        }
+
+        if (NnueProfiling.Enabled)
+        {
+            NnueProfiling.SparseEvals++;
+            foreach (ulong m in masks)
+                NnueProfiling.SparsePairs += BitOperations.PopCount(m);
         }
 
         ref int actPairs = ref Unsafe.As<short, int>(ref aRef);

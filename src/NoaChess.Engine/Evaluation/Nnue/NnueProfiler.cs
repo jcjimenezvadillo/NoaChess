@@ -92,6 +92,9 @@ public static class NnueProfiler
                             + $"   [{nsCoarse / Math.Max(nsEval, 1e-9):F2}x the evaluate; {relations} relations]");
             report.AppendLine($"  Coarse lane, same position    : {nsCoarseFloor,9:F1} ns"
                             + $"   [floor: classify {nsClassify:F0} ns + sums, no rows]");
+            double nsSearchLike = TimeCoarseLaneSearchLike(network, board, out double buckets);
+            report.AppendLine($"  Coarse lane, search-like      : {nsSearchLike,9:F1} ns"
+                            + $"   [parent, child, parent, ... over every legal move; {buckets:F2} live buckets per child]");
         }
 
         // Same row op, random rows: the difference against the line above is
@@ -157,6 +160,16 @@ public static class NnueProfiler
                             ? $"   ({100.0 * refreshCached / refreshes:F1}% cached, "
                             + $"{(double)refreshRows / refreshes:F1} rows avg)"
                             : ""));
+
+        long coarseApplies = NnueProfiling.CoarseApplies;
+        if (coarseApplies > 0)
+            report.AppendLine($"  coarse lane          : {coarseApplies,12:N0} applies, "
+                            + $"{(double)NnueProfiling.CoarseRows / coarseApplies:F2} buckets streamed avg "
+                            + $"({(double)NnueProfiling.CoarseRowsVsLast / coarseApplies:F2} against the last evaluated alone)");
+
+        if (NnueProfiling.SparseEvals > 0)
+            report.AppendLine($"  sparse L1            : {(double)NnueProfiling.SparsePairs / NnueProfiling.SparseEvals:F1} nonzero input pairs per evaluation "
+                            + $"of {network.FtOutputs} ({100.0 * NnueProfiling.SparsePairs / NnueProfiling.SparseEvals / network.FtOutputs:F1}%)");
 
         // Threat finny probe. Printed only for a net that carries threats,
         // since for any other one every counter is zero and a block of zeros
@@ -439,6 +452,57 @@ public static class NnueProfiler
             sink ^= NnueCoarse.Classify(board, counts);
         sw.Stop();
         Consume(sink);
+        return sw.Elapsed.TotalMilliseconds * 1e6 / MeasureIterations;
+    }
+
+    // The lane as a search drives it: level 0 holds the parent, level 1 each
+    // legal child in turn (one move away), through the same OnPush/Apply path
+    // the evaluator uses. Reported per Apply of a child.
+    private static double TimeCoarseLaneSearchLike(NnueNetwork net, Board parent, out double buckets)
+    {
+        var acc = new NnueAccumulator(net.FtOutputs);
+        acc.Refresh(net, parent, Color.White);
+        acc.Refresh(net, parent, Color.Black);
+        short[] stm = acc.Values[0];
+        short[] opp = acc.Values[1];
+        short[] outStm = new short[net.FtOutputs];
+        short[] outOpp = new short[net.FtOutputs];
+        var lane = new NnueCoarseLane(net.FtOutputs, 4);
+
+        var children = new List<Board>();
+        foreach (Move m in MoveGenerator.GenerateLegalMoves(parent))
+        {
+            Board c = parent.Clone();
+            c.MakeMove(m);
+            children.Add(c);
+        }
+
+        lane.OnReset();
+        lane.Apply(net, parent, 0, stm, opp, outStm, outOpp);
+        bool was = NnueProfiling.Enabled;
+        NnueProfiling.Enabled = true;
+        long rows0 = NnueProfiling.CoarseRows, applies0 = NnueProfiling.CoarseApplies;
+        for (int i = 0; i < children.Count; i++)
+        {
+            lane.OnPush(1);
+            lane.Apply(net, children[i], 1, stm, opp, outStm, outOpp);
+        }
+        buckets = (double)(NnueProfiling.CoarseRows - rows0) / Math.Max(1, NnueProfiling.CoarseApplies - applies0);
+        NnueProfiling.Enabled = was;
+
+        for (int i = 0; i < WarmupIterations; i++)
+        {
+            lane.OnPush(1);
+            lane.Apply(net, children[i % children.Count], 1, stm, opp, outStm, outOpp);
+        }
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < MeasureIterations; i++)
+        {
+            lane.OnPush(1);
+            lane.Apply(net, children[i % children.Count], 1, stm, opp, outStm, outOpp);
+        }
+        sw.Stop();
+        Consume(outStm[0] ^ outOpp[net.FtOutputs - 1]);
         return sw.Elapsed.TotalMilliseconds * 1e6 / MeasureIterations;
     }
 

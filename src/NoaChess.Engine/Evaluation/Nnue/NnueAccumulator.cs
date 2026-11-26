@@ -42,7 +42,8 @@ public sealed class NnueAccumulator
 
     public NnueAccumulator(int ftOutputs)
     {
-        Values = [new short[ftOutputs], new short[ftOutputs]];
+        // 64-byte aligned: see NnueAlignedArrays.
+        Values = [NnueAlignedArrays.Allocate<short>(ftOutputs), NnueAlignedArrays.Allocate<short>(ftOutputs)];
     }
 
     // Full recomputation of one perspective from the board (the reference
@@ -161,11 +162,10 @@ public sealed class NnueAccumulator
         int p = (int)perspective;
         short[] dstArr = Values[p];
         short[] srcArr = parent.Values[p];
-        short[] weights = network.FtWeights;
         int ftOut = network.FtOutputs;
         ref short d = ref MemoryMarshal.GetArrayDataReference(dstArr);
         ref short s = ref MemoryMarshal.GetArrayDataReference(srcArr);
-        ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+        ref short w = ref network.FtWeightsRef;
         nuint addRow = (nuint)addIndex * (nuint)ftOut;
         nuint subRow = (nuint)subIndex * (nuint)ftOut;
         if (sub2Index < 0)
@@ -271,7 +271,7 @@ public sealed class NnueAccumulator
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
             ref short v = ref MemoryMarshal.GetArrayDataReference(values);
-            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            ref short w = ref network.FtWeightsRef;
             nuint row = (nuint)featureIndex * (nuint)ftOut;
             for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
                 (Vector256.LoadUnsafe(ref v, i) + Vector256.LoadUnsafe(ref w, row + i))
@@ -294,7 +294,7 @@ public sealed class NnueAccumulator
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
             ref short v = ref MemoryMarshal.GetArrayDataReference(values);
-            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            ref short w = ref network.FtWeightsRef;
             nuint row = (nuint)featureIndex * (nuint)ftOut;
             for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
                 (Vector256.LoadUnsafe(ref v, i) - Vector256.LoadUnsafe(ref w, row + i))
@@ -325,7 +325,7 @@ public sealed class NnueAccumulator
         if (Avx2.IsSupported && ftOut % Vector256<short>.Count == 0)
         {
             ref short v = ref MemoryMarshal.GetArrayDataReference(values);
-            ref short w = ref MemoryMarshal.GetArrayDataReference(weights);
+            ref short w = ref network.FtWeightsRef;
             nuint addRow = (nuint)addIndex * (nuint)ftOut;
             nuint removeRow = (nuint)removeIndex * (nuint)ftOut;
             for (nuint i = 0; i < (nuint)ftOut; i += (nuint)Vector256<short>.Count)
