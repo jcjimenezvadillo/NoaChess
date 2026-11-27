@@ -109,7 +109,7 @@ public sealed class UciOptions
     // "unstable position, extend" moves compound the deficit move after move.
     // Mirrors ClockLead's own ratio/cap, just downward.
     public bool ClockDeficitBrake { get; private set; } = true;
-    public bool SmpDiversify { get; private set; }
+    public bool SmpDiversify { get; private set; } = true;
     public bool SmpAspDiversify { get; private set; }
     public bool SmpVoteAll { get; private set; }
     public bool CutNodeLmr { get; private set; }
@@ -294,7 +294,7 @@ public sealed class UciOptions
         output.WriteLine("option name QsEntryKey type check default false");
         output.WriteLine("option name ClockLead type check default true");
         output.WriteLine("option name ClockDeficitBrake type check default true");
-        output.WriteLine("option name SmpDiversify type check default false");
+        output.WriteLine("option name SmpDiversify type check default true");
         output.WriteLine("option name SmpAspDiversify type check default false");
         output.WriteLine("option name SmpVoteAll type check default false");
         output.WriteLine("option name CutNodeLmr type check default false");
