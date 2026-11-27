@@ -2029,7 +2029,9 @@ public sealed class AlphaBetaSearch
 
     // Diversify the helpers' iteration depths. No effect at one thread and no
     // effect on the main worker, so node counts stay identical off AND on.
-    public bool UseSmpDiversify = false;
+    // On by default since v6.6.1: at five threads (the bot's count), 20+0.2,
+    // +12.4 +/- 8.0 Elo over 1,790 games against off (SPRT [0, 5] H1).
+    public bool UseSmpDiversify = true;
 
     // Second SMP diversification axis, gated separately so each pays its own
     // way: helpers aspire through progressively wider windows, so the pool
